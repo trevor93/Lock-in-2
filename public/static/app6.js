@@ -27,7 +27,6 @@ function viewCouncil() {
 /* ============ HERMES CHAT ============ */
 let BRIDGE_TOKEN = null;
 async function showBridge() {
-  if (!BRIDGE_TOKEN) BRIDGE_TOKEN = (await axios.get('/api/agent/token')).data.token;
   const url = location.origin;
   const el = document.createElement('div');
   el.className = 'fixed inset-0 z-[300] bg-black/80 flex items-center justify-center p-4';
@@ -35,15 +34,18 @@ async function showBridge() {
     '<h3 class="font-disp font-bold text-gold text-sm tracking-widest mb-2"><i class="fas fa-link"></i> HERMES BRIDGE — CONNECT YOUR LOCAL AGENT</h3>' +
     '<p class="text-[11px] text-gray-400 mb-2">Your Termux Hermes gets FULL access: briefings, auto-journaling, block check-offs, intel filing, watch-loop alerts (termux-notification + optional Telegram relay).</p>' +
     '<p class="text-[10px] font-bold text-gray-400">1. AGENT TOKEN (keep secret):</p>' +
-    '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent).then(()=>toast(\'Token copied.\'))">' + esc(BRIDGE_TOKEN) + '</div>' +
+    (BRIDGE_TOKEN
+      ? '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent).then(()=>toast(\'Token copied.\'))">' + esc(BRIDGE_TOKEN) + '</div>' +
+        '<p class="text-[10px] text-amber-300 mb-2">Shown for this rotation only. Copy it now; reopening this dialog will not retrieve it.</p>'
+      : '<div class="card p-2 mb-2 text-[10px] text-gray-400">No token is retrievable. Rotate explicitly to issue a new one; the current bridge will stop until WARROOM_TOKEN is updated.</div>') +
     '<p class="text-[10px] font-bold text-gray-400">2. IN TERMUX:</p>' +
-    '<pre class="card p-2 mb-2 text-[9px] font-mono text-emerald-300 overflow-x-auto">pkg install python termux-api -y\npip install requests\ncurl -o hermes_bridge.py \\\n  ' + url + '/static/hermes_bridge.py\nexport WARROOM_URL="' + url + '"\nexport WARROOM_TOKEN="' + esc(BRIDGE_TOKEN) + '"</pre>' +
+    '<pre class="card p-2 mb-2 text-[9px] font-mono text-emerald-300 overflow-x-auto">pkg install python termux-api -y\npip install requests\ncurl -o hermes_bridge.py \\\n  ' + url + '/static/hermes_bridge.py\nexport WARROOM_URL="' + url + '"\nexport WARROOM_TOKEN="' + (BRIDGE_TOKEN ? esc(BRIDGE_TOKEN) : '&lt;paste newly rotated token&gt;') + '"</pre>' +
     '<p class="text-[10px] font-bold text-gray-400">3. COMMANDS YOUR AGENT CAN RUN:</p>' +
     '<pre class="card p-2 mb-2 text-[9px] font-mono text-sky-300 overflow-x-auto">python hermes_bridge.py briefing   # my full file\npython hermes_bridge.py pending    # what needs me NOW\npython hermes_bridge.py watch      # 24/7 alert daemon\npython hermes_bridge.py done 8     # check off block\npython hermes_bridge.py intel "Cousin asked for money" -d money -s "..." -m "..."\npython hermes_bridge.py journal --wins "..."\npython hermes_bridge.py say "counsel text"  # appears here\npython hermes_bridge.py export     # sync full memory</pre>' +
     '<p class="text-[10px] text-gray-500 mb-2">Run the watcher 24/7: <span class="font-mono text-emerald-300">termux-wake-lock && tmux new -d "python hermes_bridge.py watch"</span>. Telegram relay: also export TG_BOT_TOKEN and TG_CHAT_ID.</p>' +
     '<div class="flex gap-2">' +
     '<button class="btn flex-1 p-2 bg-red-900/60 border border-red-700 text-red-200 text-xs font-bold" onclick="rotateToken(this)">ROTATE TOKEN</button>' +
-    '<button class="btn flex-1 p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" onclick="this.closest(\'.fixed\').remove()">CLOSE</button>' +
+    '<button class="btn flex-1 p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" onclick="BRIDGE_TOKEN=null;this.closest(\'.fixed\').remove()">CLOSE</button>' +
     '</div></div>';
   document.body.appendChild(el);
 }

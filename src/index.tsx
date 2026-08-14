@@ -1,9 +1,47 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 
-type Bindings = { DB: D1Database; OPENAI_API_KEY: string; OPENAI_BASE_URL: string }
+type Bindings = {
+  DB: D1Database
+  OPENAI_API_KEY: string
+  OPENAI_BASE_URL: string
+  ENFORCEMENT_JOB_SECRET?: string
+  ALLOWED_ORIGINS?: string
+}
 const app = new Hono<{ Bindings: Bindings }>()
-// NOTE: no cors() — same-origin only. The API refuses cross-origin browsers by default.
+
+function privatePath(path: string): boolean {
+  return path.startsWith('/api/') || path.startsWith('/internal/') || path === '/calendar.ics'
+}
+
+function allowedOrigins(c: any): Set<string> {
+  const configured = String(c.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin: string) => origin.trim())
+    .filter(Boolean)
+  return new Set([new URL(c.req.url).origin, ...configured])
+}
+
+// Private responses never enter caches. Browser requests carrying an Origin must
+// match this deployment or an explicit allowlist; non-browser bridge requests do
+// not send Origin and continue to authenticate with X-Agent-Token.
+app.use('*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  if (!privatePath(path)) return next()
+
+  c.header('Cache-Control', 'no-store')
+  const origin = c.req.header('origin')
+  if (origin && !allowedOrigins(c).has(origin)) {
+    return c.json({ error: 'ORIGIN NOT ALLOWED' }, 403)
+  }
+
+  await next()
+  c.header('Cache-Control', 'no-store')
+  if (origin) {
+    c.header('Access-Control-Allow-Origin', origin)
+    c.header('Vary', 'Origin', { append: true })
+  }
+})
 
 // ============ SERVER CLOCK (single source of truth) ============
 // The commander's timezone is captured ONCE (settings.timezone). After that the
@@ -129,7 +167,7 @@ app.post('/api/auth/logout', async (c) => {
 
 // -- global API guard --
 // /api/auth/*            → open (it IS the gate)
-// /api/agent/token*      → session only (UI shows/rotates the token for Termux setup)
+// /api/agent/token*      → session only (GET retired; POST rotates for Termux setup)
 // /api/agent/*           → X-Agent-Token ONLY (checked in each handler via agentAuthed)
 // everything else /api/* → session cookie required
 app.use('/api/*', async (c, next) => {
@@ -484,11 +522,32 @@ app.post('/api/tick', async (c) => {
       try { new Intl.DateTimeFormat('en', { timeZone: body.tz }); await setSetting(DB, 'timezone', body.tz); await setSetting(DB, 'timezone_locked', '1') } catch (_) {}
     }
   } catch (_) {}
-  const { date, time } = await userNow(DB)
-  await runHonestyEngine(DB, date)
-  await runSameDayEnforcement(DB, date, time)
-  await writeDaySummary(DB, date, false) // keep today's row fresh (not finalized)
+  const { date, time } = await runEnforcement(c.env.DB)
   return c.json(await buildState(DB, date, time))
+})
+
+async function runEnforcement(DB: D1Database): Promise<{ date: string; time: string; tz: string }> {
+  const now = await userNow(DB)
+  await ensureUnlocks(DB)
+  await ensureCards(DB)
+  await runHonestyEngine(DB, now.date)
+  await runSameDayEnforcement(DB, now.date, now.time)
+  await writeDaySummary(DB, now.date, false)
+  return now
+}
+
+// Cloudflare Pages has no native scheduled handler. A separately configured Cron
+// Worker calls this POST with the shared secret; no client-supplied clock is read.
+app.post('/internal/jobs/enforcement', async (c) => {
+  const expected = c.env.ENFORCEMENT_JOB_SECRET
+  const authorization = c.req.header('authorization') || ''
+  const supplied = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
+  if (!expected || !supplied || !timingSafeEq(supplied, expected)) {
+    return c.json({ error: 'INVALID INTERNAL CREDENTIAL' }, 401)
+  }
+
+  const { date, time, tz } = await runEnforcement(c.env.DB)
+  return c.json({ ok: true, date, time, tz })
 })
 
 // ============ BLOCK LOGGING ============
@@ -714,7 +773,6 @@ async function ensureUnlocks(DB: D1Database) {
 
 app.get('/api/campaign', async (c) => {
   const DB = c.env.DB
-  await ensureUnlocks(DB)
   const phases = (await DB.prepare(`SELECT * FROM phases ORDER BY sort_order`).all()).results as any[]
   const out = []
   for (const p of phases) {
@@ -805,7 +863,6 @@ async function ensureCards(DB: D1Database) {
 }
 app.get('/api/cards/due', async (c) => {
   const DB = c.env.DB
-  await ensureCards(DB)
   const date = await safeDate(c.env.DB, c.req.query('date'))
   const { results } = await DB.prepare(
     `SELECT f.*, m.source, m.principle, m.naive_reading, m.master_reading, m.my_words
@@ -1227,6 +1284,11 @@ app.post('/api/library/:bookId/chapter/:idx', async (c) => {
 })
 
 // ============ CALENDAR EXPORT (.ics — device-native alarms) ============
+app.use('/calendar.ics', async (c, next) => {
+  if (!(await sessionValid(c))) return c.json({ error: 'AUTH REQUIRED' }, 401)
+  return next()
+})
+
 app.get('/calendar.ics', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT * FROM schedule_blocks ORDER BY start_time`).all()
   const dayMap: Record<string, string> = { mon: 'MO', tue: 'TU', wed: 'WE', thu: 'TH', fri: 'FR', sat: 'SA', sun: 'SU' }
@@ -1406,12 +1468,9 @@ function genToken(): string {
   return t
 }
 
-async function getAgentToken(DB: D1Database): Promise<string> {
+async function getAgentToken(DB: D1Database): Promise<string | null> {
   const row = await DB.prepare(`SELECT value FROM settings WHERE key='agent_token'`).first<{ value: string }>()
-  if (row) return row.value
-  const t = genToken()
-  await DB.prepare(`INSERT INTO settings (key, value) VALUES ('agent_token', ?)`).bind(t).run()
-  return t
+  return row?.value ?? null
 }
 
 async function agentAuthed(c: any): Promise<boolean> {
@@ -1419,12 +1478,13 @@ async function agentAuthed(c: any): Promise<boolean> {
   const token = c.req.header('x-agent-token')
   if (!token) return false
   const stored = await getAgentToken(c.env.DB)
-  return timingSafeEq(token, stored)
+  return stored !== null && timingSafeEq(token, stored)
 }
 
-// Called from the app UI (same-origin) to show/rotate the token
+// Raw agent credentials are issued only by the explicit rotation POST below.
+// This retired GET remains non-mutating so old clients fail without leaking a token.
 app.get('/api/agent/token', async (c) => {
-  return c.json({ token: await getAgentToken(c.env.DB) })
+  return c.json({ error: 'Agent tokens are issued only by POST /api/agent/token/rotate.' }, 405, { Allow: 'POST' })
 })
 app.post('/api/agent/token/rotate', async (c) => {
   const t = genToken()

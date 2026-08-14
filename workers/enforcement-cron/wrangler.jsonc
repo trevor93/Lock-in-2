@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "lock-in-enforcement-cron",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-04-26",
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "ENFORCEMENT_JOB_URL": "https://lock-in-708.pages.dev/internal/jobs/enforcement"
+  }
+}
