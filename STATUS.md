@@ -1,99 +1,129 @@
 # Lock-In / War Room Remediation Status
 
-> Governing document: `MASTERPROMPT.md` (read-only). Branch: `refactor/strategic-judgment-os`. Last verified: 2026-08-15. No production deployment or account-level change is claimed in this file.
+> Governing document: `MASTERPROMPT.md` (read-only). Branch: `refactor/strategic-judgment-os`. Last verified: 2026-08-15. Phase 0 is **IN PROGRESS**. No production deployment, production migration, production D1 backup, Cloudflare change, secret change, credential rotation, Cron deployment, or repository-visibility change is claimed here.
+
+## Current Gate
+
+- PHASE-0 [IN PROGRESS] Book 5 security and data integrity is the only active implementation phase.
+- PHASE-0-ORDER [DONE] The accepted first slice covered part of Books 5.1, 5.3, and 5.4. Books 5.2, 5.5, 5.6, and 5.7 remain NOT STARTED. Every Book 5.8 item is enumerated below.
+- OPERATOR-BOUNDARY [DONE] Production D1 backup/application, Cloudflare Access, Cloudflare secrets, production credential rotation, Cron deployment, repository visibility, and every deployment are permanently operator-controlled. Repository work is limited to code, local schema-copy tests, documentation, commits, and branch pushes.
+- ASSUMPTION-2026-08-15 [IN PROGRESS] Smallest defensible ownership migration: create one durable owner from the existing installation during migration, preserve every record, and require independent route authorization; production application remains gated by `OPERATIONS.md`.
 
 ## Book 3 — Verified System Inventory
 
-- B3.1 [DONE] Application identity — the repository implements an existing single-operator discipline, learning, journaling, prediction, and AI-counsel PWA (“War Room / Lock-In”), not a new application; verified in `src/index.tsx`, `public/static/app.js`–`app7.js`, and migrations.
-- B3.2 [DONE] Runtime and deployment shape — Cloudflare Pages on the Workers runtime, Hono 4, TypeScript/TSX, D1/SQLite, Vite 6, Wrangler 4, vanilla browser JavaScript, string-template HTML, service worker, OpenAI-compatible model calls, and a Python/Termux bridge; verified in `package.json`, `vite.config.ts`, `wrangler.jsonc`, `src/index.tsx`, and `public/static/hermes_bridge.py`.
-- B3.3 [DONE] Authentication routes — `GET /api/auth/status`, `POST /api/auth/setup`, `POST /api/auth/login`, and `POST /api/auth/logout`; verified in `src/index.tsx`.
-- B3.4 [DONE] State and enforcement routes — `GET /api/state` and `POST /api/tick`; verified in `src/index.tsx`.
-- B3.5 [DONE] Blocks, appeals, and load routes — `POST /api/blocks/:id/log`, `POST /api/appeals`, `GET /api/appeals`, and `POST /api/load-reductions/:id/answer`; verified in `src/index.tsx`.
-- B3.6 [DONE] Prediction routes — `POST /api/predictions`, `GET /api/predictions`, `POST /api/predictions/:id/resolve`, and `GET /api/predictions/calibration`; verified in `src/index.tsx`.
-- B3.7 [DONE] Debrief routes — `POST /api/debrief` and `GET /api/debriefs`; verified in `src/index.tsx`.
-- B3.8 [DONE] Campaign routes — `GET /api/campaign` and `POST /api/units/:id/step`; verified in `src/index.tsx`.
-- B3.9 [DONE] Maxim and card routes — `GET /api/maxims`, `POST /api/maxims`, `POST /api/maxims/:id/my-words`, `GET /api/cards/due`, and `POST /api/cards/:maximId/review`; verified in `src/index.tsx`.
-- B3.10 [DONE] Flag routes — `POST /api/flags/:id/ack` and `GET /api/flags/history`; verified in `src/index.tsx`.
-- B3.11 [DONE] Tongue routes — `POST /api/tongue`, `GET /api/tongue`, `PUT /api/tongue/:id`, `DELETE /api/tongue/:id`, `GET /api/tongue/due`, `POST /api/tongue/:id/review`, `GET /api/tongue/exam`, `POST /api/tongue/exam/submit`, and `GET /api/tongue/stats`; verified in `src/index.tsx`.
-- B3.12 [DONE] Law, reward, and stats routes — `GET /api/laws`, `POST /api/laws/:id/check`, `GET /api/rewards`, `POST /api/rewards/:id/redeem`, and `GET /api/stats`; verified in `src/index.tsx`.
-- B3.13 [DONE] Intel routes — `GET /api/intel`, `POST /api/intel`, `POST /api/intel/:id/verdict`, and `POST /api/intel/:id/analyze`; verified in `src/index.tsx`.
-- B3.14 [DONE] Library and calendar routes — `GET /api/library`, `POST /api/library/:bookId/chapter/:idx`, and `GET /calendar.ics`; verified in `src/index.tsx`.
-- B3.15 [DONE] Hermes routes — `POST /api/hermes`, `GET /api/hermes/history`, and `POST /api/hermes/council`; verified in `src/index.tsx`.
-- B3.16 [DONE] Agent routes — `GET /api/agent/token`, `POST /api/agent/token/rotate`, `GET /api/agent/briefing`, `GET /api/agent/pending`, `POST /api/agent/intel`, `POST /api/agent/debrief`, `POST /api/agent/block-log`, `POST /api/agent/message`, and `GET /api/agent/export`; verified in `src/index.tsx`.
-- B3.17 [DONE] PWA and shell routes — `GET /manifest.json`, `GET /sw.js`, and `GET /`; verified in `src/index.tsx`.
-- B3.18 [DONE] Baseline route total — before remediation, 61 explicit routes: 28 GET handlers, 32 explicit POST/PUT/DELETE handlers that could mutate application state, plus one POST logout handler whose mutation is cookie deletion; the first slice retains the retired token GET as a non-mutating 405 and adds `POST /internal/jobs/enforcement`, so the post-slice source has 62 explicit routes; verified by direct route enumeration in `src/index.tsx`.
-- B3.19 [DONE] Mutating GET defect — `GET /api/campaign` writes through `ensureUnlocks`, `GET /api/cards/due` writes through `ensureCards`, `GET /api/agent/token` can create `settings.agent_token`, and agent GET authentication can create that token through `agentAuthed`; evidence in `src/index.tsx`.
-- B3.20 [DONE] HEAD exposure — no explicit HEAD handlers exist and Hono may answer HEAD through GET fallback, so automated route-level write instrumentation is required before declaring HEAD inert; evidence in `src/index.tsx`, proving work tracked under B17.8.
-- B3.21 [DONE] Core schema — `schedule_blocks(id, sort_order, start_time, end_time, title, category, description, days, is_non_negotiable, points, weight, is_mvd)`, `block_logs(id, block_id, log_date, status, note, completed_at)`, `debriefs(id, log_date, wins, breaks, tomorrow_targets, strategy_insight, mood, energy, sleep_time, wake_time, sleep_hours, created_at)`, `phases(id, sort_order, code, title, subtitle, track)`, `units(id, phase_id, sort_order, title, reading, lesson, field_drill, debrief_prompt, is_exam, exam_questions)`, and `unit_progress(id, unit_id, status, reading_done_at, drill_done_at, drill_report, debrief_answer, exam_answers, exam_self_score, completed_at, attempts)`; verified in `migrations/0001_initial_schema.sql` and `migrations/0004_reforge.sql`.
-- B3.22 [DONE] Knowledge and scoring schema — `maxims(id, source, principle, naive_reading, master_reading, my_words, unit_id, created_by_user)`, `flashcards(id, maxim_id, interval_days, ease, due_date, reps, lapses)`, `card_reviews(id, maxim_id, grade, reviewed_at)`, `honesty_flags(id, flag_date, flag_type, severity, message, acknowledged, created_at, ref_type, ref_id)`, `points_ledger(id, log_date, points, reason, ref_type, ref_id, created_at)`, `rewards(id, title, cost, description, redeemed_count)`, `reward_redemptions(id, reward_id, redeemed_at)`, `laws(id, sort_order, title, detail)`, `law_checks(id, law_id, log_date, kept, note)`, and `settings(key, value)`; verified in `migrations/0001_initial_schema.sql` and `migrations/0004_reforge.sql`.
-- B3.23 [DONE] Intel, books, and model schema — `intel_entries(id, log_date, domain, title, situation, my_move, outcome, verdict, principle_used, lesson, people, hermes_analysis, created_at)`, `book_progress(id, book_id, chapter_idx, status, last_para, notes, completed_at)`, and `hermes_messages(id, role, content, context_date, created_at)`; verified in `migrations/0002_intel_books_alarms.sql`.
-- B3.24 [DONE] Tongue schema — `responses(id, situation, trigger_q, response, why_works, source, category, archived, created_at)`, `response_srs(response_id, interval_days, ease, reps, lapses, due_date, mastery, total_reviews, correct_reviews, last_mode)`, `tongue_reviews(id, response_id, review_date, mode, grade, created_at)`, and `tongue_exams(id, exam_date, total, correct, score_pct, passed, created_at)`; verified in `migrations/0003_tongue.sql`.
-- B3.25 [DONE] Reforge schema — `day_summary(summary_date, adherence_pct, weighted_score, weighted_total, blocks_done, blocks_total, mvd_held, debrief_filed, victory, points, finalized, updated_at)`, `predictions(id, made_date, claim, confidence, resolve_by, domain, outcome, resolved_date, resolution_note, created_at)`, `appeals(id, appeal_date, block_id, block_date, reason, week_key, created_at)`, and `load_reductions(id, block_id, start_date, end_date, reason, answered_at, created_at)`; verified in `migrations/0004_reforge.sql`.
-- B3.26 [DONE] Table total — the four migrations define 27 tables, not the 24 claimed by `README.md`; verified in `migrations/0001_initial_schema.sql`–`0004_reforge.sql`.
-- B3.27 [DONE] Frontend core module — `public/static/app.js` owns setup/login, the API wrapper, NOW/DAY state and rendering, block logs, appeals, load reduction, draft persistence, navigation, and the 60-second refresh path using `POST /api/tick`.
-- B3.28 [DONE] Campaign module — `public/static/app2.js` owns campaign/unit progression/exams and tab data dispatch.
-- B3.29 [DONE] Maxim module — `public/static/app3.js` owns maxim capture, personal wording, and flashcard review.
-- B3.30 [DONE] Review module — `public/static/app4.js` owns debriefs, rewards, predictions, calibration, statistics, and medals.
-- B3.31 [DONE] Books and alarms module — `public/static/app5.js` owns Web Audio alarms, notifications, book library/reader, calendar export, and periodic refresh.
-- B3.32 [DONE] Council and bridge module — `public/static/app6.js` owns Hermes chat/council, intel, bridge setup, and currently retrieves the complete bridge credential through `GET /api/agent/token`.
-- B3.33 [DONE] Tongue module — `public/static/app7.js` owns response capture, drill modes, weekly exam, mastery, and tongue statistics.
-- B3.34 [DONE] Effects and assets — `public/static/fx.js` owns haptics, confetti, count-up, rings, rank presentation, and toasts; `public/static/style.css` is the visual system; `public/static/icon.svg` is the PWA icon.
-- B3.35 [DONE] Public book assets — eleven JSON books under `public/static/books/` total 2,764,110 bytes; file names verified without copying copyrighted or personal content.
-- B3.36 [DONE] Credential locations — Cloudflare bindings are `DB`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL`; D1 settings hold auth/session/agent/timezone/application preference material; bridge environment names are `WARROOM_URL`, `WARROOM_TOKEN`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, and `WATCH_INTERVAL`; `.dev.vars` is ignored; no value was printed or copied.
-- B3.37 [DONE] Model flow — browser POST routes `/api/hermes`, `/api/hermes/council`, and `/api/intel/:id/analyze` build D1-backed private context, call `${OPENAI_BASE_URL}/chat/completions` with `OPENAI_API_KEY`, use `gpt-5-mini`, and persist outputs in `hermes_messages` or `intel_entries.hermes_analysis`; verified in `src/index.tsx`.
-- B3.38 [DONE] Agent bridge flow — `public/static/hermes_bridge.py` reads URL/token from environment, authenticates via `X-Agent-Token`, implements briefing/pending/watch/done/intel/journal/say/export, uses `requests` TLS defaults and 30-second timeouts, and can optionally relay through Telegram; the server maps those commands to `/api/agent/*`.
-- B3.39 [DONE] Service-worker behavior — `GET /sw.js` installs without precache, claims clients, lazily cache-first stores only `/static/books/*`, does not intercept private APIs, has no old-cache cleanup, no shell cache, no offline write queue, and uses the fixed cache name `warroom-v1`; verified in `src/index.tsx`.
-- B3.40 [DONE] Dependency map — runtime: browser → Pages/Hono → D1, and model routes → OpenAI-compatible proxy; bridge → Pages/Hono → D1, with optional Telegram; PWA → Cache Storage only for book JSON; package runtime dependency is Hono, build/dev dependencies are Hono Vite adapters, Vite, and Wrangler, while the browser loads Tailwind, Font Awesome, Google Fonts, and axios from external CDNs.
-- B3.41 [DONE] Repository discrepancy — governing inventory names `automatio88-rgb/Lock-In`, while the configured repository is `trevor93/Lock-in-2`; public GitHub metadata confirmed the actual repository is public with default branch `main`.
-- B3.42 [DONE] Deployment discrepancy — `README.md` says production is pending, while `https://lock-in-708.pages.dev/` is live; the inspected deployment is older than current source because `/api/auth/status` returned 404 while current source defines it.
-- B3.43 [DONE] Documentation discrepancies — `README.md` claims eight tabs while code has nine, claims 24 tables while migrations define 27, claims same-origin/no wildcard CORS while inspected production returns wildcard CORS, and claims token rotation without proof that the live exposed credential was invalidated.
-- B3.44 [DONE] Service-worker discrepancy — the governing provisional inventory says the 2.7 MB books are precached, while actual code lazy-caches each book after its first successful fetch.
+### Routes
 
-## Book 5 — Executive Security Assessment and Risk Register
+- B3.R1 [DONE] Auth — `GET /api/auth/status` at `src/index.tsx:125`; `POST /api/auth/setup` at `src/index.tsx:129`; `POST /api/auth/login` at `src/index.tsx:143`; `POST /api/auth/logout` at `src/index.tsx:163`.
+- B3.R2 [DONE] State/enforcement — `GET /api/state` at `src/index.tsx:510`; `POST /api/tick` at `src/index.tsx:516`; protected `POST /internal/jobs/enforcement` at `src/index.tsx:541`.
+- B3.R3 [DONE] Blocks/appeals/load — `POST /api/blocks/:id/log` at `src/index.tsx:555`; `POST /api/appeals` at `src/index.tsx:594`; `GET /api/appeals` at `src/index.tsx:632`; `POST /api/load-reductions/:id/answer` at `src/index.tsx:640`.
+- B3.R4 [DONE] Predictions — `POST /api/predictions` at `src/index.tsx:656`; `GET /api/predictions` at `src/index.tsx:669`; `POST /api/predictions/:id/resolve` at `src/index.tsx:673`; `GET /api/predictions/calibration` at `src/index.tsx:686`.
+- B3.R5 [DONE] Debriefs — `POST /api/debrief` at `src/index.tsx:718`; `GET /api/debriefs` at `src/index.tsx:739`.
+- B3.R6 [DONE] Campaign — `GET /api/campaign` at `src/index.tsx:774`; `POST /api/units/:id/step` at `src/index.tsx:790`.
+- B3.R7 [DONE] Maxims/cards — `GET /api/maxims` at `src/index.tsx:843`; `POST /api/maxims` at `src/index.tsx:847`; `POST /api/maxims/:id/my-words` at `src/index.tsx:855`; `GET /api/cards/due` at `src/index.tsx:864`; `POST /api/cards/:maximId/review` at `src/index.tsx:873`.
+- B3.R8 [DONE] Flags — `POST /api/flags/:id/ack` at `src/index.tsx:897`; `GET /api/flags/history` at `src/index.tsx:901`.
+- B3.R9 [DONE] Tongue — `POST /api/tongue` at `src/index.tsx:919`; `GET /api/tongue` at `src/index.tsx:936`; `PUT /api/tongue/:id` at `src/index.tsx:950`; `DELETE /api/tongue/:id` at `src/index.tsx:958`; `GET /api/tongue/due` at `src/index.tsx:965`; `POST /api/tongue/:id/review` at `src/index.tsx:985`; `GET /api/tongue/exam` at `src/index.tsx:1025`; `POST /api/tongue/exam/submit` at `src/index.tsx:1034`; `GET /api/tongue/stats` at `src/index.tsx:1053`.
+- B3.R10 [DONE] Laws/rewards/stats — `GET /api/laws` at `src/index.tsx:1081`; `POST /api/laws/:id/check` at `src/index.tsx:1088`; `GET /api/rewards` at `src/index.tsx:1098`; `POST /api/rewards/:id/redeem` at `src/index.tsx:1102`; `GET /api/stats` at `src/index.tsx:1128`.
+- B3.R11 [DONE] Intel — `GET /api/intel` at `src/index.tsx:1211`; `POST /api/intel` at `src/index.tsx:1219`; `POST /api/intel/:id/verdict` at `src/index.tsx:1233`; `POST /api/intel/:id/analyze` at `src/index.tsx:1433`.
+- B3.R12 [DONE] Library/calendar — `GET /api/library` at `src/index.tsx:1255`; `POST /api/library/:bookId/chapter/:idx` at `src/index.tsx:1267`; calendar authentication middleware at `src/index.tsx:1287`; `GET /calendar.ics` at `src/index.tsx:1292`.
+- B3.R13 [DONE] Hermes — `POST /api/hermes` at `src/index.tsx:1362`; `GET /api/hermes/history` at `src/index.tsx:1400`; `POST /api/hermes/council` at `src/index.tsx:1406`.
+- B3.R14 [DONE] Agent — retired read-only `GET /api/agent/token` at `src/index.tsx:1486`; `POST /api/agent/token/rotate` at `src/index.tsx:1489`; `GET /api/agent/briefing` at `src/index.tsx:1496`; `GET /api/agent/pending` at `src/index.tsx:1509`; `POST /api/agent/intel` at `src/index.tsx:1530`; `POST /api/agent/debrief` at `src/index.tsx:1543`; `POST /api/agent/block-log` at `src/index.tsx:1566`; `POST /api/agent/message` at `src/index.tsx:1577`; `GET /api/agent/export` at `src/index.tsx:1587`.
+- B3.R15 [DONE] Shell/PWA — `GET /manifest.json` at `src/index.tsx:1597`; `GET /sw.js` at `src/index.tsx:1603`; `GET /` at `src/index.tsx:1628`.
+- B3.R16 [DONE] Counts — baseline source had 61 explicit routes. Current source has 62 explicit routes: the compatibility token GET remains as a non-mutating 405 and the internal enforcement POST was added. Current mutating surface is 33 explicit POST/PUT/DELETE handlers including logout's cookie deletion; no explicit HEAD handler exists.
 
-- B5.0 [DONE] Executive assessment — this is a valuable but security-critical single-operator personal operating system with real discipline, learning, journal, schedule, prediction, and counsel capabilities; its strongest mechanics are the server-derived clock, explicit tick/state split, weighted adherence and MVD, append-oriented records, same-day window close, progress lock, idempotent flag identity, conditional reward debit, local draft persistence, and private-API-excluding service worker; its largest immediate risk is that an older deployment exposes private state and a broad agent credential without an Access perimeter.
-- B5.0.1 [DONE] Target architecture — retain the staged Book 7 target: focused app/environment/renderer files; centralized auth, agent-auth, security headers, CSRF, request ID, rate-limit, and error middleware; focused route/service/repository/schema/job modules; frontend core/components/features; no monolith split or wholesale rewrite in this first slice.
-- B5.1.1 [BLOCKED] P0 Critical — production agent credential exposure: on 2026-08-15 `GET https://lock-in-708.pages.dev/api/agent/token` returned HTTP 200 JSON without a visible Access gate; source remediation retires raw-token GET and proves it creates no token in `src/index.tsx` and `test/get-read-only.test.ts`, but production remains exposed until tested deployment and operator rotation; proving production tests are “GET returns no credential” and “old token is rejected”; account-level rotation has not been performed because secret handling requires operator control.
-- B5.1.2 [BLOCKED] P0 Critical — missing Cloudflare Access perimeter: on 2026-08-15 production root and `/calendar.ics` returned HTTP 200 instead of Access denial/redirect; impact is public reachability of an older insecure build, correction is a full-hostname Cloudflare Zero Trust Access self-hosted application with a single-email allow policy, and proving test is an incognito unauthenticated denial followed by authorized-email success; this is an operator account action.
-- B5.1.3 [BLOCKED] High — public repository: public GitHub metadata confirmed `trevor93/Lock-in-2` is public; impact is continued exposure of source, historical configuration, prompts, and seed artifacts, correction is changing visibility to private, and proving test is unauthenticated GitHub access denial; this is an operator account action and history rewriting is excluded pending backup and explicit destructive-operation approval.
-- B5.2.1 [NOT STARTED] P0 High — durable users, ownership, revocable sessions, and per-record authorization required by Book 5.2 are outside the explicitly limited first slice and remain blocking for full Phase 0 acceptance.
-- B5.3.1 [DONE] P0 High — all explicit GET/HEAD routes are now D1-read-only: campaign/card repair moved to the explicit enforcement lifecycle, token lookup/authentication is pure, and raw-token GET is retired; instrumented coverage is in `test/get-read-only.test.ts`, implementation in `src/index.tsx`.
-- B5.3.2 [DONE] Protected enforcement entry — `POST /internal/jobs/enforcement` authenticates with `ENFORCEMENT_JOB_SECRET`, ignores client-supplied clock values, and shares the enforcement service with `POST /api/tick`; Pages-compatible scheduled invocation is in `workers/enforcement-cron/`, with tests in `test/security-boundary.test.ts` and `workers/enforcement-cron/src/index.test.ts`.
-- B5.4.1 [DONE] P0 High — source now rejects browser Origin values outside same-origin plus `ALLOWED_ORIGINS`, emits no wildcard ACAO, and leaves non-browser bridge traffic to separate token authentication; implementation and tests are in `src/index.tsx` and `test/security-boundary.test.ts`. Production remains BLOCKED on deployment.
-- B5.4.2 [DONE] High — central middleware now adds `Cache-Control: no-store` to private successes and errors under `/api/*`, `/internal/*`, and `/calendar.ics`; calendar now requires an application session; implementation and tests are in `src/index.tsx` and `test/security-boundary.test.ts`. Production remains BLOCKED on deployment.
-- B5.4.3 [NOT STARTED] Security headers, validation, and CSRF beyond CORS/no-store are later Book 5.4 work and remain blocking for full Phase 0 acceptance.
-- B5.5.1 [BLOCKED] P0 Critical/High — first-slice source now removes raw-token GET and generation-on-read, and `public/static/app6.js` shows a raw value only from explicit POST rotation; `test/get-read-only.test.ts` proves GET/HEAD create no token. Emergency production rotation remains an operator action, and the broad credential is still plaintext/unscoped/unexpiring until later Book 5.5 work, so full Phase 0 remains blocked.
-- B5.6.1 [NOT STARTED] High — model routes lack the complete Book 5.6 rate, budget, input/output, pinned-model, timeout/retry, structured-output, and safe-error controls; evidence is `/api/hermes`, `/api/hermes/council`, and `/api/intel/:id/analyze` in `src/index.tsx`; this is outside the fixed first slice and remains open.
-- B5.7.1 [NOT STARTED] High — `audit_events`, generalized request idempotency, and job-run records do not exist; current flag/penalty and several reward paths have useful local idempotency but not the required general audit model; outside the fixed first slice.
-- B5.8.1 [NOT STARTED] Full Phase 0 acceptance matrix cannot pass until users/ownership, scoped credentials, model controls, validation/CSRF, audit events, and other Book 5 work are implemented; no later product phase may start.
-- B5.R1 [DONE] Production/source drift risk — inspected production is an older build than current source, so repository claims cannot be treated as deployment guarantees; correction is test, rollback, then controlled deployment with post-deploy verification.
-- B5.R2 [DONE] Calendar authorization risk — `/calendar.ics` sits outside `/api/*` session middleware and production serves it publicly; impact is schedule disclosure, correction is explicit private-route authentication plus Access and no-store, with unauthenticated denial/authenticated read-only tests.
-- B5.R3 [DONE] Test-absence risk — `package.json` has no test script or framework and the repository contains no automated tests; impact is no proof of GET safety, enforcement idempotency, or rollback confidence; correction starts with two failing route-level write-instrumentation tests.
-- B5.R4 [DONE] Monolith risk — `src/index.tsx` combines auth, time, scoring, enforcement, routes, model calls, bridge, PWA, and shell across 1,609 lines; impact is coupled changes and hard-to-isolate security behavior, but splitting it now would violate the smallest-slice constraint, so refactor remains at the Book 17 position.
-- B5.R5 [DONE] Supply/tooling observation — `npm install` reported blocked install scripts and 11 audit advisories (1 low, 2 moderate, 8 high); these are observations, not confirmed exploitable defects, and require a separate dependency audit without jumping ahead of P0 work.
+### Data
 
-## Book 17 — Fixed Plan, Reversible Checkpoints, and First Slice
+- B3.D1 [DONE] `migrations/0001_initial_schema.sql` defines `schedule_blocks`, `block_logs`, `debriefs`, `phases`, `units`, `unit_progress`, `maxims`, `flashcards`, `card_reviews`, `honesty_flags`, `points_ledger`, `rewards`, `reward_redemptions`, `laws`, `law_checks`, and `settings` with the columns recorded in that migration plus additive changes in `migrations/0004_reforge.sql`.
+- B3.D2 [DONE] `migrations/0002_intel_books_alarms.sql` defines `intel_entries`, `book_progress`, and `hermes_messages`.
+- B3.D3 [DONE] `migrations/0003_tongue.sql` defines `responses`, `response_srs`, `tongue_reviews`, and `tongue_exams`.
+- B3.D4 [DONE] `migrations/0004_reforge.sql` defines `day_summary`, `predictions`, `appeals`, and `load_reductions`, and adds weighting/MVD and flag-reference fields.
+- B3.D5 [DONE] Total current schema: 27 tables across four migrations, not README's claimed 24. No migration was changed by the first slice.
 
-- B17.1 [DONE] Fixed order — audit/inventory precedes security/data integrity; `/catchup`, judgment, curriculum, refactor, UX, learning, rhetoric, decisions, Hermes offices, and PWA changes remain prohibited while Phase 0 or Phase 1 acceptance fails; source: `MASTERPROMPT.md` Book 17.
-- B17.2 [DONE] Baseline checkpoint — branch `refactor/strategic-judgment-os` exists and `npm run build` passed before production changes (`dist/_worker.js`, Vite 6.4.3); rollback base is commit `a927e97`, and no deployment was performed.
-- B17.3 [DONE] Schema checkpoint — the first slice is designed without a schema change; if implementation proves a schema change unavoidable, work stops for a migration, rollback note, backup, and preservation test before proceeding.
-- B17.4 [DONE] Smallest first-slice design — add route-level security/no-store/origin controls, make token lookup and every GET/HEAD pure, move repair initialization into the explicit enforcement lifecycle, add a protected internal POST invoked by a scheduled Worker path, preserve `POST /api/tick`, update bridge setup to issue/rotate explicitly, and add route-level D1 write-count tests; no scoring or product redesign.
-- B17.5 [DONE] Reversible checkpoint A — create test infrastructure and RED tests before production edits; if tests do not fail on known campaign/card/token writes, correct the harness rather than changing production.
-- B17.6 [DONE] Reversible checkpoint B — known-write RED test failed on campaign/card/token GET and HEAD paths, minimal production changes turned it GREEN, and the full suite/build pass; files are `test/get-read-only.test.ts`, `src/index.tsx`, and `public/static/app6.js`.
-- B17.7 [DONE] Reversible checkpoint C — account-level Access, rotation, repository visibility, Cron secrets, backup, deployment, verification, consequences, and rollback are prepared but not executed in `OPERATIONS_FIRST_SLICE.md`.
-- B17.8 [DONE] Required test one — `test/get-read-only.test.ts` proves repeated crawler-pattern GET/HEAD requests to `/api/state` execute zero D1 writes.
-- B17.9 [DONE] Required test two — `test/get-read-only.test.ts` exercises all explicit private GET/HEAD routes under appropriate browser/agent authentication and fails on any mutating SQL, including missing-token authentication paths.
-- B17.10 [DONE] Enforcement tests — `test/security-boundary.test.ts` proves the internal entry is POST-only, rejects missing/invalid credentials, ignores client clock input, and produces no duplicate flag/point consequences on repeated delivery; `/api/tick` shares `runEnforcement` in `src/index.tsx`.
-- B17.11 [DONE] CORS/no-store tests — `test/security-boundary.test.ts` proves disallowed origins fail without wildcard ACAO and private success/error/calendar/internal responses carry `Cache-Control: no-store`.
-- B17.12 [DONE] Bridge compatibility — `public/static/app6.js` no longer retrieves a raw token by GET and displays a credential only from explicit POST rotation, with a one-time-display warning.
-- B17.13 [DONE] Cron architecture — `workers/enforcement-cron/` contains a five-minute scheduled Worker calling the protected Pages POST; Wrangler dry-run succeeded, while actual account configuration remains BLOCKED under B17.O4.
-- B17.14 [DONE] Commit discipline — tests/tooling committed as `c3e3557`, security/server/frontend/Cron committed as `f725397`, and status/operator documentation committed as `1c25ce9`; `MASTERPROMPT.md` remains untracked and was never added.
-- B17.15 [DONE] Final verification — 9 tests pass across 3 files, `npm run build` succeeds, `npx tsc --noEmit` succeeds, Cron Worker dry-run succeeds, and `git diff --check` succeeds; verified in `test/`, `workers/enforcement-cron/`, and the command results from 2026-08-15.
+### Frontend, integrations, and dependencies
 
-## Operator-Controlled Actions
+- B3.F1 [DONE] `public/static/app.js` owns setup/login, API calls, NOW/DAY, blocks, appeals, load reduction, drafts, navigation, and refresh via `POST /api/tick`.
+- B3.F2 [DONE] `public/static/app2.js` owns campaign/unit progression; `public/static/app3.js` owns maxims/cards; `public/static/app4.js` owns debriefs/rewards/predictions/stats; `public/static/app5.js` owns alarms/books/calendar; `public/static/app6.js` owns Hermes/intel/bridge; `public/static/app7.js` owns Tongue; `public/static/fx.js` owns effects.
+- B3.F3 [DONE] Bridge token display is now explicit rotation-only: in-memory `BRIDGE_TOKEN` at `public/static/app6.js:28`, bridge dialog at `public/static/app6.js:29`, and rotation at `public/static/app6.js:52`. It no longer retrieves a credential by GET.
+- B3.F4 [DONE] `public/static/hermes_bridge.py` reads `WARROOM_URL`, `WARROOM_TOKEN`, optional Telegram settings, and authenticates with `X-Agent-Token`; it uses TLS verification defaults and request timeouts.
+- B3.F5 [DONE] Model routes read private D1 context, call `${OPENAI_BASE_URL}/chat/completions` with `OPENAI_API_KEY`, use `gpt-5-mini`, and persist model output. Book 5.6 controls remain absent.
+- B3.F6 [DONE] The service worker is generated by `src/index.tsx:1603`; it lazy cache-first stores only `/static/books/*`, does not intercept private APIs, has no shell precache/offline write queue/old-cache cleanup, and uses `warroom-v1`.
+- B3.F7 [DONE] `package.json` has Hono as runtime dependency and Vite, Wrangler, Vitest, the Cloudflare Workers pool, and Workers types as development dependencies. `vite.config.ts`, `vitest.config.ts`, `wrangler.jsonc`, and `workers/enforcement-cron/wrangler.jsonc` are the verified runtime/test configurations.
+- B3.F8 [DONE] Credential/configuration names—not values—are `DB`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ENFORCEMENT_JOB_SECRET`, `ALLOWED_ORIGINS`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `WARROOM_URL`, `WARROOM_TOKEN`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, and `WATCH_INTERVAL`. Values were not copied.
 
-- B17.O1 [BLOCKED] Rotate production agent credential — requires a tested deployment path and operator-controlled handling of the newly issued secret; consequence: every current Termux/Telegram/CLI bridge immediately receives 401 until `WARROOM_TOKEN` is updated, and the raw value must not be pasted into chat, logs, git, or shell history.
-- B17.O2 [BLOCKED] Enable Cloudflare Access — requires operator access to Cloudflare Zero Trust and the exact authorized email; configure a self-hosted application for `lock-in-708.pages.dev/*`, an allow policy containing only that identity, and fail-closed verification in an unauthenticated browser.
-- B17.O3 [BLOCKED] Make GitHub repository private — requires operator repository-admin access; changing visibility is non-destructive, while history cleanup is separately destructive and must not occur without a backup and explicit consequence approval.
-- B17.O4 [BLOCKED] Configure scheduled enforcement — requires Cloudflare account access to create a scheduled Worker, bind the internal-job secret on both sides, set the Cron trigger, and verify one idempotent run without printing the credential.
-- B17.O5 [BLOCKED] Deploy first slice — prohibited until tests pass, build passes, rollback is documented, account actions are sequenced, and the operator confirms deployment.
+### Confirmed discrepancies and risks
+
+- B3.X1 [DONE] Governing document repository identity differs from actual configured repository `trevor93/Lock-in-2`.
+- B3.X2 [DONE] `README.md` says production is pending, eight tabs, and 24 tables; repository/deployment evidence shows a live deployment, nine frontend tabs, and 27 tables.
+- B3.X3 [DONE] Inspected production is older than source: production `/api/auth/status` returned 404 while source defines it.
+- B3.X4 [DONE] Governing provisional service-worker inventory says book data is precached; source lazy-caches each book only after a successful request.
+- B3.X5 [DONE] `src/index.tsx` remains a multi-responsibility server monolith. The fixed Book 7 refactor remains deferred until Phase 0 and the deliberately earlier product corrections pass.
+- B3.X6 [DONE] Dependency installation reported audit advisories and blocked install scripts. These are observations, not confirmed exploitable defects; dependency remediation may not displace P0 work.
+
+## Book 5 — Phase 0 Security and Data Integrity
+
+### 5.1 Perimeter
+
+- B5.1.1 [BLOCKED — OPERATOR] Production agent credential exposure is remediated in source but remains a production risk until operator deployment and rotation under `OPERATIONS.md`.
+- B5.1.2 [BLOCKED — OPERATOR] Full-host Cloudflare Access remains operator-controlled under `OPERATIONS.md`.
+- B5.1.3 [BLOCKED — OPERATOR] Repository privacy remains operator-controlled. `MASTERPROMPT.md` is ignored in `.gitignore` until the operator confirms signed-out repository denial; `OPERATIONS.md` tells the operator to notify the owner before the ignore is removed and the exact file is committed.
+- B5.1.4 [BLOCKED — DESTRUCTIVE] Git-history stripping is destructive and cannot proceed without backup, stated consequence, and explicit approval.
+
+### 5.2 Sessions and ownership
+
+- B5.2 [NOT STARTED] No `users` or hashed-token `sessions` table exists; personal tables lack comprehensive `user_id`; current sessions derive from settings-held HMAC material rather than durable revocable session records; cross-user authorization is unimplemented.
+
+### 5.3 Read safety and enforcement
+
+- B5.3.1 [DONE — SOURCE] Private path classification is `src/index.tsx:13`; private-response middleware begins at `src/index.tsx:28`.
+- B5.3.2 [DONE — SOURCE] Shared enforcement is `src/index.tsx:529`, browser invocation remains `POST /api/tick` at `src/index.tsx:516`, and protected internal invocation is `src/index.tsx:541`.
+- B5.3.3 [DONE — TESTED] `test/get-read-only.test.ts:91` proves repeated `GET`/`HEAD /api/state` executes zero mutating SQL; `test/get-read-only.test.ts:110` covers every explicit private GET/HEAD route and missing-token paths.
+- B5.3.4 [DONE — TESTED] `test/security-boundary.test.ts:80` proves the internal route is POST-only, authenticated, server-clocked, and consequence-idempotent.
+- B5.3.5 [DONE — SOURCE/TEST] Scheduled caller implementation is `workers/enforcement-cron/src/index.ts:8`; scheduled handler is `workers/enforcement-cron/src/index.ts:26`; Access-header coverage is `workers/enforcement-cron/src/index.test.ts:30`. Deployment is operator-controlled.
+
+### 5.4 CORS, headers, validation, and CSRF
+
+- B5.4.1 [DONE — SOURCE/TESTED] Same-origin/explicit allowlist CORS and private no-store behavior are implemented at `src/index.tsx:28` and tested in `test/security-boundary.test.ts:28`.
+- B5.4.2 [NOT STARTED] CSP including `frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` are not implemented.
+- B5.4.3 [NOT STARTED] Comprehensive Zod/Hono validation, strict unknown-field rejection, payload limits, legal transition validation, mass-assignment prevention, and CSRF protection are not implemented.
+
+### 5.5 Agent tokens as scoped credentials
+
+- B5.5 [NOT STARTED] The emergency first slice retired raw-token GET/generation-on-read, but the durable requirement is absent: no hashed credential table, device labels, scopes, expiry, revocation, last-used metadata, coarse request metadata, rate limit, versioned API, revocation interface, or default export separation. Current `settings.agent_token` remains a broad plaintext credential until this section is implemented.
+
+### 5.6 Model security, prompt injection, and cost
+
+- B5.6 [NOT STARTED] Model routes lack complete owner-only tests, rate limits, daily/monthly budgets, request/output limits, timeout/bounded retry policy, pinned allowlist, audit events, safe no-key behavior, upstream-error redaction, explicit untrusted-content fencing/layering, and structured-output validation.
+
+### 5.7 Audit and idempotency
+
+- B5.7 [NOT STARTED] `audit_events` and general request/job idempotency do not exist. Local uniqueness prevents some duplicate flags/points/reward effects, but it does not satisfy append-only actor/request auditing or all required idempotency paths.
+
+### 5.8 Blocking acceptance matrix
+
+- B5.8.1 [PARTIAL] Unauthenticated private access denied — `test/security-boundary.test.ts:65` covers `/api/state`; `test/security-boundary.test.ts:69` covers `/calendar.ics`; exhaustive private-route denial is NOT COVERED.
+- B5.8.2 [COVERED] Valid session accepted — `test/get-read-only.test.ts:72` creates a real session and all private browser reads use it; calendar success is asserted at `test/security-boundary.test.ts:73`.
+- B5.8.3 [NOT COVERED] Expired session rejected.
+- B5.8.4 [NOT COVERED] Logout revokes the server-side session.
+- B5.8.5 [NOT COVERED] Cross-user access denied.
+- B5.8.6 [NOT COVERED] Agent scope enforced.
+- B5.8.7 [NOT COVERED] Revoked agent credential denied.
+- B5.8.8 [NOT COVERED] Expired agent credential denied.
+- B5.8.9 [NOT COVERED / CURRENTLY FAILS DESIGN] Raw agent credential never stored; current source stores `settings.agent_token` plaintext.
+- B5.8.10 [NOT COVERED] Export scope separated and not granted by default.
+- B5.8.11 [COVERED] `GET /api/state` performs zero writes — `test/get-read-only.test.ts:92`.
+- B5.8.12 [COVERED] Repeated GET produces zero penalties — `test/get-read-only.test.ts:92` repeats GET/HEAD and instruments all mutating SQL.
+- B5.8.13 [COVERED] Crawler-pattern access alters nothing — `test/get-read-only.test.ts:92` and all-route coverage at `test/get-read-only.test.ts:110`.
+- B5.8.14 [NOT COVERED] Model endpoint denies unauthenticated calls with model-specific proof.
+- B5.8.15 [NOT COVERED] Model rate limit fires.
+- B5.8.16 [NOT COVERED] Model input-size limit fires.
+- B5.8.17 [NOT COVERED] Model/API key and raw upstream errors never leak.
+- B5.8.18 [NOT COVERED] Retrieved content cannot authorize a write.
+- B5.8.19 [NOT COVERED] Structured model output is schema-validated.
+
+## Book 17 — Fixed Execution and Reporting
+
+- B17.1 [IN PROGRESS] Fixed sequence: finish Book 5/5.8; Book 6; `/catchup` plus Books 8.6 and 8.2 recovery scoring; Book 13.2 alternative-explanation gate; Books 14 and 16 Continuity Brief/chapter cursor; Book 7 refactor; Book 9 UX/ratchet; Book 10 learning; Books 11–12 rhetoric; Book 13 decision lab; Book 15 Hermes offices; PWA/accessibility/performance.
+- B17.2 [DONE] Baseline rollback base is `a927e97`; first-slice commits are `c3e3557`, `f725397`, `1c25ce9`, and `ad19313`.
+- B17.3 [DONE] First-slice verification: 9 tests across 3 files, Vite build, TypeScript no-emit check, Cron Worker Wrangler dry run, and `git diff --check` passed on 2026-08-15.
+- B17.4 [DONE] Account/operator documentation is consolidated into root `OPERATIONS.md`; `OPERATIONS_FIRST_SLICE.md` is superseded and removed.
+- B17.5 [IN PROGRESS] Every schema change must add a numbered migration, migration-specific rollback note in `OPERATIONS.md`, and a test against a local D1/schema copy before code may be reported complete.
+- B17.6 [IN PROGRESS] Commits remain separated by concern. Push `refactor/strategic-judgment-os` at each completed phase boundary. Never claim production application or deployment.

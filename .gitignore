@@ -4,3 +4,4 @@ dist/
 .wrangler/
 *.log
 books_raw/
+MASTERPROMPT.md
