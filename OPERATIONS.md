@@ -295,6 +295,29 @@ Deploy the recorded prior application deployment while retaining the additive `u
 
 ## 6. Deploy and Verify the Pages Application
 
+### 6.1 Book 5.4 application-only change
+
+Book 5.4 adds same-origin/allowlisted CORS, private no-store and security headers, cookie-mutation CSRF proof, 64 KiB request limits, strict Zod validation, and legal state-transition enforcement. It adds no table, column, index, trigger, or migration; Section 4 is therefore not a Book 5.4 schema precondition unless the approved deployment also includes an unapplied migration such as `0005_sessions_and_ownership.sql`.
+
+**Repository evidence required before operator deployment**
+
+```powershell
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] Confirm the Book 5.4 focused request-validation and legal-transition suites pass as part of the full suite.
+- [ ] Confirm browser login/setup/status return a CSRF proof and the application shell can complete a same-origin mutation using it.
+- [ ] Confirm malformed JSON, unknown fields, invalid identifiers/dates/times/enums/numbers, and bodies larger than 64 KiB fail without a write.
+- [ ] Confirm disallowed browser origins receive 403, no response emits wildcard CORS, private success/error responses use `Cache-Control: no-store`, and CSP contains `frame-ancestors 'none'`.
+- [ ] Record only counts, status codes, and header names/values that are not credentials; never record cookies, CSRF proof values, agent credentials, or private response bodies.
+
+**Rollback**
+
+Roll back to the previously recorded Pages deployment while retaining the current D1 schema and all user data. Book 5.4 has no database rollback and requires no D1 restore. Consequence: the prior application version removes the Book 5.4 browser, validation, and transition protections, so use application rollback only as temporary containment, keep Cloudflare Access enabled, and investigate before resuming writes. Never drop schema or restore a backup solely to roll back Book 5.4.
+
 **Preconditions**
 
 - [ ] Sections 1–3 are complete.
