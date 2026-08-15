@@ -24,7 +24,7 @@ A private, progress-based, honesty-driven life-command system. Not a calendar ap
 | **STATS** | Weekly adherence %, streaks, points ledger, honesty flags |
 
 ## Key Systems
-- **Auth Gate (P0)** — the ENTIRE app sits behind a password. First open asks you to **SET a password** (PBKDF2, 100k iterations, per-install salt); after that it's login-only. Sessions are HMAC-SHA256-signed HttpOnly cookies (`wr_session`, SameSite=Strict, 30 days). 5 failed logins → 15-minute lockout. Every `/api/*` route except `/api/auth/*` returns 401 without a valid session. CORS wildcard removed — same-origin only.
+- **Auth Gate (P0)** — the entire app sits behind a password. First open asks you to **SET a password** (PBKDF2, 100k iterations, per-install salt); after that it is login-only. Browser sessions are random opaque credentials stored SHA-256-hashed server-side and delivered in host-only `HttpOnly; Secure; SameSite=Lax` cookies with 30-day expiry, login rotation, logout revocation, and session-fixation protection. Five failed logins trigger a 15-minute lockout. Private browser routes require a valid session; versioned agent routes use separate scoped credentials. Browser CORS defaults to same-origin.
 - **Server Clock** — the server owns the calendar. `POST /api/tick` sends the browser timezone ONCE (then locked in `settings.timezone`); all dates/times are derived server-side via `Intl.DateTimeFormat`. Client-supplied dates are clamped (format-checked, never-future). No more "log yesterday from the query string".
 - **Honesty Engine** — runs server-side ONLY on `POST /api/tick` (the single engine crank; `GET /api/state` is a pure read): evaluates yesterday, files flags (missed debrief, unlogged blocks, tongue neglect), applies point penalties, awards victory-day (+30) and HELD-THE-LINE (+10) bonuses, finalizes yesterday into `day_summary`.
 - **Weighted Adherence** — blocks carry weight: **CORE (3)** = non-negotiables, **STANDARD (1)** = normal work, **CONTEXT (0)** = meals/skincare/entertainment/sleep/rest. Score = Σ(weight × credit) / Σ(weight). Missing dinner no longer costs the same as missing deep work. Weight-0 blocks are auto-canceled silently when their window closes — no flag, no penalty, not scored.
@@ -43,26 +43,30 @@ A private, progress-based, honesty-driven life-command system. Not a calendar ap
 - **Real Books** — 11 public-domain official translations parsed to JSON, served statically, cached offline by the service worker: Art of War, The Prince, Discourses on Livy, Meditations, Enchiridion, Apology, Crito, The Republic, Zarathustra, Beyond Good & Evil, On War.
 
 ## 🔗 Hermes Bridge (Termux / Telegram / CLI)
-Token-authenticated agent API so a local Hermes agent (Termux on Android) can read everything and write journals/logs automatically.
+Scoped-credential agent API so a local Hermes agent (Termux on Android) can read and write only the capabilities granted to its device credential.
 
-**Endpoints** — auth is **`X-Agent-Token` header ONLY** (query-string tokens are rejected; comparison is timing-safe). Reading the token (`GET /api/agent/token`) and rotating it (`POST /api/agent/token/rotate`) require a **logged-in session** — the token itself cannot fetch or rotate itself. Get it from COUNCIL → HERMES BRIDGE after logging in:
-- `GET /api/agent/briefing` — live Commander's File (full situational awareness)
-- `GET /api/agent/pending` — current block, overdue unlogged blocks, fresh flags, debrief status (for the watch daemon)
-- `GET /api/agent/export` — full DB export for agent memory sync
-- `POST /api/agent/intel` — file intel entries (`title`, `domain` required)
-- `POST /api/agent/debrief` — merge into tonight's debrief (marked `[HERMES]`)
-- `POST /api/agent/block-log` — check off blocks
-- `POST /api/agent/message` — post counsel into the COUNCIL log
-- `POST /api/agent/token/rotate` — rotate the token (session-only)
+**Credentials** — sign in, then open COUNCIL → HERMES BRIDGE. Issue one credential per device. The raw value is shown once; the server stores only its SHA-256 hash and later lists only a safe prefix and metadata. Credentials carry explicit scopes, expiry, revocation, last-use details, and coarse request metadata. Default bridge credentials exclude `export:read`. Authentication is **`X-Agent-Token` header only**; query-string tokens are rejected.
 
-> ⚠ **Token rotation notice**: the previous agent token was exposed in an early deployment and has been **rotated**. Update `hermes_bridge.py` on Termux with the new token (COUNCIL → HERMES BRIDGE). Any production deployment carrying the old token must be redeployed with this build.
+**Versioned endpoints** — all agent operations use POST so authenticated usage accounting never makes a GET or HEAD mutate D1:
+- `POST /api/agent/v1/briefing` with `{}` — live Commander's File (`briefing:read`)
+- `POST /api/agent/v1/pending` with `{}` — current block, overdue unlogged blocks, flags, debrief status (`blocks:read`)
+- `POST /api/agent/v1/debriefs` with `{}` — recent debriefs (`debriefs:read`)
+- `POST /api/agent/v1/intel/read` with `{}` — recent intel (`intel:read`)
+- `POST /api/agent/v1/intel` — file intel (`intel:write`)
+- `POST /api/agent/v1/debrief` — merge into a debrief (`debriefs:write`)
+- `POST /api/agent/v1/block-log` — log a block (`blocks:write`)
+- `POST /api/agent/v1/message` — post counsel into the COUNCIL log (`hermes:write`)
+- `POST /api/agent/v1/export` with `{}` — owner-scoped export (`export:read`, never default)
 
-**Termux client**: download `/static/hermes_bridge.py` — commands: `briefing | pending | watch | done | intel | journal | say | export`. The `watch` daemon polls every 60s and fires `termux-notification` (max priority + sound + vibrate) and optional Telegram messages (`TG_BOT_TOKEN`/`TG_CHAT_ID`) on block starts, unlogged blocks, honesty flags, and missing debriefs after 21:00.
+The legacy master-token endpoints and unversioned agent API are retired. Production migration, deployment, and credential replacement are operator-controlled under `OPERATIONS.md`; repository work does not claim they have occurred.
+
+**Termux client**: download `/static/hermes_bridge.py` — commands: `briefing | pending | watch | done | intel | journal | say | export`. The bridge requires an HTTPS `WARROOM_URL`, reads the agent credential from an owner-only file selected by `WARROOM_TOKEN_FILE` (default `~/.config/warroom/agent_token`; paste it through `cat` so it does not enter shell history), uses bounded timeouts and default TLS verification, and distinguishes 401/403/429/5xx without printing credentials or raw server errors. Full export additionally requires a separate `export:read` credential and `--authorize-full-export`. The `watch` daemon polls every 60s and fires `termux-notification` and optional Telegram messages (`TG_BOT_TOKEN`/`TG_CHAT_ID`) on block starts, unlogged blocks, honesty flags, and missing debriefs after 21:00.
 
 ## Data Architecture
-- **Storage**: Cloudflare D1 (SQLite) — 24 tables across 4 migrations
-- **Core tables**: schedule_blocks (+weight, +is_mvd), block_logs, debriefs, phases, units, unit_progress, maxims, flashcards, card_reviews, honesty_flags (+ref_type/ref_id with UNIQUE identity index — flags can never double-file), points_ledger, rewards, laws, law_checks, settings (timezone, auth, session secret, agent token), intel_entries, book_progress, hermes_messages
+- **Storage**: Cloudflare D1 (SQLite) — 31 tables across 6 migrations
+- **Core tables**: schedule_blocks (+weight, +is_mvd), block_logs, debriefs, phases, units, unit_progress, maxims, flashcards, card_reviews, honesty_flags (+ref_type/ref_id with UNIQUE identity index — flags can never double-file), points_ledger, rewards, laws, law_checks, settings, intel_entries, book_progress, hermes_messages
 - **New in 0004**: `day_summary` (materialized daily record), `predictions` (claim/confidence/outcome), `appeals` (UNIQUE per ISO week), `load_reductions`
+- **New in 0005–0006**: durable `users`, hashed/revocable browser `sessions`, owner-scoped personal rows, hashed/scoped/revocable `agent_credentials`, and `agent_credential_events`. The legacy plaintext agent-token setting is erased by migration `0006`.
 - **Integrity**: multi-writes go through `DB.batch()`; reward redemption is race-safe (the debit INSERT's WHERE-balance check is the atomic arbiter); flag penalties only post when the flag insert actually landed
 - **AI**: `gpt-5-mini` via OpenAI-compatible proxy (env: `OPENAI_API_KEY`, `OPENAI_BASE_URL`; local dev via `.dev.vars`)
 
@@ -79,6 +83,6 @@ npm run db:seed                        # seed schedule/laws/rewards
 - **Platform**: Cloudflare Pages (pending — user to choose deploy path)
 - **Tech Stack**: Hono + TypeScript + Cloudflare D1 + Tailwind CDN + vanilla JS + PWA
 - **Status**: ✅ Fully working in sandbox (⚠ in-app Hermes chat requires a valid LLM API key injection)
-- ⚠ **SECURITY — production redeploy REQUIRED**: the existing `lock-in-708.pages.dev` deployment runs the OLD pre-auth build with the compromised agent token. It must be redeployed with this build (auth gate + rotated token) before real use.
+- ⚠ **SECURITY — operator action required before real use**: an inspected existing production deployment was older than the authenticated source and must not be treated as remediated. The separate operator must follow `OPERATIONS.md` for backup, migration application, deployment, verification, and issuance of replacement per-device scoped credentials; repository work does not perform or claim those actions.
 - **Design**: Luxury v2 — layered-black glassmorphism, engraved gold (Cinzel), FX engine (confetti, haptics, count-up, progress rings), rank ladder (RECRUIT→SOVEREIGN), streak flame tiers, timeline day view, WhatsApp-grade council chat, premium book reader with drop caps
 - **Last Updated**: 2026-08-12 (Reforge wave 1: auth gate, server clock, weighted adherence, MVD, load reduction, appeals, prediction log, day_summary)
