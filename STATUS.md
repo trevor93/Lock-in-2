@@ -5,7 +5,7 @@
 ## Current Gate
 
 - PHASE-0 [IN PROGRESS] Book 5 security and data integrity is the only active implementation phase.
-- PHASE-0-ORDER [DONE] The accepted first slice covered part of Books 5.1, 5.3, and 5.4. Books 5.2, 5.5, 5.6, and 5.7 remain NOT STARTED. Every Book 5.8 item is enumerated below.
+- PHASE-0-ORDER [IN PROGRESS] The accepted first slice covered part of Books 5.1, 5.3, and 5.4. Book 5.2 is complete in source and local tests; Books 5.5, 5.6, and 5.7 remain NOT STARTED. Every Book 5.8 item is enumerated below.
 - OPERATOR-BOUNDARY [DONE] Production D1 backup/application, Cloudflare Access, Cloudflare secrets, production credential rotation, Cron deployment, repository visibility, and every deployment are permanently operator-controlled. Repository work is limited to code, local schema-copy tests, documentation, commits, and branch pushes.
 - ASSUMPTION-2026-08-15 [IN PROGRESS] Smallest defensible ownership migration: create one durable owner from the existing installation during migration, preserve every record, and require independent route authorization; production application remains gated by `OPERATIONS.md`.
 
@@ -13,21 +13,21 @@
 
 ### Routes
 
-- B3.R1 [DONE] Auth — `GET /api/auth/status` at `src/index.tsx:125`; `POST /api/auth/setup` at `src/index.tsx:129`; `POST /api/auth/login` at `src/index.tsx:143`; `POST /api/auth/logout` at `src/index.tsx:163`.
-- B3.R2 [DONE] State/enforcement — `GET /api/state` at `src/index.tsx:510`; `POST /api/tick` at `src/index.tsx:516`; protected `POST /internal/jobs/enforcement` at `src/index.tsx:541`.
-- B3.R3 [DONE] Blocks/appeals/load — `POST /api/blocks/:id/log` at `src/index.tsx:555`; `POST /api/appeals` at `src/index.tsx:594`; `GET /api/appeals` at `src/index.tsx:632`; `POST /api/load-reductions/:id/answer` at `src/index.tsx:640`.
-- B3.R4 [DONE] Predictions — `POST /api/predictions` at `src/index.tsx:656`; `GET /api/predictions` at `src/index.tsx:669`; `POST /api/predictions/:id/resolve` at `src/index.tsx:673`; `GET /api/predictions/calibration` at `src/index.tsx:686`.
-- B3.R5 [DONE] Debriefs — `POST /api/debrief` at `src/index.tsx:718`; `GET /api/debriefs` at `src/index.tsx:739`.
-- B3.R6 [DONE] Campaign — `GET /api/campaign` at `src/index.tsx:774`; `POST /api/units/:id/step` at `src/index.tsx:790`.
-- B3.R7 [DONE] Maxims/cards — `GET /api/maxims` at `src/index.tsx:843`; `POST /api/maxims` at `src/index.tsx:847`; `POST /api/maxims/:id/my-words` at `src/index.tsx:855`; `GET /api/cards/due` at `src/index.tsx:864`; `POST /api/cards/:maximId/review` at `src/index.tsx:873`.
-- B3.R8 [DONE] Flags — `POST /api/flags/:id/ack` at `src/index.tsx:897`; `GET /api/flags/history` at `src/index.tsx:901`.
-- B3.R9 [DONE] Tongue — `POST /api/tongue` at `src/index.tsx:919`; `GET /api/tongue` at `src/index.tsx:936`; `PUT /api/tongue/:id` at `src/index.tsx:950`; `DELETE /api/tongue/:id` at `src/index.tsx:958`; `GET /api/tongue/due` at `src/index.tsx:965`; `POST /api/tongue/:id/review` at `src/index.tsx:985`; `GET /api/tongue/exam` at `src/index.tsx:1025`; `POST /api/tongue/exam/submit` at `src/index.tsx:1034`; `GET /api/tongue/stats` at `src/index.tsx:1053`.
-- B3.R10 [DONE] Laws/rewards/stats — `GET /api/laws` at `src/index.tsx:1081`; `POST /api/laws/:id/check` at `src/index.tsx:1088`; `GET /api/rewards` at `src/index.tsx:1098`; `POST /api/rewards/:id/redeem` at `src/index.tsx:1102`; `GET /api/stats` at `src/index.tsx:1128`.
-- B3.R11 [DONE] Intel — `GET /api/intel` at `src/index.tsx:1211`; `POST /api/intel` at `src/index.tsx:1219`; `POST /api/intel/:id/verdict` at `src/index.tsx:1233`; `POST /api/intel/:id/analyze` at `src/index.tsx:1433`.
-- B3.R12 [DONE] Library/calendar — `GET /api/library` at `src/index.tsx:1255`; `POST /api/library/:bookId/chapter/:idx` at `src/index.tsx:1267`; calendar authentication middleware at `src/index.tsx:1287`; `GET /calendar.ics` at `src/index.tsx:1292`.
-- B3.R13 [DONE] Hermes — `POST /api/hermes` at `src/index.tsx:1362`; `GET /api/hermes/history` at `src/index.tsx:1400`; `POST /api/hermes/council` at `src/index.tsx:1406`.
-- B3.R14 [DONE] Agent — retired read-only `GET /api/agent/token` at `src/index.tsx:1486`; `POST /api/agent/token/rotate` at `src/index.tsx:1489`; `GET /api/agent/briefing` at `src/index.tsx:1496`; `GET /api/agent/pending` at `src/index.tsx:1509`; `POST /api/agent/intel` at `src/index.tsx:1530`; `POST /api/agent/debrief` at `src/index.tsx:1543`; `POST /api/agent/block-log` at `src/index.tsx:1566`; `POST /api/agent/message` at `src/index.tsx:1577`; `GET /api/agent/export` at `src/index.tsx:1587`.
-- B3.R15 [DONE] Shell/PWA — `GET /manifest.json` at `src/index.tsx:1597`; `GET /sw.js` at `src/index.tsx:1603`; `GET /` at `src/index.tsx:1628`.
+- B3.R1 [DONE] Auth — `GET /api/auth/status` at `src/index.tsx:187`; `POST /api/auth/setup` at `src/index.tsx:191`; `POST /api/auth/login` at `src/index.tsx:206`; `POST /api/auth/logout` at `src/index.tsx:234`.
+- B3.R2 [DONE] State/enforcement — `GET /api/state` at `src/index.tsx:651`; `POST /api/tick` at `src/index.tsx:658`; protected `POST /internal/jobs/enforcement` at `src/index.tsx:684`.
+- B3.R3 [DONE] Blocks/appeals/load — `POST /api/blocks/:id/log` at `src/index.tsx:700`; `POST /api/appeals` at `src/index.tsx:751`; `GET /api/appeals` at `src/index.tsx:806`; `POST /api/load-reductions/:id/answer` at `src/index.tsx:817`.
+- B3.R4 [DONE] Predictions — `POST /api/predictions` at `src/index.tsx:836`; `GET /api/predictions` at `src/index.tsx:851`; `POST /api/predictions/:id/resolve` at `src/index.tsx:858`; `GET /api/predictions/calibration` at `src/index.tsx:873`.
+- B3.R5 [DONE] Debriefs — `POST /api/debrief` at `src/index.tsx:906`; `GET /api/debriefs` at `src/index.tsx:947`.
+- B3.R6 [DONE] Campaign — `GET /api/campaign` at `src/index.tsx:988`; `POST /api/units/:id/step` at `src/index.tsx:1006`.
+- B3.R7 [DONE] Maxims/cards — `GET /api/maxims` at `src/index.tsx:1083`; `POST /api/maxims` at `src/index.tsx:1089`; `POST /api/maxims/:id/my-words` at `src/index.tsx:1102`; `GET /api/cards/due` at `src/index.tsx:1121`; `POST /api/cards/:maximId/review` at `src/index.tsx:1132`.
+- B3.R8 [DONE] Flags — `POST /api/flags/:id/ack` at `src/index.tsx:1163`; `GET /api/flags/history` at `src/index.tsx:1170`.
+- B3.R9 [DONE] Tongue — `POST /api/tongue` at `src/index.tsx:1190`; `GET /api/tongue` at `src/index.tsx:1214`; `PUT /api/tongue/:id` at `src/index.tsx:1230`; `DELETE /api/tongue/:id` at `src/index.tsx:1241`; `GET /api/tongue/due` at `src/index.tsx:1251`; `POST /api/tongue/:id/review` at `src/index.tsx:1272`; `GET /api/tongue/exam` at `src/index.tsx:1322`; `POST /api/tongue/exam/submit` at `src/index.tsx:1332`; `GET /api/tongue/stats` at `src/index.tsx:1356`.
+- B3.R10 [DONE] Laws/rewards/stats — `GET /api/laws` at `src/index.tsx:1398`; `POST /api/laws/:id/check` at `src/index.tsx:1408`; `GET /api/rewards` at `src/index.tsx:1429`; `POST /api/rewards/:id/redeem` at `src/index.tsx:1433`; `GET /api/stats` at `src/index.tsx:1462`.
+- B3.R11 [DONE] Intel — `GET /api/intel` at `src/index.tsx:1565`; `POST /api/intel` at `src/index.tsx:1579`; `POST /api/intel/:id/verdict` at `src/index.tsx:1600`; `POST /api/intel/:id/analyze` at `src/index.tsx:1843`.
+- B3.R12 [DONE] Library/calendar — `GET /api/library` at `src/index.tsx:1625`; `POST /api/library/:bookId/chapter/:idx` at `src/index.tsx:1639`; calendar authentication middleware at `src/index.tsx:1671`; `GET /calendar.ics` at `src/index.tsx:1676`.
+- B3.R13 [DONE] Hermes — `POST /api/hermes` at `src/index.tsx:1757`; `GET /api/hermes/history` at `src/index.tsx:1804`; `POST /api/hermes/council` at `src/index.tsx:1812`.
+- B3.R14 [DONE] Agent — retired read-only `GET /api/agent/token` at `src/index.tsx:1908`; `POST /api/agent/token/rotate` at `src/index.tsx:1911`; `GET /api/agent/briefing` at `src/index.tsx:1919`; `GET /api/agent/pending` at `src/index.tsx:1935`; `POST /api/agent/intel` at `src/index.tsx:1963`; `POST /api/agent/debrief` at `src/index.tsx:1980`; `POST /api/agent/block-log` at `src/index.tsx:2019`; `POST /api/agent/message` at `src/index.tsx:2048`; `GET /api/agent/export` at `src/index.tsx:2062`.
+- B3.R15 [DONE] Shell/PWA — `GET /manifest.json` at `src/index.tsx:2074`; `GET /sw.js` at `src/index.tsx:2080`; `GET /` at `src/index.tsx:2105`.
 - B3.R16 [DONE] Counts — baseline source had 61 explicit routes. Current source has 62 explicit routes: the compatibility token GET remains as a non-mutating 405 and the internal enforcement POST was added. Current mutating surface is 33 explicit POST/PUT/DELETE handlers including logout's cookie deletion; no explicit HEAD handler exists.
 
 ### Data
@@ -36,7 +36,7 @@
 - B3.D2 [DONE] `migrations/0002_intel_books_alarms.sql` defines `intel_entries`, `book_progress`, and `hermes_messages`.
 - B3.D3 [DONE] `migrations/0003_tongue.sql` defines `responses`, `response_srs`, `tongue_reviews`, and `tongue_exams`.
 - B3.D4 [DONE] `migrations/0004_reforge.sql` defines `day_summary`, `predictions`, `appeals`, and `load_reductions`, and adds weighting/MVD and flag-reference fields.
-- B3.D5 [DONE] Total current schema: 27 tables across four migrations, not README's claimed 24. No migration was changed by the first slice.
+- B3.D5 [DONE] `migrations/0005_sessions_and_ownership.sql` adds durable `users` and hashed-token `sessions`, adds and backfills `user_id` on all 23 personal tables, and preserves the legacy verifier and all seeded rows in `test/migration-0005.test.ts`. Total current schema is 29 tables across five migrations, not README's claimed 24.
 
 ### Frontend, integrations, and dependencies
 
@@ -45,7 +45,7 @@
 - B3.F3 [DONE] Bridge token display is now explicit rotation-only: in-memory `BRIDGE_TOKEN` at `public/static/app6.js:28`, bridge dialog at `public/static/app6.js:29`, and rotation at `public/static/app6.js:52`. It no longer retrieves a credential by GET.
 - B3.F4 [DONE] `public/static/hermes_bridge.py` reads `WARROOM_URL`, `WARROOM_TOKEN`, optional Telegram settings, and authenticates with `X-Agent-Token`; it uses TLS verification defaults and request timeouts.
 - B3.F5 [DONE] Model routes read private D1 context, call `${OPENAI_BASE_URL}/chat/completions` with `OPENAI_API_KEY`, use `gpt-5-mini`, and persist model output. Book 5.6 controls remain absent.
-- B3.F6 [DONE] The service worker is generated by `src/index.tsx:1603`; it lazy cache-first stores only `/static/books/*`, does not intercept private APIs, has no shell precache/offline write queue/old-cache cleanup, and uses `warroom-v1`.
+- B3.F6 [DONE] The service worker is generated by `src/index.tsx:2080`; it lazy cache-first stores only `/static/books/*`, does not intercept private APIs, has no shell precache/offline write queue/old-cache cleanup, and uses `warroom-v1`.
 - B3.F7 [DONE] `package.json` has Hono as runtime dependency and Vite, Wrangler, Vitest, the Cloudflare Workers pool, and Workers types as development dependencies. `vite.config.ts`, `vitest.config.ts`, `wrangler.jsonc`, and `workers/enforcement-cron/wrangler.jsonc` are the verified runtime/test configurations.
 - B3.F8 [DONE] Credential/configuration names—not values—are `DB`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ENFORCEMENT_JOB_SECRET`, `ALLOWED_ORIGINS`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `WARROOM_URL`, `WARROOM_TOKEN`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, and `WATCH_INTERVAL`. Values were not copied.
 
@@ -69,19 +69,19 @@
 
 ### 5.2 Sessions and ownership
 
-- B5.2 [NOT STARTED] No `users` or hashed-token `sessions` table exists; personal tables lack comprehensive `user_id`; current sessions derive from settings-held HMAC material rather than durable revocable session records; cross-user authorization is unimplemented.
+- B5.2 [DONE — SOURCE/LOCAL TESTED] `migrations/0005_sessions_and_ownership.sql` creates the durable owner and hashed-token session store, preserves the legacy verifier, and additively backfills `user_id` across all 23 personal tables without deleting or rebuilding records. Browser sessions use random opaque tokens, SHA-256 hashes at rest, expiry, `HttpOnly; Secure; SameSite=Lax` host-only cookies, logout revocation, login rotation, and fixation denial in `src/index.tsx:124-238`. Personal browser, calendar, Hermes/model-context, internal-enforcement, and current agent-bridge queries enforce the credential/session owner. `test/migration-0005.test.ts:6` proves exact per-table row-count preservation and ownership on a populated pre-`0005` schema copy; `test/session-ownership.test.ts:96` covers cookie attributes, hashed storage, production-format expiry, revocation, rotation, rollback-era row claiming, ownership columns, cross-user reads/updates/appends, calendar, Hermes context, agent export, and load reductions. The full 26-test suite, production build, TypeScript no-emit check, and diff-integrity check passed on 2026-08-15. This is explicitly a durable single-owner boundary, not self-service multi-tenancy; Book 5.5 still owns the agent-credential redesign.
 
 ### 5.3 Read safety and enforcement
 
-- B5.3.1 [DONE — SOURCE] Private path classification is `src/index.tsx:13`; private-response middleware begins at `src/index.tsx:28`.
-- B5.3.2 [DONE — SOURCE] Shared enforcement is `src/index.tsx:529`, browser invocation remains `POST /api/tick` at `src/index.tsx:516`, and protected internal invocation is `src/index.tsx:541`.
-- B5.3.3 [DONE — TESTED] `test/get-read-only.test.ts:91` proves repeated `GET`/`HEAD /api/state` executes zero mutating SQL; `test/get-read-only.test.ts:110` covers every explicit private GET/HEAD route and missing-token paths.
-- B5.3.4 [DONE — TESTED] `test/security-boundary.test.ts:80` proves the internal route is POST-only, authenticated, server-clocked, and consequence-idempotent.
+- B5.3.1 [DONE — SOURCE] Private path classification is `src/index.tsx:23`; private-response middleware begins at `src/index.tsx:38`.
+- B5.3.2 [DONE — SOURCE] Shared enforcement is `src/index.tsx:672`, browser invocation remains `POST /api/tick` at `src/index.tsx:658`, and protected internal invocation is `src/index.tsx:684`.
+- B5.3.3 [DONE — TESTED] `test/get-read-only.test.ts:113` proves repeated `GET`/`HEAD /api/state` executes zero mutating SQL; `test/get-read-only.test.ts:131` covers every explicit private GET/HEAD route and missing-token paths.
+- B5.3.4 [DONE — TESTED] `test/security-boundary.test.ts:102` and `test/security-boundary.test.ts:121` prove the internal route is POST-only, authenticated, server-clocked, and consequence-idempotent.
 - B5.3.5 [DONE — SOURCE/TEST] Scheduled caller implementation is `workers/enforcement-cron/src/index.ts:8`; scheduled handler is `workers/enforcement-cron/src/index.ts:26`; Access-header coverage is `workers/enforcement-cron/src/index.test.ts:30`. Deployment is operator-controlled.
 
 ### 5.4 CORS, headers, validation, and CSRF
 
-- B5.4.1 [DONE — SOURCE/TESTED] Same-origin/explicit allowlist CORS and private no-store behavior are implemented at `src/index.tsx:28` and tested in `test/security-boundary.test.ts:28`.
+- B5.4.1 [DONE — SOURCE/TESTED] Same-origin/explicit allowlist CORS and private no-store behavior are implemented at `src/index.tsx:38` and tested in `test/security-boundary.test.ts:50`.
 - B5.4.2 [NOT STARTED] CSP including `frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` are not implemented.
 - B5.4.3 [NOT STARTED] Comprehensive Zod/Hono validation, strict unknown-field rejection, payload limits, legal transition validation, mass-assignment prevention, and CSRF protection are not implemented.
 
@@ -99,19 +99,19 @@
 
 ### 5.8 Blocking acceptance matrix
 
-- B5.8.1 [PARTIAL] Unauthenticated private access denied — `test/security-boundary.test.ts:65` covers `/api/state`; `test/security-boundary.test.ts:69` covers `/calendar.ics`; exhaustive private-route denial is NOT COVERED.
-- B5.8.2 [COVERED] Valid session accepted — `test/get-read-only.test.ts:72` creates a real session and all private browser reads use it; calendar success is asserted at `test/security-boundary.test.ts:73`.
-- B5.8.3 [NOT COVERED] Expired session rejected.
-- B5.8.4 [NOT COVERED] Logout revokes the server-side session.
-- B5.8.5 [NOT COVERED] Cross-user access denied.
+- B5.8.1 [PARTIAL] Unauthenticated private access denied — `test/security-boundary.test.ts:86` covers `/api/state`; `test/security-boundary.test.ts:90` covers `/calendar.ics`; exhaustive private-route denial is NOT COVERED.
+- B5.8.2 [COVERED] Valid session accepted — `test/session-ownership.test.ts:111` proves a real hashed session is accepted; calendar success is also asserted at `test/security-boundary.test.ts:94`.
+- B5.8.3 [COVERED] Expired session rejected — `test/session-ownership.test.ts:128` covers a fixed past timestamp and `test/session-ownership.test.ts:139` covers the production ISO timestamp format.
+- B5.8.4 [COVERED] Logout revokes the server-side session — `test/session-ownership.test.ts:151`.
+- B5.8.5 [COVERED FOR CURRENT PERSONAL SURFACE] Cross-user reads, record updates, append attempts, state totals, calendar export, Hermes briefing/model context, agent export, predictions, responses, and load reductions are denied or filtered in `test/session-ownership.test.ts:225-510`.
 - B5.8.6 [NOT COVERED] Agent scope enforced.
 - B5.8.7 [NOT COVERED] Revoked agent credential denied.
 - B5.8.8 [NOT COVERED] Expired agent credential denied.
 - B5.8.9 [NOT COVERED / CURRENTLY FAILS DESIGN] Raw agent credential never stored; current source stores `settings.agent_token` plaintext.
 - B5.8.10 [NOT COVERED] Export scope separated and not granted by default.
-- B5.8.11 [COVERED] `GET /api/state` performs zero writes — `test/get-read-only.test.ts:92`.
-- B5.8.12 [COVERED] Repeated GET produces zero penalties — `test/get-read-only.test.ts:92` repeats GET/HEAD and instruments all mutating SQL.
-- B5.8.13 [COVERED] Crawler-pattern access alters nothing — `test/get-read-only.test.ts:92` and all-route coverage at `test/get-read-only.test.ts:110`.
+- B5.8.11 [COVERED] `GET /api/state` performs zero writes — `test/get-read-only.test.ts:113`.
+- B5.8.12 [COVERED] Repeated GET produces zero penalties — `test/get-read-only.test.ts:113` repeats GET/HEAD and instruments all mutating SQL.
+- B5.8.13 [COVERED] Crawler-pattern access alters nothing — `test/get-read-only.test.ts:113` and all-route coverage at `test/get-read-only.test.ts:131`.
 - B5.8.14 [NOT COVERED] Model endpoint denies unauthenticated calls with model-specific proof.
 - B5.8.15 [NOT COVERED] Model rate limit fires.
 - B5.8.16 [NOT COVERED] Model input-size limit fires.
@@ -125,5 +125,6 @@
 - B17.2 [DONE] Baseline rollback base is `a927e97`; first-slice commits are `c3e3557`, `f725397`, `1c25ce9`, and `ad19313`.
 - B17.3 [DONE] First-slice verification: 9 tests across 3 files, Vite build, TypeScript no-emit check, Cron Worker Wrangler dry run, and `git diff --check` passed on 2026-08-15.
 - B17.4 [DONE] Account/operator documentation is consolidated into root `OPERATIONS.md`; `OPERATIONS_FIRST_SLICE.md` is superseded and removed.
-- B17.5 [IN PROGRESS] Every schema change must add a numbered migration, migration-specific rollback note in `OPERATIONS.md`, and a test against a local D1/schema copy before code may be reported complete.
+- B17.5 [IN PROGRESS] Every schema change must add a numbered migration, migration-specific rollback note in `OPERATIONS.md`, and a test against a local D1/schema copy before code may be reported complete. Book 5.2 satisfies this repository gate through `migrations/0005_sessions_and_ownership.sql`, `OPERATIONS.md` Section 5.1, and `test/migration-0005.test.ts`; production application remains operator-controlled.
 - B17.6 [IN PROGRESS] Commits remain separated by concern. Push `refactor/strategic-judgment-os` at each completed phase boundary. Never claim production application or deployment.
+- B17.7 [DONE — LOCAL COMMIT] Book 5.2 source, migration, and regression coverage are committed as `9125f45`; operator and status documentation are committed separately. Production migration and deployment remain unclaimed and operator-controlled.

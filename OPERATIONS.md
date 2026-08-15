@@ -174,7 +174,7 @@ A D1 restore overwrites production state and is destructive. Do not import or re
 
 ## 5. Production Migration Gate
 
-**State:** No migration beyond `0001`–`0004` is currently authorized for production in this runbook. New repository-authored migrations will be appended here by exact filename after local schema-copy tests pass.
+**State:** `migrations/0005_sessions_and_ownership.sql` is the only repository-authored migration listed here. Its local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
 
 For each future migration entry, execute only after Section 4 succeeds and the approved commit is checked out.
 
@@ -217,6 +217,81 @@ npx wrangler d1 migrations list webapp-production --remote
 - [ ] Prefer application rollback while preserving additive schema and user data.
 - [ ] Never execute `DROP`, mass `DELETE`, or backup restore as an automatic rollback.
 - [ ] Follow the migration-specific rollback note appended here. If it requires destructive data restoration, stop for explicit approval.
+
+### 5.1 `migrations/0005_sessions_and_ownership.sql`
+
+**Purpose**
+
+- Creates the durable single-owner `users` record and revocable `sessions` table.
+- Promotes the existing `settings.auth_hash` and `settings.auth_salt` verifier into the durable owner without exposing or changing the password.
+- Adds `user_id` to every current personal table and assigns every existing personal row to that owner.
+- Adds ownership lookup indexes. This migration is additive and intentionally retains the installation's legacy global uniqueness constraints; it does not claim self-service multi-user support.
+
+**Repository evidence required before production application**
+
+```powershell
+npm test -- --run test/migration-0005.test.ts test/session-ownership.test.ts
+npm test
+npm run build
+npx tsc --noEmit
+```
+
+- [ ] `test/migration-0005.test.ts` passes against a populated pre-`0005` schema copy.
+- [ ] The test confirms the legacy verifier is preserved exactly.
+- [ ] The test confirms every seeded personal-table row remains present and belongs to the durable owner.
+- [ ] Session and cross-user read/update/append/calendar/export denial tests pass.
+
+**Apply**
+
+After Section 4 and the Section 5 preflight succeed, first confirm that `0005_sessions_and_ownership.sql` is the only newly pending migration. Then apply the pending D1 migrations using the commands in Section 5. Record only the migration filename and command status, never row contents.
+
+**Non-secret verification queries**
+
+Run these through the Cloudflare D1 console or an authenticated Wrangler command. Record counts only.
+
+```sql
+SELECT COUNT(*) AS owner_count FROM users WHERE role='owner';
+SELECT COUNT(*) AS active_session_count
+FROM sessions
+WHERE revoked_at IS NULL
+  AND unixepoch(expires_at) > unixepoch('now');
+
+SELECT 'schedule_blocks' AS table_name, COUNT(*) AS unowned FROM schedule_blocks WHERE user_id IS NULL
+UNION ALL SELECT 'block_logs', COUNT(*) FROM block_logs WHERE user_id IS NULL
+UNION ALL SELECT 'debriefs', COUNT(*) FROM debriefs WHERE user_id IS NULL
+UNION ALL SELECT 'unit_progress', COUNT(*) FROM unit_progress WHERE user_id IS NULL
+UNION ALL SELECT 'maxims', COUNT(*) FROM maxims WHERE user_id IS NULL
+UNION ALL SELECT 'flashcards', COUNT(*) FROM flashcards WHERE user_id IS NULL
+UNION ALL SELECT 'card_reviews', COUNT(*) FROM card_reviews WHERE user_id IS NULL
+UNION ALL SELECT 'honesty_flags', COUNT(*) FROM honesty_flags WHERE user_id IS NULL
+UNION ALL SELECT 'points_ledger', COUNT(*) FROM points_ledger WHERE user_id IS NULL
+UNION ALL SELECT 'reward_redemptions', COUNT(*) FROM reward_redemptions WHERE user_id IS NULL
+UNION ALL SELECT 'law_checks', COUNT(*) FROM law_checks WHERE user_id IS NULL
+UNION ALL SELECT 'settings', COUNT(*) FROM settings WHERE user_id IS NULL
+UNION ALL SELECT 'intel_entries', COUNT(*) FROM intel_entries WHERE user_id IS NULL
+UNION ALL SELECT 'book_progress', COUNT(*) FROM book_progress WHERE user_id IS NULL
+UNION ALL SELECT 'hermes_messages', COUNT(*) FROM hermes_messages WHERE user_id IS NULL
+UNION ALL SELECT 'responses', COUNT(*) FROM responses WHERE user_id IS NULL
+UNION ALL SELECT 'response_srs', COUNT(*) FROM response_srs WHERE user_id IS NULL
+UNION ALL SELECT 'tongue_reviews', COUNT(*) FROM tongue_reviews WHERE user_id IS NULL
+UNION ALL SELECT 'tongue_exams', COUNT(*) FROM tongue_exams WHERE user_id IS NULL
+UNION ALL SELECT 'day_summary', COUNT(*) FROM day_summary WHERE user_id IS NULL
+UNION ALL SELECT 'predictions', COUNT(*) FROM predictions WHERE user_id IS NULL
+UNION ALL SELECT 'appeals', COUNT(*) FROM appeals WHERE user_id IS NULL
+UNION ALL SELECT 'load_reductions', COUNT(*) FROM load_reductions WHERE user_id IS NULL;
+```
+
+Expected results:
+
+- [ ] `owner_count` is exactly `1` for the supported single-owner installation.
+- [ ] Every `unowned` count is `0`.
+- [ ] `active_session_count` may be `0` immediately after migration; a successful application login creates one active hashed session.
+- [ ] Compare pre-migration and post-migration counts for every personal table using private operator records; every count must be unchanged. Stop before deployment if any count falls.
+- [ ] Confirm a successful login, logout, expired-session denial, and old-session denial after a subsequent login.
+
+**Rollback**
+
+Deploy the recorded prior application deployment while retaining the additive `users`, `sessions`, and `user_id` schema. Do not drop tables or columns, mass-delete sessions/users, or restore the D1 backup automatically. The prior application ignores the additive columns, so application rollback is reversible without deleting user data. If data restoration is required, preserve both databases and stop for explicit destructive-operation approval under Section 4.
 
 ## 6. Deploy and Verify the Pages Application
 
