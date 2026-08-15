@@ -25,7 +25,12 @@ async function passwordHash(password: string, saltHex: string): Promise<string> 
   return [...new Uint8Array(bits)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function authenticatedCookie(): Promise<string> {
+type AuthenticatedSession = {
+  cookie: string
+  csrfToken?: string
+}
+
+async function authenticatedSession(): Promise<AuthenticatedSession> {
   const password = 'test-password-only'
   const salt = '00112233445566778899aabbccddeeff'
   await env.DB.prepare(
@@ -43,7 +48,11 @@ async function authenticatedCookie(): Promise<string> {
   expect(response.status).toBe(200)
   const setCookie = response.headers.get('set-cookie')
   expect(setCookie).toBeTruthy()
-  return setCookie!.split(';', 1)[0]
+  const body = await response.json<{ csrfToken?: string }>()
+  return {
+    cookie: setCookie!.split(';', 1)[0],
+    csrfToken: body.csrfToken,
+  }
 }
 
 describe('private response boundary', () => {
@@ -75,7 +84,31 @@ describe('private response boundary', () => {
     )
     expect(configured.status).toBe(200)
     expect(configured.headers.get('access-control-allow-origin')).toBe('https://trusted.example')
+    expect(configured.headers.get('access-control-allow-credentials')).toBe('true')
     expect(configured.headers.get('vary')).toContain('Origin')
+  })
+
+  it('answers allowlisted browser preflight without opening wildcard CORS', async () => {
+    const response = await app.request(
+      'https://warroom.test/api/tick',
+      {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://trusted.example',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type,x-csrf-token',
+        },
+      },
+      { ...baseEnv, ALLOWED_ORIGINS: 'https://trusted.example' },
+    )
+
+    expect(response.status).toBe(204)
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://trusted.example')
+    expect(response.headers.get('access-control-allow-origin')).not.toBe('*')
+    expect(response.headers.get('access-control-allow-credentials')).toBe('true')
+    expect(response.headers.get('access-control-allow-methods')).toContain('POST')
+    expect(response.headers.get('access-control-allow-headers')).toContain('X-CSRF-Token')
+    expect(response.headers.get('cache-control')).toBe('no-store')
   })
 
   it('marks private success and error responses no-store and protects calendar export', async () => {
@@ -91,10 +124,119 @@ describe('private response boundary', () => {
     expect(deniedCalendar.status).toBe(401)
     expect(deniedCalendar.headers.get('cache-control')).toBe('no-store')
 
-    const cookie = await authenticatedCookie()
+    const { cookie } = await authenticatedSession()
     const calendar = await app.request('/calendar.ics', { headers: { Cookie: cookie } }, baseEnv)
     expect(calendar.status).toBe(200)
     expect(calendar.headers.get('cache-control')).toBe('no-store')
+  })
+})
+
+describe('Book 5.4 browser boundary hardening', () => {
+  it('returns CSRF proof when restoring a valid browser session', async () => {
+    const { cookie, csrfToken } = await authenticatedSession()
+    const response = await app.request(
+      '/api/auth/status',
+      { headers: { Cookie: cookie } },
+      baseEnv,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      setup: true,
+      authed: true,
+      csrfToken,
+    })
+  })
+
+  it('sets the required hardening headers on shell and private responses', async () => {
+    const shell = await app.request('/', {}, baseEnv)
+    const deniedApi = await app.request('/api/state', {}, baseEnv)
+
+    for (const response of [shell, deniedApi]) {
+      const csp = response.headers.get('content-security-policy')
+      expect(csp).toContain("frame-ancestors 'none'")
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+      expect(response.headers.get('permissions-policy')).toContain('camera=()')
+      expect(response.headers.get('permissions-policy')).toContain('microphone=()')
+      expect(response.headers.get('permissions-policy')).toContain('geolocation=()')
+    }
+    expect(deniedApi.headers.get('cache-control')).toBe('no-store')
+  })
+
+  it('requires the issued CSRF proof for cookie-authenticated mutations', async () => {
+    const { cookie, csrfToken } = await authenticatedSession()
+    expect(csrfToken).toMatch(/^[a-f0-9]{64}$/)
+
+    const missing = await app.request(
+      'https://warroom.test/api/tick',
+      {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          Origin: 'https://warroom.test',
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      },
+      baseEnv,
+    )
+    expect(missing.status).toBe(403)
+    await expect(missing.json()).resolves.toMatchObject({ error: 'CSRF VALIDATION FAILED' })
+
+    const invalid = await app.request(
+      'https://warroom.test/api/tick',
+      {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          Origin: 'https://warroom.test',
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': 'wrong-token',
+        },
+        body: '{}',
+      },
+      baseEnv,
+    )
+    expect(invalid.status).toBe(403)
+
+    const accepted = await app.request(
+      'https://warroom.test/api/tick',
+      {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          Origin: 'https://warroom.test',
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken!,
+        },
+        body: '{}',
+      },
+      baseEnv,
+    )
+    expect(accepted.status).toBe(200)
+  })
+
+  it('rejects oversized JSON before authenticated route parsing', async () => {
+    const { cookie, csrfToken } = await authenticatedSession()
+    const response = await app.request(
+      'https://warroom.test/api/tick',
+      {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          Origin: 'https://warroom.test',
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken!,
+        },
+        body: JSON.stringify({ tz: 'x'.repeat(65 * 1024) }),
+      },
+      baseEnv,
+    )
+
+    expect(response.status).toBe(413)
+    await expect(response.json()).resolves.toMatchObject({ error: 'PAYLOAD TOO LARGE' })
+    expect(response.headers.get('cache-control')).toBe('no-store')
   })
 })
 
@@ -128,7 +270,7 @@ describe('internal enforcement entry', () => {
           Authorization: 'Bearer test-internal-secret',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ date: '2999-12-31', time: '23:59' }),
+        body: '{}',
       },
       configuredEnv,
     )

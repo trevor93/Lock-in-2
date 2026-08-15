@@ -3,6 +3,17 @@ const $ = (s) => document.querySelector(s);
 const app = () => $('#app');
 let TAB = 'now';
 let STATE = null;
+let CSRF_TOKEN = null;
+
+axios.interceptors.request.use((config) => {
+  const method = String(config.method || 'get').toLowerCase();
+  const url = new URL(config.url || '/', location.origin);
+  if (CSRF_TOKEN && url.origin === location.origin && !['get','head','options'].includes(method)) {
+    config.headers = config.headers || {};
+    config.headers['X-CSRF-Token'] = CSRF_TOKEN;
+  }
+  return config;
+});
 
 const todayStr = () => {
   const d = new Date();
@@ -56,7 +67,8 @@ function renderLogin(isSetup) {
 async function doLogin(isSetup) {
   const pass = $('#login-pass').value;
   try {
-    await axios.post(isSetup?'/api/auth/setup':'/api/auth/login', { password: pass });
+    const auth = await axios.post(isSetup?'/api/auth/setup':'/api/auth/login', { password: pass });
+    CSRF_TOKEN = auth.data.csrfToken;
     FX.success && FX.success();
     await loadState(); render();
   } catch (e) {
@@ -395,6 +407,7 @@ setInterval(()=>{
     const st = (await axios.get('/api/auth/status')).data;
     if (!st.setup) { renderLogin(true); FX.killSplash(); return; }
     if (!st.authed) { renderLogin(false); FX.killSplash(); return; }
+    CSRF_TOKEN = st.csrfToken;
     await loadState(); render();
   }
   catch(e){ app().innerHTML = `<div class="p-6 text-center text-red-400 text-sm">Failed to load the war room. Pull to refresh.<br>${esc(e.message||'')}</div>`; }

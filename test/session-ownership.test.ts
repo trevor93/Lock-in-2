@@ -92,6 +92,22 @@ async function login(password = 'test-password-only'): Promise<string> {
   return response.headers.get('set-cookie')!.split(';', 1)[0]
 }
 
+async function mutationHeaders(cookie: string): Promise<Record<string, string>> {
+  const rawToken = decodeURIComponent(cookie.split('=', 2)[1])
+  const csrfBytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`csrf:${rawToken}`),
+  )
+  const csrfToken = [...new Uint8Array(csrfBytes)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  return {
+    Cookie: cookie,
+    'Content-Type': 'application/json',
+    'X-CSRF-Token': csrfToken,
+  }
+}
+
 describe('Book 5.2 durable sessions', () => {
   it('sets an expiring host-only secure browser-session cookie', async () => {
     await clearAuth()
@@ -121,7 +137,7 @@ describe('Book 5.2 durable sessions', () => {
     expect(row!.token_hash).toMatch(/^[a-f0-9]{64}$/)
     expect(row!.revoked_at).toBeNull()
 
-    const accepted = await app.request('/api/state', { headers: { Cookie: cookie } }, baseEnv)
+    const accepted = await app.request('/api/state', { headers: await mutationHeaders(cookie) }, baseEnv)
     expect(accepted.status).toBe(200)
   })
 
@@ -132,7 +148,7 @@ describe('Book 5.2 durable sessions', () => {
       `UPDATE sessions SET expires_at='2000-01-01T00:00:00.000Z'`,
     ).run()
 
-    const response = await app.request('/api/state', { headers: { Cookie: cookie } }, baseEnv)
+    const response = await app.request('/api/state', { headers: await mutationHeaders(cookie) }, baseEnv)
     expect(response.status).toBe(401)
   })
 
@@ -144,7 +160,7 @@ describe('Book 5.2 durable sessions', () => {
        SET expires_at=strftime('%Y-%m-%dT00:00:00.000Z','now')`,
     ).run()
 
-    const response = await app.request('/api/state', { headers: { Cookie: cookie } }, baseEnv)
+    const response = await app.request('/api/state', { headers: await mutationHeaders(cookie) }, baseEnv)
     expect(response.status).toBe(401)
   })
 
@@ -153,14 +169,14 @@ describe('Book 5.2 durable sessions', () => {
     const cookie = await setup()
     const logout = await app.request(
       '/api/auth/logout',
-      { method: 'POST', headers: { Cookie: cookie } },
+      { method: 'POST', headers: await mutationHeaders(cookie) },
       baseEnv,
     )
     expect(logout.status).toBe(200)
 
     const row = await env.DB.prepare(`SELECT revoked_at FROM sessions`).first<{ revoked_at: string | null }>()
     expect(row?.revoked_at).toBeTruthy()
-    const denied = await app.request('/api/state', { headers: { Cookie: cookie } }, baseEnv)
+    const denied = await app.request('/api/state', { headers: await mutationHeaders(cookie) }, baseEnv)
     expect(denied.status).toBe(401)
   })
 
@@ -239,7 +255,7 @@ describe('Book 5.2 ownership', () => {
       `/api/predictions/${foreignPrediction.meta.last_row_id}/resolve`,
       {
         method: 'POST',
-        headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+        headers: await mutationHeaders(ownerCookie),
         body: JSON.stringify({ outcome: 'right', note: 'must not cross owner boundary' }),
       },
       baseEnv,
@@ -312,7 +328,7 @@ describe('Book 5.2 ownership', () => {
       `/api/tongue/${foreignResponse.meta.last_row_id}`,
       {
         method: 'PUT',
-        headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+        headers: await mutationHeaders(ownerCookie),
         body: JSON.stringify({
           situation: 'Owner overwrite attempt',
           trigger_q: 'Owner trigger',
@@ -351,7 +367,7 @@ describe('Book 5.2 ownership', () => {
       `/api/blocks/${foreignBlock.meta.last_row_id}/log`,
       {
         method: 'POST',
-        headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+        headers: await mutationHeaders(ownerCookie),
         body: JSON.stringify({ status: 'done', note: 'must not append' }),
       },
       baseEnv,
@@ -404,7 +420,7 @@ describe('Book 5.2 ownership', () => {
     ).run()).meta.last_row_id)
     const rotate = await app.request(
       '/api/agent/token/rotate',
-      { method: 'POST', headers: { Cookie: ownerCookie } },
+      { method: 'POST', headers: await mutationHeaders(ownerCookie) },
       baseEnv,
     )
     expect(rotate.status).toBe(200)
@@ -453,7 +469,7 @@ describe('Book 5.2 ownership', () => {
     ).run()).meta.last_row_id)
     const rotate = await app.request(
       '/api/agent/token/rotate',
-      { method: 'POST', headers: { Cookie: ownerCookie } },
+      { method: 'POST', headers: await mutationHeaders(ownerCookie) },
       baseEnv,
     )
     expect(rotate.status).toBe(200)
@@ -496,7 +512,7 @@ describe('Book 5.2 ownership', () => {
       `/api/load-reductions/${reduction.meta.last_row_id}/answer`,
       {
         method: 'POST',
-        headers: { Cookie: ownerCookie, 'Content-Type': 'application/json' },
+        headers: await mutationHeaders(ownerCookie),
         body: JSON.stringify({ reason: 'wrong_time' }),
       },
       baseEnv,

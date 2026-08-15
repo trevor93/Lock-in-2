@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { bodyLimit } from 'hono/body-limit'
+import { z } from 'zod'
 
 type Bindings = {
   DB: D1Database
@@ -32,12 +34,37 @@ function allowedOrigins(c: any): Set<string> {
   return new Set([new URL(c.req.url).origin, ...configured])
 }
 
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
+  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
+  "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+].join('; ')
+
+function setSecurityHeaders(c: any): void {
+  c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Referrer-Policy', 'no-referrer')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+}
+
 // Private responses never enter caches. Browser requests carrying an Origin must
 // match this deployment or an explicit allowlist; non-browser bridge requests do
 // not send Origin and continue to authenticate with X-Agent-Token.
 app.use('*', async (c, next) => {
   const path = new URL(c.req.url).pathname
-  if (!privatePath(path)) return next()
+  setSecurityHeaders(c)
+  if (!privatePath(path)) {
+    await next()
+    setSecurityHeaders(c)
+    return
+  }
 
   c.header('Cache-Control', 'no-store')
   const origin = c.req.header('origin')
@@ -45,12 +72,275 @@ app.use('*', async (c, next) => {
     return c.json({ error: 'ORIGIN NOT ALLOWED' }, 403)
   }
 
+  const method = c.req.method.toUpperCase()
+  if (method === 'OPTIONS') {
+    const requestedHeaders = (c.req.header('access-control-request-headers') || '')
+      .split(',')
+      .map((header: string) => header.trim().toLowerCase())
+      .filter(Boolean)
+    const allowedHeaders = new Set(['content-type', 'x-csrf-token'])
+    if (requestedHeaders.some((header: string) => !allowedHeaders.has(header))) {
+      return c.json({ error: 'CORS PREFLIGHT NOT ALLOWED' }, 403)
+    }
+    c.header('Access-Control-Allow-Origin', origin || new URL(c.req.url).origin)
+    c.header('Access-Control-Allow-Credentials', 'true')
+    c.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
+    c.header('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token')
+    c.header('Access-Control-Max-Age', '600')
+    c.header('Vary', 'Origin', { append: true })
+    c.header('Vary', 'Access-Control-Request-Headers', { append: true })
+    return c.body(null, 204)
+  }
+  const unsafe = !['GET', 'HEAD'].includes(method)
+  const rawSession = getCookie(c, 'wr_session')
+  const isPasswordEntry = path === '/api/auth/setup' || path === '/api/auth/login'
+  const isAgentCredentialRequest = path.startsWith('/api/agent/') &&
+    path !== '/api/agent/token' && path !== '/api/agent/token/rotate' &&
+    !!c.req.header('x-agent-token')
+  if (unsafe && path.startsWith('/api/') && rawSession && !isPasswordEntry && !isAgentCredentialRequest) {
+    const supplied = c.req.header('x-csrf-token') || ''
+    const expected = await csrfToken(rawSession)
+    if (!supplied || !timingSafeEq(supplied, expected)) {
+      return c.json({ error: 'CSRF VALIDATION FAILED' }, 403)
+    }
+  }
+
   await next()
+  setSecurityHeaders(c)
   c.header('Cache-Control', 'no-store')
   if (origin) {
     c.header('Access-Control-Allow-Origin', origin)
+    c.header('Access-Control-Allow-Credentials', 'true')
     c.header('Vary', 'Origin', { append: true })
   }
+})
+
+app.use(
+  '/api/*',
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) => c.json({ error: 'PAYLOAD TOO LARGE' }, 413),
+  }),
+)
+app.use(
+  '/internal/*',
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) => c.json({ error: 'PAYLOAD TOO LARGE' }, 413),
+  }),
+)
+
+class RequestValidationError extends Error {}
+
+function validationFailed(c: any): Response {
+  return c.json({ error: 'VALIDATION FAILED' }, 400)
+}
+
+async function parseJson<T>(c: any, schema: z.ZodType<T>): Promise<T> {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch (_) {
+    throw new RequestValidationError()
+  }
+  const parsed = schema.safeParse(body)
+  if (!parsed.success) throw new RequestValidationError()
+  return parsed.data
+}
+
+async function parseEmptyBody(c: any): Promise<void> {
+  let body: unknown = {}
+  try {
+    const text = await c.req.text()
+    if (text.trim()) body = JSON.parse(text)
+  } catch (_) {
+    throw new RequestValidationError()
+  }
+  if (!emptyBodySchema.safeParse(body).success) {
+    throw new RequestValidationError()
+  }
+}
+
+function parseValue<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value)
+  if (!parsed.success) throw new RequestValidationError()
+  return parsed.data
+}
+
+app.onError((error, c) => {
+  if (error instanceof RequestValidationError) return validationFailed(c)
+  console.error(error)
+  return c.json({ error: 'INTERNAL SERVER ERROR' }, 500)
+})
+
+const emptyBodySchema = z.strictObject({})
+const positiveIdSchema = z.string().regex(/^[1-9]\d*$/)
+  .transform(Number).refine(Number.isSafeInteger)
+const chapterIndexSchema = z.string().regex(/^(0|[1-9]\d*)$/)
+  .transform(Number).refine(Number.isSafeInteger)
+const dateSchema = z.string().refine((value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+})
+const timeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+const optionalText = (max: number) =>
+  z.string().max(max).optional().nullable()
+const optionalTrimmedText = (max: number) =>
+  z.string().trim().max(max).optional().nullable()
+const requiredTrimmedText = (min: number, max: number) =>
+  z.string().trim().min(min).max(max)
+const optionalDate = dateSchema.optional().nullable()
+const gradeSchema = z.number().int().min(0).max(3)
+const blockStatusSchema = z.enum(['pending', 'done', 'partial', 'skipped'])
+const loadReductionReasonSchema = z.enum([
+  'wrong_time', 'too_long', 'wrong_prereq', 'dont_want_it',
+])
+const predictionOutcomeSchema = z.enum(['right', 'wrong', 'void'])
+const responseCategorySchema = z.enum([
+  'deflection', 'wit', 'power', 'mystery', 'boundaries', 'praise',
+  'conflict', 'small_talk', 'negotiation', 'silence',
+])
+const tongueModeSchema = z.enum([
+  'recall', 'cloze', 'first_letters', 'reverse', 'delivery',
+])
+const intelDomainSchema = z.enum([
+  'loyalty', 'family', 'friends', 'network', 'community', 'neighbours',
+  'classmates', 'women_relationships', 'money', 'hustle', 'society',
+  'manipulation_spotted', 'clever_move', 'dumb_move', 'workaround',
+  'wisdom', 'other',
+])
+const intelVerdictSchema = z.enum(['smart', 'dumb', 'neutral', 'pending'])
+const bookStatusSchema = z.enum(['unread', 'reading', 'done'])
+const hermesRoleSchema = z.enum(['user', 'assistant'])
+
+const passwordBodySchema = z.strictObject({
+  password: z.string().min(1).max(1024),
+})
+const tickBodySchema = z.strictObject({
+  tz: z.string().trim().min(1).max(100).optional(),
+})
+const blockLogBodySchema = z.strictObject({
+  status: blockStatusSchema,
+  note: optionalText(4000),
+})
+const appealBodySchema = z.strictObject({
+  block_id: z.number().int().positive(),
+  block_date: dateSchema,
+  reason: requiredTrimmedText(100, 10000),
+})
+const loadReductionBodySchema = z.strictObject({
+  reason: loadReductionReasonSchema,
+})
+const predictionBodySchema = z.strictObject({
+  claim: requiredTrimmedText(10, 2000),
+  confidence: z.number().int().min(50).max(99),
+  resolve_by: dateSchema,
+  domain: z.string().trim().max(100).optional().nullable(),
+})
+const predictionResolutionBodySchema = z.strictObject({
+  outcome: predictionOutcomeSchema,
+  note: optionalText(4000),
+})
+const debriefBodySchema = z.strictObject({
+  date: optionalDate,
+  wins: optionalText(10000),
+  breaks: optionalText(10000),
+  tomorrow_targets: optionalText(10000),
+  strategy_insight: optionalText(10000),
+  mood: z.number().int().min(1).max(5).optional().nullable(),
+  energy: z.number().int().min(1).max(5).optional().nullable(),
+  sleep_time: timeSchema.optional().nullable(),
+  wake_time: timeSchema.optional().nullable(),
+  sleep_hours: z.number().min(0).max(24).optional().nullable(),
+})
+const unitStepBodySchema = z.strictObject({
+  step: z.enum(['reading', 'drill', 'complete']),
+  drill_report: optionalText(20000),
+  debrief_answer: optionalText(20000),
+  exam_answers: z.array(z.string().max(20000)).max(200).optional(),
+  exam_self_score: z.number().int().min(0).max(100).optional(),
+  date: optionalDate,
+})
+const maximBodySchema = z.strictObject({
+  source: requiredTrimmedText(1, 500),
+  principle: requiredTrimmedText(1, 4000),
+  naive_reading: optionalText(10000),
+  master_reading: optionalText(10000),
+  my_words: optionalText(10000),
+})
+const myWordsBodySchema = z.strictObject({
+  my_words: optionalText(10000),
+})
+const cardReviewBodySchema = z.strictObject({
+  grade: gradeSchema,
+  date: optionalDate,
+})
+const tongueBodySchema = z.strictObject({
+  situation: requiredTrimmedText(1, 10000),
+  trigger_q: requiredTrimmedText(1, 10000),
+  response: requiredTrimmedText(1, 10000),
+  why_works: optionalTrimmedText(10000),
+  source: optionalTrimmedText(1000),
+  category: responseCategorySchema.optional(),
+})
+const tongueReviewBodySchema = z.strictObject({
+  grade: gradeSchema,
+  mode: tongueModeSchema,
+  date: optionalDate,
+})
+const tongueExamBodySchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  correct: z.number().int().nonnegative(),
+  date: optionalDate,
+}).refine((body) => body.correct <= body.total)
+const lawCheckBodySchema = z.strictObject({
+  date: dateSchema,
+  kept: z.boolean(),
+  note: optionalText(4000),
+})
+const intelBodySchema = z.strictObject({
+  log_date: optionalDate,
+  domain: intelDomainSchema,
+  title: requiredTrimmedText(1, 1000),
+  situation: optionalText(20000),
+  my_move: optionalText(20000),
+  outcome: optionalText(20000),
+  verdict: intelVerdictSchema.optional(),
+  principle_used: optionalText(10000),
+  lesson: optionalText(20000),
+  people: optionalText(4000),
+})
+const agentIntelBodySchema = intelBodySchema.extend({
+  analysis: optionalText(20000),
+}).strict()
+const intelVerdictBodySchema = z.strictObject({
+  verdict: z.enum(['smart', 'dumb', 'neutral']),
+  lesson: optionalText(20000),
+})
+const bookProgressBodySchema = z.strictObject({
+  status: bookStatusSchema.optional(),
+  last_para: z.number().int().nonnegative().optional(),
+  notes: optionalText(20000),
+  date: optionalDate,
+})
+const hermesBodySchema = z.strictObject({
+  message: requiredTrimmedText(1, 20000),
+  date: optionalDate,
+})
+const councilBodySchema = z.strictObject({ date: optionalDate })
+const agentDebriefBodySchema = debriefBodySchema
+const agentBlockLogBodySchema = z.strictObject({
+  block_id: z.number().int().positive(),
+  date: optionalDate,
+  status: blockStatusSchema,
+  note: optionalText(4000),
+})
+const agentMessageBodySchema = z.strictObject({
+  content: requiredTrimmedText(1, 20000),
+  role: hermesRoleSchema.optional(),
 })
 
 // ============ SERVER CLOCK (single source of truth) ============
@@ -88,11 +378,12 @@ async function userNow(DB: D1Database, userId?: number): Promise<{ date: string;
   return { date, time, tz }
 }
 
-// Clamp any client-supplied date: valid format, never in the future.
+// Clamp any validated client-supplied date, never into the future.
 async function safeDate(DB: D1Database, q?: string | null, userId?: number): Promise<string> {
   const { date: today } = await userNow(DB, userId)
-  if (!q || !/^\d{4}-\d{2}-\d{2}$/.test(q)) return today
-  return q > today ? today : q
+  if (!q) return today
+  const validated = parseValue(dateSchema, q)
+  return validated > today ? today : validated
 }
 
 // ============ AUTH (durable users + hashed, revocable sessions) ============
@@ -108,6 +399,9 @@ function randHex(n = 32): string {
 }
 async function sha256(value: string): Promise<string> {
   return bufToHex(await crypto.subtle.digest('SHA-256', enc.encode(value)))
+}
+async function csrfToken(rawSessionToken: string): Promise<string> {
+  return sha256(`csrf:${rawSessionToken}`)
 }
 async function pbkdf2(password: string, saltHex: string): Promise<string> {
   const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map(h => parseInt(h, 16)))
@@ -153,7 +447,7 @@ async function revokePresentedSession(c: any): Promise<void> {
     `UPDATE sessions SET revoked_at=COALESCE(revoked_at, datetime('now')) WHERE token_hash=?`,
   ).bind(await sha256(raw)).run()
 }
-async function issueSession(c: any, userId: number, rotatedFromId?: number): Promise<void> {
+async function issueSession(c: any, userId: number, rotatedFromId?: number): Promise<string> {
   const token = randHex(32)
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000).toISOString()
   await c.env.DB.prepare(
@@ -161,6 +455,7 @@ async function issueSession(c: any, userId: number, rotatedFromId?: number): Pro
      VALUES (?,?,?,?)`,
   ).bind(userId, await sha256(token), expiresAt, rotatedFromId ?? null).run()
   sessionCookie(c, token)
+  return csrfToken(token)
 }
 async function ownerUser(DB: D1Database): Promise<{ id: number; password_hash: string; password_salt: string; failed_login_count: number; locked_until: string | null } | null> {
   return DB.prepare(
@@ -186,12 +481,18 @@ async function claimUnownedData(DB: D1Database, userId: number): Promise<void> {
 // -- auth endpoints (the ONLY unauthenticated API surface) --
 app.get('/api/auth/status', async (c) => {
   const hasOwner = !!(await ownerUser(c.env.DB))
-  return c.json({ setup: hasOwner, authed: hasOwner ? await sessionValid(c) : false })
+  const authed = hasOwner ? await sessionValid(c) : false
+  const rawSession = authed ? getCookie(c, 'wr_session') : undefined
+  return c.json({
+    setup: hasOwner,
+    authed,
+    csrfToken: rawSession ? await csrfToken(rawSession) : undefined,
+  })
 })
 app.post('/api/auth/setup', async (c) => {
   const DB = c.env.DB
   if (await ownerUser(DB)) return c.json({ error: 'Already set up. Log in.' }, 400)
-  const { password } = await c.req.json()
+  const { password } = await parseJson(c, passwordBodySchema)
   if (!password || password.length < 8) return c.json({ error: 'Password must be at least 8 characters. This gate protects everything.' }, 400)
   const salt = randHex(16)
   const hash = await pbkdf2(password, salt)
@@ -200,8 +501,8 @@ app.post('/api/auth/setup', async (c) => {
   ).bind(hash, salt).run()
   const userId = Number(created.meta.last_row_id)
   await claimUnownedData(DB, userId)
-  await issueSession(c, userId)
-  return c.json({ ok: true })
+  const csrfToken = await issueSession(c, userId)
+  return c.json({ ok: true, csrfToken })
 })
 app.post('/api/auth/login', async (c) => {
   const DB = c.env.DB
@@ -210,7 +511,7 @@ app.post('/api/auth/login', async (c) => {
   if (owner.locked_until && new Date(owner.locked_until).getTime() > Date.now()) {
     return c.json({ error: 'GATE SEALED. Too many failed attempts — wait 15 minutes. Patience is also discipline.' }, 429)
   }
-  const { password } = await c.req.json()
+  const { password } = await parseJson(c, passwordBodySchema)
   const attempt = await pbkdf2(password || '', owner.password_salt)
   if (!timingSafeEq(attempt, owner.password_hash)) {
     const failures = owner.failed_login_count + 1
@@ -228,10 +529,11 @@ app.post('/api/auth/login', async (c) => {
   await DB.prepare(
     `UPDATE users SET failed_login_count=0, locked_until=NULL, updated_at=datetime('now') WHERE id=?`,
   ).bind(owner.id).run()
-  await issueSession(c, owner.id, presented?.id)
-  return c.json({ ok: true })
+  const csrfToken = await issueSession(c, owner.id, presented?.id)
+  return c.json({ ok: true, csrfToken })
 })
 app.post('/api/auth/logout', async (c) => {
+  await parseEmptyBody(c)
   await revokePresentedSession(c)
   deleteCookie(c, 'wr_session', { path: '/' })
   return c.json({ ok: true })
@@ -658,13 +960,17 @@ app.get('/api/state', async (c) => {
 app.post('/api/tick', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
+  const body = await parseJson(c, tickBodySchema)
   // capture the commander's timezone once (first tick from the UI sends it)
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    if (body?.tz && !(await getSetting(DB, 'timezone_locked', userId))) {
-      try { new Intl.DateTimeFormat('en', { timeZone: body.tz }); await setSetting(DB, 'timezone', body.tz, userId); await setSetting(DB, 'timezone_locked', '1', userId) } catch (_) {}
+  if (body.tz && !(await getSetting(DB, 'timezone_locked', userId))) {
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: body.tz })
+      await setSetting(DB, 'timezone', body.tz, userId)
+      await setSetting(DB, 'timezone_locked', '1', userId)
+    } catch (_) {
+      throw new RequestValidationError()
     }
-  } catch (_) {}
+  }
   const { date, time } = await runEnforcement(c.env.DB, userId)
   return c.json(await buildState(DB, userId, date, time))
 })
@@ -688,6 +994,7 @@ app.post('/internal/jobs/enforcement', async (c) => {
   if (!expected || !supplied || !timingSafeEq(supplied, expected)) {
     return c.json({ error: 'INVALID INTERNAL CREDENTIAL' }, 401)
   }
+  await parseEmptyBody(c)
 
   const owners = (await c.env.DB.prepare(`SELECT id FROM users WHERE role='owner' ORDER BY id`).all()).results as Array<{ id: number }>
   const runs = []
@@ -700,8 +1007,8 @@ app.post('/internal/jobs/enforcement', async (c) => {
 app.post('/api/blocks/:id/log', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const id = Number(c.req.param('id'))
-  const { status, note } = await c.req.json()
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { status, note } = await parseJson(c, blockLogBodySchema)
   const { date } = await userNow(DB, userId)
   const block = await DB.prepare(
     `SELECT * FROM schedule_blocks WHERE id=? AND user_id=?`,
@@ -751,7 +1058,7 @@ app.post('/api/blocks/:id/log', async (c) => {
 app.post('/api/appeals', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { block_id, block_date, reason } = await c.req.json()
+  const { block_id, block_date, reason } = await parseJson(c, appealBodySchema)
   const { date } = await userNow(DB, userId)
   if (!reason || String(reason).trim().length < 100) {
     return c.json({ error: 'THE REASON IS THE PRICE. Write at least 100 characters explaining exactly what happened — this goes on the permanent record.' }, 400)
@@ -816,12 +1123,11 @@ app.get('/api/appeals', async (c) => {
 // ============ LOAD REDUCTION — answer the why ============
 app.post('/api/load-reductions/:id/answer', async (c) => {
   const userId = c.get('userId')
-  const { reason } = await c.req.json()
-  const ok = ['wrong_time', 'too_long', 'wrong_prereq', 'dont_want_it']
-  if (!ok.includes(reason)) return c.json({ error: 'Answer must be one of: wrong_time, too_long, wrong_prereq, dont_want_it' }, 400)
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { reason } = await parseJson(c, loadReductionBodySchema)
   const updated = await c.env.DB.prepare(
     `UPDATE load_reductions SET reason=?, answered_at=datetime('now') WHERE id=? AND user_id=?`,
-  ).bind(reason, Number(c.req.param('id')), userId).run()
+  ).bind(reason, id, userId).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   const advice: Record<string, string> = {
     wrong_time: 'Then MOVE it. Edit the block to the hour your energy actually supports it.',
@@ -836,16 +1142,14 @@ app.post('/api/load-reductions/:id/answer', async (c) => {
 app.post('/api/predictions', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { claim, confidence, resolve_by, domain } = await c.req.json()
+  const { claim, confidence, resolve_by, domain } =
+    await parseJson(c, predictionBodySchema)
   const { date } = await userNow(DB, userId)
-  if (!claim || String(claim).trim().length < 10) return c.json({ error: 'State the claim precisely — a vague prediction is unfalsifiable, which is the disease this log cures.' }, 400)
-  const conf = Number(confidence)
-  if (!Number.isFinite(conf) || conf < 50 || conf > 99) return c.json({ error: 'Confidence must be 50–99%. Below 50, state the opposite claim. 100 does not exist for mortals.' }, 400)
-  if (!resolve_by || resolve_by <= date) return c.json({ error: 'Resolution date must be in the future.' }, 400)
+  if (resolve_by <= date) return c.json({ error: 'Resolution date must be in the future.' }, 400)
   const r = await DB.prepare(
     `INSERT INTO predictions (user_id, made_date, claim, confidence, resolve_by, domain)
      VALUES (?,?,?,?,?,?)`
-  ).bind(userId, date, String(claim).trim(), conf, resolve_by, domain || null).run()
+  ).bind(userId, date, claim, confidence, resolve_by, domain || null).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 app.get('/api/predictions', async (c) => {
@@ -858,11 +1162,11 @@ app.get('/api/predictions', async (c) => {
 app.post('/api/predictions/:id/resolve', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { outcome, note } = await c.req.json()
-  if (!['right', 'wrong', 'void'].includes(outcome)) return c.json({ error: 'Outcome: right, wrong, or void.' }, 400)
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { outcome, note } = await parseJson(c, predictionResolutionBodySchema)
   const { date } = await userNow(DB, userId)
   const p = await DB.prepare(`SELECT * FROM predictions WHERE id=? AND user_id=?`)
-    .bind(Number(c.req.param('id')), userId).first<any>()
+    .bind(id, userId).first<any>()
   if (!p) return c.json({ error: 'not found' }, 404)
   if (p.outcome !== 'unresolved') return c.json({ error: 'Already resolved. The record does not get rewritten.' }, 409)
   await DB.prepare(`UPDATE predictions SET outcome=?, resolved_date=?, resolution_note=? WHERE id=? AND user_id=?`)
@@ -906,11 +1210,11 @@ app.get('/api/predictions/calibration', async (c) => {
 app.post('/api/debrief', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const b = await c.req.json()
-  b.date = await safeDate(DB, b.date, userId) // clamp: no future debriefs
+  const b = await parseJson(c, debriefBodySchema)
+  const date = await safeDate(DB, b.date, userId) // clamp: no future debriefs
   const existing = await DB.prepare(
     `SELECT id FROM debriefs WHERE user_id=? AND log_date=?`,
-  ).bind(userId, b.date).first<{ id: number }>()
+  ).bind(userId, date).first<{ id: number }>()
   const values = [
     b.wins || null,
     b.breaks || null,
@@ -934,13 +1238,13 @@ app.post('/api/debrief', async (c) => {
          (user_id, log_date, wins, breaks, tomorrow_targets, strategy_insight,
           mood, energy, sleep_time, wake_time, sleep_hours)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(userId, b.date, ...values).run()
+    ).bind(userId, date, ...values).run()
     await DB.prepare(
       `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
        VALUES (?,?,?,?,?)`,
-    ).bind(userId, b.date, 25, 'Night debrief filed. Intelligence report received. (+25)', 'debrief').run()
+    ).bind(userId, date, 25, 'Night debrief filed. Intelligence report received. (+25)', 'debrief').run()
   }
-  await writeDaySummary(DB, userId, b.date, false)
+  await writeDaySummary(DB, userId, date, false)
   return c.json({ ok: true })
 })
 
@@ -1006,14 +1310,29 @@ app.get('/api/campaign', async (c) => {
 app.post('/api/units/:id/step', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const id = Number(c.req.param('id'))
-  const { step, drill_report, debrief_answer, exam_answers, exam_self_score, date } = await c.req.json()
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const {
+    step, drill_report, debrief_answer, exam_answers, exam_self_score, date,
+  } = await parseJson(c, unitStepBodySchema)
   const up = await DB.prepare(
     `SELECT * FROM unit_progress WHERE user_id=? AND unit_id=?`,
   ).bind(userId, id).first<any>()
   const unit = await DB.prepare(`SELECT * FROM units WHERE id=?`).bind(id).first<any>()
   if (!up || !unit) return c.json({ error: 'not found' }, 404)
   if (up.status === 'locked') return c.json({ error: 'UNIT LOCKED. Finish the previous unit first — this system is progress-based, no skipping.' }, 400)
+  if (up.status === 'complete') {
+    return c.json({ error: 'UNIT COMPLETE. Terminal records cannot be rewritten.' }, 409)
+  }
+  const allowedUnitSteps: Record<string, string[]> = unit.is_exam
+    ? { active: ['complete'] }
+    : {
+        active: ['reading'],
+        reading_done: unit.field_drill ? ['drill'] : ['complete'],
+        drill_done: ['complete'],
+      }
+  if (!allowedUnitSteps[up.status]?.includes(step)) {
+    return c.json({ error: 'ILLEGAL UNIT TRANSITION. Complete each gate in order.' }, 409)
+  }
   const today = date || (await userNow(c.env.DB, userId)).date
 
   if (step === 'reading') {
@@ -1088,7 +1407,7 @@ app.get('/api/maxims', async (c) => {
 })
 app.post('/api/maxims', async (c) => {
   const userId = c.get('userId')
-  const b = await c.req.json()
+  const b = await parseJson(c, maximBodySchema)
   const r = await c.env.DB.prepare(
     `INSERT INTO maxims
        (user_id, source, principle, naive_reading, master_reading, my_words, created_by_user)
@@ -1100,9 +1419,11 @@ app.post('/api/maxims', async (c) => {
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 app.post('/api/maxims/:id/my-words', async (c) => {
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const body = await parseJson(c, myWordsBodySchema)
   const updated = await c.env.DB.prepare(
     `UPDATE maxims SET my_words=? WHERE id=? AND user_id=?`,
-  ).bind(myWordsOrNull(await c.req.json()), Number(c.req.param('id')), c.get('userId')).run()
+  ).bind(myWordsOrNull(body), id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
@@ -1132,12 +1453,16 @@ app.get('/api/cards/due', async (c) => {
 app.post('/api/cards/:maximId/review', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const mid = Number(c.req.param('maximId'))
-  const { grade, date } = await c.req.json() // 0 fail, 1 hard, 2 good, 3 easy
+  const mid = parseValue(positiveIdSchema, c.req.param('maximId'))
+  const { grade, date } = await parseJson(c, cardReviewBodySchema)
   const card = await DB.prepare(
     `SELECT * FROM flashcards WHERE maxim_id=? AND user_id=?`,
   ).bind(mid, userId).first<any>()
   if (!card) return c.json({ error: 'no card' }, 404)
+  const today = await safeDate(DB, date, userId)
+  if (card.due_date > today) {
+    return c.json({ error: 'CARD NOT DUE. Review transitions follow the schedule.' }, 409)
+  }
   let { interval_days, ease, reps, lapses } = card
   if (grade === 0) { lapses++; reps = 0; interval_days = 0; ease = Math.max(1.3, ease - 0.2) }
   else {
@@ -1147,7 +1472,6 @@ app.post('/api/cards/:maximId/review', async (c) => {
     else if (reps === 2) interval_days = 3
     else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
   }
-  const today = date || (await userNow(DB, userId)).date
   const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
   await DB.prepare(
     `UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?
@@ -1161,9 +1485,11 @@ app.post('/api/cards/:maximId/review', async (c) => {
 
 // ============ FLAGS ============
 app.post('/api/flags/:id/ack', async (c) => {
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  await parseEmptyBody(c)
   const updated = await c.env.DB.prepare(
     `UPDATE honesty_flags SET acknowledged=1 WHERE id=? AND user_id=?`,
-  ).bind(Number(c.req.param('id')), c.get('userId')).run()
+  ).bind(id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
@@ -1190,9 +1516,8 @@ function tongueMastery(s: any): string {
 app.post('/api/tongue', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { situation, trigger_q, response, why_works, source, category } = await c.req.json()
-  if (!situation?.trim() || !trigger_q?.trim() || !response?.trim())
-    return c.json({ error: 'Situation, the question, and the exact response are all required. Record it fully or it is lost.' }, 400)
+  const { situation, trigger_q, response, why_works, source, category } =
+    await parseJson(c, tongueBodySchema)
   const today = (await userNow(DB, userId)).date
   const r = await DB.prepare(
     `INSERT INTO responses
@@ -1214,8 +1539,13 @@ app.post('/api/tongue', async (c) => {
 app.get('/api/tongue', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const cat = c.req.query('category')
-  const q = c.req.query('q')
+  const category = c.req.query('category')
+  const cat = category === undefined || category === 'all'
+    ? category
+    : parseValue(responseCategorySchema, category)
+  const q = c.req.query('q') === undefined
+    ? undefined
+    : parseValue(z.string().trim().min(1).max(200), c.req.query('q'))
   let sql = `SELECT r.*, s.mastery, s.due_date, s.reps, s.lapses, s.interval_days, s.total_reviews, s.correct_reviews
              FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
              WHERE r.user_id=? AND r.archived=0`
@@ -1229,8 +1559,9 @@ app.get('/api/tongue', async (c) => {
 
 app.put('/api/tongue/:id', async (c) => {
   const DB = c.env.DB
-  const id = Number(c.req.param('id'))
-  const { situation, trigger_q, response, why_works, source, category } = await c.req.json()
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { situation, trigger_q, response, why_works, source, category } =
+    await parseJson(c, tongueBodySchema)
   const updated = await DB.prepare(
     `UPDATE responses SET situation=?, trigger_q=?, response=?, why_works=?, source=?, category=?
      WHERE id=? AND user_id=?`,
@@ -1239,9 +1570,11 @@ app.put('/api/tongue/:id', async (c) => {
   return c.json({ ok: true })
 })
 app.delete('/api/tongue/:id', async (c) => {
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  await parseEmptyBody(c)
   const updated = await c.env.DB.prepare(
     `UPDATE responses SET archived=1 WHERE id=? AND user_id=?`,
-  ).bind(Number(c.req.param('id')), c.get('userId')).run()
+  ).bind(id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
@@ -1272,12 +1605,21 @@ app.get('/api/tongue/due', async (c) => {
 app.post('/api/tongue/:id/review', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const id = Number(c.req.param('id'))
-  const { grade, mode, date } = await c.req.json()
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { grade, mode, date } = await parseJson(c, tongueReviewBodySchema)
   const s = await DB.prepare(
-    `SELECT * FROM response_srs WHERE response_id=? AND user_id=?`,
+    `SELECT s.*, r.archived FROM response_srs s
+     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+     WHERE s.response_id=? AND s.user_id=?`,
   ).bind(id, userId).first<any>()
   if (!s) return c.json({ error: 'no such response' }, 404)
+  const today = await safeDate(DB, date, userId)
+  if (s.archived) {
+    return c.json({ error: 'RESPONSE ARCHIVED. Terminal records cannot be reviewed.' }, 409)
+  }
+  if (s.due_date > today) {
+    return c.json({ error: 'RESPONSE NOT DUE. Review transitions follow the schedule.' }, 409)
+  }
   let { interval_days, ease, reps, lapses, total_reviews, correct_reviews } = s
   total_reviews++
   if (grade === 0) { lapses++; reps = 0; interval_days = 0; ease = Math.max(1.3, ease - 0.2) }
@@ -1288,7 +1630,6 @@ app.post('/api/tongue/:id/review', async (c) => {
     else if (reps === 2) interval_days = 3
     else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
   }
-  const today = date || (await userNow(DB, userId)).date
   const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
   const mastery = tongueMastery({ correct_reviews, interval_days })
   const prevMastery = s.mastery
@@ -1332,8 +1673,8 @@ app.get('/api/tongue/exam', async (c) => {
 app.post('/api/tongue/exam/submit', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { total, correct, date } = await c.req.json()
-  const today = date || (await userNow(DB, userId)).date
+  const { total, correct, date } = await parseJson(c, tongueExamBodySchema)
+  const today = await safeDate(DB, date, userId)
   const pct = total ? Math.round((correct / total) * 100) : 0
   const passed = pct >= 80 ? 1 : 0
   await DB.prepare(
@@ -1408,8 +1749,8 @@ app.get('/api/laws', async (c) => {
 app.post('/api/laws/:id/check', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { date, kept, note } = await c.req.json()
-  const lawId = Number(c.req.param('id'))
+  const lawId = parseValue(positiveIdSchema, c.req.param('id'))
+  const { date, kept, note } = await parseJson(c, lawCheckBodySchema)
   const existing = await DB.prepare(
     `SELECT id FROM law_checks WHERE user_id=? AND law_id=? AND log_date=?`,
   ).bind(userId, lawId, date).first<{ id: number }>()
@@ -1433,7 +1774,8 @@ app.get('/api/rewards', async (c) => {
 app.post('/api/rewards/:id/redeem', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const id = Number(c.req.param('id'))
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  await parseEmptyBody(c)
   const { date } = await userNow(DB, userId) // server clock
   const reward = await DB.prepare(`SELECT * FROM rewards WHERE id=?`).bind(id).first<any>()
   if (!reward) return c.json({ error: 'no reward' }, 404)
@@ -1564,7 +1906,9 @@ app.get('/api/stats', async (c) => {
 // ============ LIFE INTEL (The Council) ============
 app.get('/api/intel', async (c) => {
   const userId = c.get('userId')
-  const domain = c.req.query('domain')
+  const domain = c.req.query('domain') === undefined
+    ? undefined
+    : parseValue(intelDomainSchema, c.req.query('domain'))
   const q = domain
     ? c.env.DB.prepare(
       `SELECT * FROM intel_entries WHERE user_id=? AND domain=?
@@ -1579,8 +1923,7 @@ app.get('/api/intel', async (c) => {
 app.post('/api/intel', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const b = await c.req.json()
-  if (!b.title || !b.domain) return c.json({ error: 'Domain and title required.' }, 400)
+  const b = await parseJson(c, intelBodySchema)
   const logDate = b.log_date || (await userNow(DB, userId)).date
   const r = await DB.prepare(
     `INSERT INTO intel_entries
@@ -1598,12 +1941,19 @@ app.post('/api/intel', async (c) => {
 })
 
 app.post('/api/intel/:id/verdict', async (c) => {
-  const { verdict, lesson } = await c.req.json()
-  const updated = await c.env.DB.prepare(
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  const { verdict, lesson } = await parseJson(c, intelVerdictBodySchema)
+  const entry = await c.env.DB.prepare(
+    `SELECT verdict FROM intel_entries WHERE id=? AND user_id=?`,
+  ).bind(id, c.get('userId')).first<{ verdict: string | null }>()
+  if (!entry) return c.json({ error: 'not found' }, 404)
+  if (entry.verdict && entry.verdict !== 'pending') {
+    return c.json({ error: 'VERDICT FINAL. Terminal records cannot be rewritten.' }, 409)
+  }
+  await c.env.DB.prepare(
     `UPDATE intel_entries SET verdict=?, lesson=COALESCE(?,lesson)
      WHERE id=? AND user_id=?`,
-  ).bind(verdict, lesson || null, Number(c.req.param('id')), c.get('userId')).run()
-  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
+  ).bind(verdict, lesson || null, id, c.get('userId')).run()
   return c.json({ ok: true })
 })
 
@@ -1640,25 +1990,44 @@ app.post('/api/library/:bookId/chapter/:idx', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const bookId = c.req.param('bookId')
-  const idx = Number(c.req.param('idx'))
-  const { status, last_para, notes, date } = await c.req.json()
+  const book = BOOKS_META.find((candidate) => candidate.id === bookId)
+  if (!book) throw new RequestValidationError()
+  const idx = parseValue(chapterIndexSchema, c.req.param('idx'))
+  if (idx >= book.chapters) throw new RequestValidationError()
+  const { status, last_para, notes, date } =
+    await parseJson(c, bookProgressBodySchema)
   const prev = await DB.prepare(
-    `SELECT id, status FROM book_progress WHERE user_id=? AND book_id=? AND chapter_idx=?`,
-  ).bind(userId, bookId, idx).first<{ id: number; status: string }>()
+    `SELECT id, status, last_para FROM book_progress
+     WHERE user_id=? AND book_id=? AND chapter_idx=?`,
+  ).bind(userId, bookId, idx).first<{
+    id: number
+    status: string
+    last_para: number
+  }>()
+  const nextStatus = status || 'reading'
+  if ((!prev || prev.status === 'unread') && nextStatus !== 'reading') {
+    return c.json({ error: 'READING REQUIRED. Chapters must be opened before completion.' }, 409)
+  }
+  if (prev?.status === 'done') {
+    return c.json({ error: 'CHAPTER COMPLETE. Terminal records cannot be rewritten.' }, 409)
+  }
+  if (prev?.status === 'reading' && nextStatus !== 'reading' && nextStatus !== 'done') {
+    return c.json({ error: 'ILLEGAL CHAPTER TRANSITION.' }, 409)
+  }
   if (prev) {
     await DB.prepare(
       `UPDATE book_progress SET status=?, last_para=?, notes=COALESCE(?,notes),
          completed_at=CASE WHEN ?='done' THEN datetime('now') ELSE completed_at END
        WHERE id=? AND user_id=?`,
-    ).bind(status || 'reading', last_para ?? 0, notes || null, status || 'reading', prev.id, userId).run()
+    ).bind(nextStatus, last_para ?? prev.last_para, notes || null, nextStatus, prev.id, userId).run()
   } else {
     await DB.prepare(
       `INSERT INTO book_progress
          (user_id, book_id, chapter_idx, status, last_para, notes, completed_at)
-       VALUES (?,?,?,?,?,?, CASE WHEN ?='done' THEN datetime('now') ELSE NULL END)`,
-    ).bind(userId, bookId, idx, status || 'reading', last_para ?? 0, notes || null, status || 'reading').run()
+       VALUES (?,?,?,?,?,?,NULL)`,
+    ).bind(userId, bookId, idx, 'reading', last_para ?? 0, notes || null).run()
   }
-  if (status === 'done' && prev?.status !== 'done') {
+  if (nextStatus === 'done') {
     await DB.prepare(
       `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
        VALUES (?,?,?,?,?)`,
@@ -1756,10 +2125,9 @@ Your doctrine:
 
 app.post('/api/hermes', async (c) => {
   const DB = c.env.DB
-  const { message, date } = await c.req.json()
-  if (!message?.trim()) return c.json({ error: 'Say something, Commander.' }, 400)
+  const { message, date } = await parseJson(c, hermesBodySchema)
   const userId = c.get('userId')
-  const today = date || (await userNow(DB, userId)).date
+  const today = await safeDate(DB, date, userId)
 
   const briefing = await hermesBriefing(DB, userId, today)
   const history = ((await DB.prepare(
@@ -1812,8 +2180,8 @@ app.get('/api/hermes/history', async (c) => {
 app.post('/api/hermes/council', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const { date } = await c.req.json()
-  const today = date || (await userNow(DB, userId)).date
+  const { date } = await parseJson(c, councilBodySchema)
+  const today = await safeDate(DB, date, userId)
   const briefing = await hermesBriefing(DB, userId, today)
   const apiKey = c.env.OPENAI_API_KEY
   if (!apiKey) return c.json({ error: 'Hermes offline: no LLM key.' }, 500)
@@ -1843,7 +2211,8 @@ app.post('/api/hermes/council', async (c) => {
 app.post('/api/intel/:id/analyze', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
-  const id = Number(c.req.param('id'))
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  await parseEmptyBody(c)
   const entry = await DB.prepare(
     `SELECT * FROM intel_entries WHERE id=? AND user_id=?`,
   ).bind(id, userId).first<any>()
@@ -1910,6 +2279,7 @@ app.get('/api/agent/token', async (c) => {
 })
 app.post('/api/agent/token/rotate', async (c) => {
   const userId = c.get('userId')
+  await parseEmptyBody(c)
   const t = genToken()
   await setSetting(c.env.DB, 'agent_token', t, userId)
   return c.json({ token: t })
@@ -1963,8 +2333,7 @@ app.get('/api/agent/pending', async (c) => {
 app.post('/api/agent/intel', async (c) => {
   const userId = await agentUserId(c)
   if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
-  const b = await c.req.json()
-  if (!b.title || !b.domain) return c.json({ error: 'domain and title required' }, 400)
+  const b = await parseJson(c, agentIntelBodySchema)
   const r = await c.env.DB.prepare(
     `INSERT INTO intel_entries
        (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
@@ -1981,7 +2350,7 @@ app.post('/api/agent/debrief', async (c) => {
   const userId = await agentUserId(c)
   if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const DB = c.env.DB
-  const b = await c.req.json()
+  const b = await parseJson(c, agentDebriefBodySchema)
   const date = b.date || (await userNow(DB, userId)).date
   const prev = await DB.prepare(
     `SELECT * FROM debriefs WHERE user_id=? AND log_date=?`,
@@ -2020,15 +2389,23 @@ app.post('/api/agent/block-log', async (c) => {
   const userId = await agentUserId(c)
   if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const DB = c.env.DB
-  const { block_id, date, status, note } = await c.req.json()
+  const { block_id, date, status, note } =
+    await parseJson(c, agentBlockLogBodySchema)
   const block = await DB.prepare(
     `SELECT id FROM schedule_blocks WHERE id=? AND user_id=?`,
   ).bind(block_id, userId).first()
   if (!block) return c.json({ error: 'no such block' }, 404)
   const logDate = date || (await userNow(DB, userId)).date
   const existing = await DB.prepare(
-    `SELECT id FROM block_logs WHERE user_id=? AND block_id=? AND log_date=?`,
-  ).bind(userId, block_id, logDate).first<{ id: number }>()
+    `SELECT id, status FROM block_logs
+     WHERE user_id=? AND block_id=? AND log_date=?`,
+  ).bind(userId, block_id, logDate).first<{
+    id: number
+    status: string
+  }>()
+  if (existing?.status === 'missed') {
+    return c.json({ error: 'WINDOW CLOSED. Auto-missed blocks require an appeal.' }, 409)
+  }
   if (existing) {
     await DB.prepare(
       `UPDATE block_logs SET status=?, note=?, completed_at=datetime('now')
@@ -2048,8 +2425,7 @@ app.post('/api/agent/block-log', async (c) => {
 app.post('/api/agent/message', async (c) => {
   const userId = await agentUserId(c)
   if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
-  const { content, role } = await c.req.json()
-  if (!content) return c.json({ error: 'content required' }, 400)
+  const { content, role } = await parseJson(c, agentMessageBodySchema)
   await c.env.DB.prepare(
     `INSERT INTO hermes_messages (user_id, role, content, context_date)
      VALUES (?,?,?,?)`,
