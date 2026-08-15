@@ -25,36 +25,56 @@ function viewCouncil() {
 }
 
 /* ============ HERMES CHAT ============ */
-let BRIDGE_TOKEN = null;
+let BRIDGE_CREDENTIAL = null, BRIDGE_CREDENTIALS = [];
+const DEFAULT_BRIDGE_SCOPES = [
+  'briefing:read', 'blocks:read', 'blocks:write', 'debriefs:read',
+  'debriefs:write', 'intel:read', 'intel:write', 'hermes:write'
+];
 async function showBridge() {
   const url = location.origin;
+  BRIDGE_CREDENTIALS = await api('get', '/api/agent/credentials');
   const el = document.createElement('div');
   el.className = 'fixed inset-0 z-[300] bg-black/80 flex items-center justify-center p-4';
   el.innerHTML = '<div class="card p-4 max-w-md w-full max-h-[85vh] overflow-y-auto border-gold/40">' +
-    '<h3 class="font-disp font-bold text-gold text-sm tracking-widest mb-2"><i class="fas fa-link"></i> HERMES BRIDGE — CONNECT YOUR LOCAL AGENT</h3>' +
-    '<p class="text-[11px] text-gray-400 mb-2">Your Termux Hermes gets FULL access: briefings, auto-journaling, block check-offs, intel filing, watch-loop alerts (termux-notification + optional Telegram relay).</p>' +
-    '<p class="text-[10px] font-bold text-gray-400">1. AGENT TOKEN (keep secret):</p>' +
-    (BRIDGE_TOKEN
-      ? '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent).then(()=>toast(\'Token copied.\'))">' + esc(BRIDGE_TOKEN) + '</div>' +
-        '<p class="text-[10px] text-amber-300 mb-2">Shown for this rotation only. Copy it now; reopening this dialog will not retrieve it.</p>'
-      : '<div class="card p-2 mb-2 text-[10px] text-gray-400">No token is retrievable. Rotate explicitly to issue a new one; the current bridge will stop until WARROOM_TOKEN is updated.</div>') +
-    '<p class="text-[10px] font-bold text-gray-400">2. IN TERMUX:</p>' +
-    '<pre class="card p-2 mb-2 text-[9px] font-mono text-emerald-300 overflow-x-auto">pkg install python termux-api -y\npip install requests\ncurl -o hermes_bridge.py \\\n  ' + url + '/static/hermes_bridge.py\nexport WARROOM_URL="' + url + '"\nexport WARROOM_TOKEN="' + (BRIDGE_TOKEN ? esc(BRIDGE_TOKEN) : '&lt;paste newly rotated token&gt;') + '"</pre>' +
-    '<p class="text-[10px] font-bold text-gray-400">3. COMMANDS YOUR AGENT CAN RUN:</p>' +
-    '<pre class="card p-2 mb-2 text-[9px] font-mono text-sky-300 overflow-x-auto">python hermes_bridge.py briefing   # my full file\npython hermes_bridge.py pending    # what needs me NOW\npython hermes_bridge.py watch      # 24/7 alert daemon\npython hermes_bridge.py done 8     # check off block\npython hermes_bridge.py intel "Cousin asked for money" -d money -s "..." -m "..."\npython hermes_bridge.py journal --wins "..."\npython hermes_bridge.py say "counsel text"  # appears here\npython hermes_bridge.py export     # sync full memory</pre>' +
-    '<p class="text-[10px] text-gray-500 mb-2">Run the watcher 24/7: <span class="font-mono text-emerald-300">termux-wake-lock && tmux new -d "python hermes_bridge.py watch"</span>. Telegram relay: also export TG_BOT_TOKEN and TG_CHAT_ID.</p>' +
-    '<div class="flex gap-2">' +
-    '<button class="btn flex-1 p-2 bg-red-900/60 border border-red-700 text-red-200 text-xs font-bold" onclick="rotateToken(this)">ROTATE TOKEN</button>' +
-    '<button class="btn flex-1 p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" onclick="BRIDGE_TOKEN=null;this.closest(\'.fixed\').remove()">CLOSE</button>' +
-    '</div></div>';
+    '<h3 class="font-disp font-bold text-gold text-sm tracking-widest mb-2"><i class="fas fa-link"></i> HERMES BRIDGE — SCOPED CREDENTIALS</h3>' +
+    '<p class="text-[11px] text-gray-400 mb-2">Issue one credential per device. Default bridge access excludes full export. Revoke a lost or retired device without disrupting the others.</p>' +
+    '<label class="text-[10px] font-bold text-gray-400">DEVICE LABEL</label>' +
+    '<input id="bridge-device-label" maxlength="100" placeholder="Termux phone" class="w-full mb-2">' +
+    '<button class="btn w-full p-2 mb-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" onclick="issueBridgeCredential(this)">ISSUE DEFAULT BRIDGE CREDENTIAL</button>' +
+    (BRIDGE_CREDENTIAL
+      ? '<p class="text-[10px] font-bold text-gray-400">RAW CREDENTIAL — COPY NOW:</p>' +
+        '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent).then(()=>toast(\'Credential copied.\'))">' + esc(BRIDGE_CREDENTIAL.token) + '</div>' +
+        '<p class="text-[10px] text-amber-300 mb-2">Shown once. The server stores only its hash.</p>'
+      : '<div class="card p-2 mb-2 text-[10px] text-gray-400">No raw credential is retrievable. Issue one and copy it before closing.</div>') +
+    '<p class="text-[10px] font-bold text-gray-400">ACTIVE / REVOKED DEVICES:</p>' +
+    '<div class="mb-2">' + (BRIDGE_CREDENTIALS.length ? BRIDGE_CREDENTIALS.map(function(c) {
+      return '<div class="card p-2 mb-1 text-[10px]"><div class="flex justify-between gap-2"><span><b>' + esc(c.deviceLabel) + '</b><br><span class="font-mono text-gray-500">' + esc(c.tokenPrefix) + '…</span><br><span class="text-gray-500">' + esc(c.scopes.join(', ')) + '</span></span>' +
+        (c.revokedAt ? '<span class="text-red-400">REVOKED</span>' : '<button class="btn px-2 border border-red-700 text-red-300" onclick="revokeBridgeCredential(' + c.id + ',this)">REVOKE</button>') + '</div></div>';
+    }).join('') : '<p class="text-[10px] text-gray-500">No credentials issued.</p>') + '</div>' +
+    '<p class="text-[10px] font-bold text-gray-400">TERMUX:</p>' +
+    '<pre class="card p-2 mb-2 text-[9px] font-mono text-emerald-300 overflow-x-auto">pkg install python termux-api -y\npip install requests\ncurl -o hermes_bridge.py \\\n  ' + url + '/static/hermes_bridge.py\nmkdir -p ~/.config/warroom\numask 077\ncat &gt; ~/.config/warroom/agent_token\n# Paste the copied credential, press Enter, then Ctrl-D\nexport WARROOM_URL="' + url + '"\nexport WARROOM_TOKEN_FILE="$HOME/.config/warroom/agent_token"</pre>' +
+    '<p class="text-[10px] text-gray-500 mb-2">Full export requires a separate credential carrying <span class="font-mono">export:read</span> and the bridge flag <span class="font-mono">--authorize-full-export</span>.</p>' +
+    '<button class="btn w-full p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" onclick="BRIDGE_CREDENTIAL=null;this.closest(\'.fixed\').remove()">CLOSE</button>' +
+    '</div>';
   document.body.appendChild(el);
 }
-async function rotateToken(btn) {
-  BRIDGE_TOKEN = (await api('post', '/api/agent/token/rotate')).token;
-  toast('Token rotated. Update WARROOM_TOKEN in Termux.');
-  btn.closest('.fixed').remove(); showBridge();
+async function issueBridgeCredential(btn) {
+  const label = ($('#bridge-device-label').value || '').trim();
+  if (!label) return toast('Give this device a label.', true);
+  BRIDGE_CREDENTIAL = await api('post', '/api/agent/credentials', {
+    deviceLabel: label, scopes: DEFAULT_BRIDGE_SCOPES, expiresInDays: 90
+  });
+  toast('Credential issued. Copy it now.');
+  btn.closest('.fixed').remove(); await showBridge();
 }
-window.showBridge = showBridge; window.rotateToken = rotateToken;
+async function revokeBridgeCredential(id, btn) {
+  await api('post', '/api/agent/credentials/' + id + '/revoke');
+  toast('Credential revoked.');
+  btn.closest('.fixed').remove(); await showBridge();
+}
+window.showBridge = showBridge;
+window.issueBridgeCredential = issueBridgeCredential;
+window.revokeBridgeCredential = revokeBridgeCredential;
 
 function viewHermes() {
   return '<div class="card p-3 mb-3 border-gold/30">' +

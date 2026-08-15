@@ -5,6 +5,7 @@ import intelBooksAlarms from '../migrations/0002_intel_books_alarms.sql?raw'
 import tongue from '../migrations/0003_tongue.sql?raw'
 import reforge from '../migrations/0004_reforge.sql?raw'
 import sessionsAndOwnership from '../migrations/0005_sessions_and_ownership.sql?raw'
+import agentCredentials from '../migrations/0006_agent_credentials.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -37,6 +38,9 @@ async function seedPopulatedLegacySchema(): Promise<void> {
   ).run()
   await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('auth_salt','legacy-verifier-salt')`,
+  ).run()
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES ('agent_token','legacy-agent-token')`,
   ).run()
 
   const block = await env.DB.prepare(
@@ -107,4 +111,5 @@ beforeAll(async () => {
     preMigrationRowCounts[table] = row?.total ?? 0
   }
   await apply(sessionsAndOwnership)
+  await apply(agentCredentials)
 })

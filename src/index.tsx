@@ -13,6 +13,9 @@ type Bindings = {
 
 type Variables = {
   userId: number
+  agentCredentialId: number
+  agentScopes: string[]
+  agentRoute: string
 }
 
 type SessionRecord = {
@@ -94,8 +97,7 @@ app.use('*', async (c, next) => {
   const unsafe = !['GET', 'HEAD'].includes(method)
   const rawSession = getCookie(c, 'wr_session')
   const isPasswordEntry = path === '/api/auth/setup' || path === '/api/auth/login'
-  const isAgentCredentialRequest = path.startsWith('/api/agent/') &&
-    path !== '/api/agent/token' && path !== '/api/agent/token/rotate' &&
+  const isAgentCredentialRequest = path.startsWith('/api/agent/v1/') &&
     !!c.req.header('x-agent-token')
   if (unsafe && path.startsWith('/api/') && rawSession && !isPasswordEntry && !isAgentCredentialRequest) {
     const supplied = c.req.header('x-csrf-token') || ''
@@ -343,6 +345,29 @@ const agentMessageBodySchema = z.strictObject({
   role: hermesRoleSchema.optional(),
 })
 
+const AGENT_SCOPES = [
+  'briefing:read',
+  'blocks:read',
+  'blocks:write',
+  'debriefs:read',
+  'debriefs:write',
+  'intel:read',
+  'intel:write',
+  'hermes:write',
+  'export:read',
+] as const
+const DEFAULT_AGENT_SCOPES = AGENT_SCOPES.filter(
+  (scope) => scope !== 'export:read',
+)
+const agentScopeSchema = z.enum(AGENT_SCOPES)
+const agentCredentialBodySchema = z.strictObject({
+  deviceLabel: requiredTrimmedText(1, 100),
+  scopes: z.array(agentScopeSchema).min(1).max(AGENT_SCOPES.length)
+    .refine((scopes) => new Set(scopes).size === scopes.length)
+    .optional(),
+  expiresInDays: z.number().int().min(1).max(365).optional(),
+})
+
 // ============ SERVER CLOCK (single source of truth) ============
 // The commander's timezone is captured ONCE (settings.timezone). After that the
 // SERVER derives date+time — the client can never time-travel the engines.
@@ -539,19 +564,262 @@ app.post('/api/auth/logout', async (c) => {
   return c.json({ ok: true })
 })
 
+type AgentCredentialRecord = {
+  id: number
+  user_id: number
+  scopes: string
+  expires_at: string
+  revoked_at: string | null
+  rate_window_started_at: string | null
+  rate_window_count: number
+}
+
+const AGENT_RATE_LIMIT = 60
+const AGENT_RATE_WINDOW_SECONDS = 60
+
+function coarseNetwork(value: string | undefined): string | null {
+  if (!value) return null
+  const ipv4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (ipv4) {
+    const octets = ipv4.slice(1).map(Number)
+    return octets.every((octet) => octet >= 0 && octet <= 255)
+      ? `${octets[0]}.${octets[1]}.${octets[2]}.0/24`
+      : null
+  }
+
+  const halves = value.toLowerCase().split('::')
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(':') : []
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  if (halves.length === 1 && left.length !== 8) return null
+  const missing = 8 - left.length - right.length
+  if (missing < (halves.length === 2 ? 1 : 0)) return null
+  const groups = [
+    ...left,
+    ...Array(missing).fill('0'),
+    ...right,
+  ]
+  if (
+    groups.length !== 8 ||
+    groups.some((group) => !/^[a-f0-9]{1,4}$/.test(group))
+  ) return null
+  return `${groups.slice(0, 3).map((group) =>
+    Number.parseInt(group, 16).toString(16)).join(':')}::/48`
+}
+
+function agentRequestMetadata(c: any): {
+  method: string
+  country: string | null
+  network: string | null
+} {
+  const country = c.req.header('cf-ipcountry')?.trim().toUpperCase() || null
+  return {
+    method: c.req.method.toUpperCase(),
+    country: country && /^[A-Z]{2}$/.test(country) ? country : null,
+    network: coarseNetwork(c.req.header('cf-connecting-ip')),
+  }
+}
+
+async function agentCredentialEvent(
+  c: any,
+  credentialId: number,
+  userId: number,
+  eventType: 'issued' | 'used' | 'revoked' | 'scope_denied' | 'rate_limited',
+  route?: string,
+): Promise<void> {
+  const metadata = agentRequestMetadata(c)
+  await c.env.DB.prepare(
+    `INSERT INTO agent_credential_events
+       (user_id, credential_id, event_type, request_method, request_route,
+        request_country, request_network)
+     VALUES (?,?,?,?,?,?,?)`,
+  ).bind(
+    userId,
+    credentialId,
+    eventType,
+    route ? metadata.method : null,
+    route ?? null,
+    route ? metadata.country : null,
+    route ? metadata.network : null,
+  ).run()
+}
+
+async function consumeAgentRateLimit(
+  c: any,
+  credential: AgentCredentialRecord,
+): Promise<boolean> {
+  const consumed = await c.env.DB.prepare(
+    `UPDATE agent_credentials
+     SET rate_window_started_at=CASE
+           WHEN rate_window_started_at IS NULL
+             OR unixepoch(rate_window_started_at) <=
+                unixepoch('now') - ?
+           THEN datetime('now')
+           ELSE rate_window_started_at
+         END,
+         rate_window_count=CASE
+           WHEN rate_window_started_at IS NULL
+             OR unixepoch(rate_window_started_at) <=
+                unixepoch('now') - ?
+           THEN 1
+           ELSE rate_window_count + 1
+         END
+     WHERE id=? AND revoked_at IS NULL
+       AND (
+         rate_window_started_at IS NULL
+         OR unixepoch(rate_window_started_at) <= unixepoch('now') - ?
+         OR rate_window_count < ?
+       )`,
+  ).bind(
+    AGENT_RATE_WINDOW_SECONDS,
+    AGENT_RATE_WINDOW_SECONDS,
+    credential.id,
+    AGENT_RATE_WINDOW_SECONDS,
+    AGENT_RATE_LIMIT,
+  ).run()
+  return Number((consumed.meta as any).changes) === 1
+}
+
+async function authenticateAgent(c: any): Promise<Response | null> {
+  const raw = c.req.header('x-agent-token') || ''
+  if (!raw || !raw.startsWith('wr_agent_v1_')) {
+    return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
+  }
+  const tokenHash = await sha256(raw)
+  const credential = await c.env.DB.prepare(
+    `SELECT id, user_id, scopes, expires_at, revoked_at,
+            rate_window_started_at, rate_window_count
+     FROM agent_credentials
+     WHERE token_hash=? AND revoked_at IS NULL
+       AND unixepoch(expires_at) > unixepoch('now')`,
+  ).bind(tokenHash).first() as AgentCredentialRecord | null
+  if (!credential) return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
+  const route = c.get('agentRoute')
+  if (!(await consumeAgentRateLimit(c, credential))) {
+    await agentCredentialEvent(
+      c, credential.id, credential.user_id, 'rate_limited', route,
+    )
+    c.header('Retry-After', String(AGENT_RATE_WINDOW_SECONDS))
+    return c.json({ error: 'AGENT RATE LIMIT EXCEEDED' }, 429)
+  }
+  let scopes: string[]
+  try {
+    scopes = JSON.parse(credential.scopes)
+  } catch (_) {
+    return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
+  }
+  c.set('userId', credential.user_id)
+  c.set('agentCredentialId', credential.id)
+  c.set('agentScopes', scopes)
+  const metadata = agentRequestMetadata(c)
+  await c.env.DB.prepare(
+    `UPDATE agent_credentials
+     SET last_used_at=datetime('now'), last_request_method=?,
+         last_request_route=?, last_request_country=?, last_request_network=?
+     WHERE id=? AND revoked_at IS NULL`,
+  ).bind(
+    metadata.method, route, metadata.country, metadata.network, credential.id,
+  ).run()
+  await agentCredentialEvent(c, credential.id, credential.user_id, 'used', route)
+  return null
+}
+
+function agentRoute(
+  method: string,
+  path: string,
+): { route: string; scope: typeof AGENT_SCOPES[number] } | null {
+  const routes: Record<string, {
+    route: string
+    scope: typeof AGENT_SCOPES[number]
+  }> = {
+    'POST /api/agent/v1/briefing': {
+      route: 'briefing:read', scope: 'briefing:read',
+    },
+    'POST /api/agent/v1/pending': {
+      route: 'blocks:read', scope: 'blocks:read',
+    },
+    'POST /api/agent/v1/debriefs': {
+      route: 'debriefs:read', scope: 'debriefs:read',
+    },
+    'POST /api/agent/v1/debrief': {
+      route: 'debriefs:write', scope: 'debriefs:write',
+    },
+    'POST /api/agent/v1/intel/read': {
+      route: 'intel:read', scope: 'intel:read',
+    },
+    'POST /api/agent/v1/intel': {
+      route: 'intel:write', scope: 'intel:write',
+    },
+    'POST /api/agent/v1/block-log': {
+      route: 'blocks:write', scope: 'blocks:write',
+    },
+    'POST /api/agent/v1/message': {
+      route: 'hermes:message', scope: 'hermes:write',
+    },
+    'POST /api/agent/v1/export': {
+      route: 'export:read', scope: 'export:read',
+    },
+  }
+  return routes[`${method.toUpperCase()} ${path}`] ?? null
+}
+
+const AGENT_V1_PATHS = new Set([
+  '/api/agent/v1/briefing',
+  '/api/agent/v1/pending',
+  '/api/agent/v1/debriefs',
+  '/api/agent/v1/debrief',
+  '/api/agent/v1/intel/read',
+  '/api/agent/v1/intel',
+  '/api/agent/v1/block-log',
+  '/api/agent/v1/message',
+  '/api/agent/v1/export',
+])
+
 // -- global API guard --
-// /api/auth/*            → open (it IS the gate)
-// /api/agent/token*      → session only (GET retired; POST rotates for Termux setup)
-// /api/agent/*           → agent credential middleware in Book 5.5
-// everything else /api/* → durable session required
+// /api/auth/*                   → open (it IS the gate)
+// /api/agent/credentials*       → durable owner session only
+// /api/agent/v1/*               → scoped hashed agent credential only
+// unversioned /api/agent/*      → retired
+// everything else /api/*       → durable owner session required
 app.use('/api/*', async (c, next) => {
   const p = new URL(c.req.url).pathname
   if (p.startsWith('/api/auth/')) return next()
-  if (p === '/api/agent/token' || p === '/api/agent/token/rotate') {
+  if (p === '/api/agent/credentials' ||
+      /^\/api\/agent\/credentials\/[^/]+\/revoke$/.test(p) ||
+      p === '/api/agent/token' || p === '/api/agent/token/rotate') {
     if (!(await sessionValid(c))) return c.json({ error: 'AUTH REQUIRED' }, 401)
     return next()
   }
-  if (p.startsWith('/api/agent/')) return next()
+  if (p.startsWith('/api/agent/v1/')) {
+    const route = agentRoute(c.req.method, p)
+    if (!route) {
+      return c.json(
+        { error: AGENT_V1_PATHS.has(p) ? 'METHOD NOT ALLOWED' : 'AGENT ROUTE NOT FOUND' },
+        AGENT_V1_PATHS.has(p) ? 405 : 404,
+      )
+    }
+    c.set('agentRoute', route.route)
+    const denied = await authenticateAgent(c)
+    if (denied) return denied
+    if (!c.get('agentScopes').includes(route.scope)) {
+      await agentCredentialEvent(
+        c,
+        c.get('agentCredentialId'),
+        c.get('userId'),
+        'scope_denied',
+        route.route,
+      )
+      return c.json({
+        error: 'AGENT SCOPE REQUIRED', requiredScope: route.scope,
+      }, 403)
+    }
+    return next()
+  }
+  if (p.startsWith('/api/agent/')) {
+    return c.json({
+      error: 'AGENT API VERSION RETIRED. Use /api/agent/v1.',
+    }, 410)
+  }
   if (!(await sessionValid(c))) return c.json({ error: 'AUTH REQUIRED' }, 401)
   return next()
 })
@@ -2239,56 +2507,100 @@ app.post('/api/intel/:id/analyze', async (c) => {
   return c.json({ analysis: answer })
 })
 
-// ============ HERMES BRIDGE — external agent API (Termux/Telegram/CLI) ============
-// Your local Hermes agent authenticates with X-Agent-Token and gets full read/write
-// access to the war room: briefings, journaling, check-offs, intel filing.
-
-function genToken(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
-  let t = 'hermes_'
-  const buf = new Uint8Array(32)
-  crypto.getRandomValues(buf)
-  for (const b of buf) t += chars[b % chars.length]
-  return t
+// ============ HERMES BRIDGE — scoped external agent API ============
+function genAgentToken(): string {
+  return `wr_agent_v1_${randHex(32)}`
 }
 
-async function getAgentToken(
-  DB: D1Database,
-): Promise<{ userId: number; value: string } | null> {
-  const row = await DB.prepare(
-    `SELECT user_id, value FROM settings
-     WHERE key='agent_token' AND user_id IS NOT NULL
-     ORDER BY rowid LIMIT 1`,
-  ).first<{ user_id: number; value: string }>()
-  return row ? { userId: row.user_id, value: row.value } : null
-}
-
-async function agentUserId(c: any): Promise<number | null> {
-  // HEADER ONLY — tokens in query strings leak into logs and referrers.
-  const token = c.req.header('x-agent-token')
-  if (!token) return null
-  const stored = await getAgentToken(c.env.DB)
-  if (!stored || !timingSafeEq(token, stored.value)) return null
-  return stored.userId
-}
-
-// Raw agent credentials are issued only by the explicit rotation POST below.
-// This retired GET remains non-mutating so old clients fail without leaking a token.
-app.get('/api/agent/token', async (c) => {
-  return c.json({ error: 'Agent tokens are issued only by POST /api/agent/token/rotate.' }, 405, { Allow: 'POST' })
-})
+app.get('/api/agent/token', (c) => c.json({
+  error: 'MASTER TOKEN RETIRED. Issue a scoped credential with POST /api/agent/credentials.',
+}, 410))
 app.post('/api/agent/token/rotate', async (c) => {
-  const userId = c.get('userId')
   await parseEmptyBody(c)
-  const t = genToken()
-  await setSetting(c.env.DB, 'agent_token', t, userId)
-  return c.json({ token: t })
+  return c.json({
+    error: 'MASTER TOKEN RETIRED. Issue a scoped credential with POST /api/agent/credentials.',
+  }, 410)
+})
+
+app.post('/api/agent/credentials', async (c) => {
+  const userId = c.get('userId')
+  const body = await parseJson(c, agentCredentialBodySchema)
+  const scopes = body.scopes ?? [...DEFAULT_AGENT_SCOPES]
+  const token = genAgentToken()
+  const expiresAt = new Date(
+    Date.now() + (body.expiresInDays ?? 90) * 24 * 60 * 60 * 1000,
+  ).toISOString()
+  const inserted = await c.env.DB.prepare(
+    `INSERT INTO agent_credentials
+       (user_id, token_hash, token_prefix, device_label, scopes, expires_at)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(
+    userId,
+    await sha256(token),
+    token.slice(0, 20),
+    body.deviceLabel,
+    JSON.stringify(scopes),
+    expiresAt,
+  ).run()
+  const id = Number(inserted.meta.last_row_id)
+  await agentCredentialEvent(c, id, userId, 'issued')
+  return c.json({
+    id,
+    token,
+    deviceLabel: body.deviceLabel,
+    scopes,
+    expiresAt,
+  }, 201)
+})
+
+app.get('/api/agent/credentials', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, token_prefix, device_label, scopes, expires_at, revoked_at,
+            created_at, last_used_at, last_request_method,
+            last_request_route, last_request_country, last_request_network
+     FROM agent_credentials WHERE user_id=? ORDER BY created_at DESC, id DESC`,
+  ).bind(c.get('userId')).all()
+  return c.json((results as any[]).map((row) => ({
+    id: row.id,
+    tokenPrefix: row.token_prefix,
+    deviceLabel: row.device_label,
+    scopes: JSON.parse(row.scopes),
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+    lastRequest: row.last_request_route ? {
+      method: row.last_request_method,
+      route: row.last_request_route,
+      country: row.last_request_country,
+      network: row.last_request_network,
+    } : null,
+  })))
+})
+
+app.post('/api/agent/credentials/:id/revoke', async (c) => {
+  const id = parseValue(positiveIdSchema, c.req.param('id'))
+  await parseEmptyBody(c)
+  const userId = c.get('userId')
+  const credential = await c.env.DB.prepare(
+    `SELECT id FROM agent_credentials WHERE id=? AND user_id=?`,
+  ).bind(id, userId).first<{ id: number }>()
+  if (!credential) return c.json({ error: 'not found' }, 404)
+  const revoked = await c.env.DB.prepare(
+    `UPDATE agent_credentials
+     SET revoked_at=COALESCE(revoked_at, datetime('now'))
+     WHERE id=? AND user_id=?`,
+  ).bind(id, userId).run()
+  if ((revoked.meta as any).changes > 0) {
+    await agentCredentialEvent(c, id, userId, 'revoked')
+  }
+  return c.json({ ok: true })
 })
 
 // Full situational briefing for the agent (text + structured JSON)
-app.get('/api/agent/briefing', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/briefing', async (c) => {
+  await parseEmptyBody(c)
+  const userId = c.get('userId')
   const DB = c.env.DB
   const { date, time } = await userNow(DB, userId) // server clock; reads never run engines
   const briefing = await hermesBriefing(DB, userId, date)
@@ -2302,9 +2614,9 @@ app.get('/api/agent/briefing', async (c) => {
 })
 
 // What needs attention RIGHT NOW (for the agent's watch loop → Telegram/termux-notification)
-app.get('/api/agent/pending', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/pending', async (c) => {
+  await parseEmptyBody(c)
+  const userId = c.get('userId')
   const DB = c.env.DB
   const { date, time } = await userNow(DB, userId) // server clock; reads never run engines
   const blocks = await blocksForDate(DB, userId, date)
@@ -2329,29 +2641,44 @@ app.get('/api/agent/pending', async (c) => {
   })
 })
 
+app.post('/api/agent/v1/debriefs', async (c) => {
+  await parseEmptyBody(c)
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? ORDER BY log_date DESC LIMIT 60`,
+  ).bind(c.get('userId')).all()
+  return c.json(results)
+})
+
+app.post('/api/agent/v1/intel/read', async (c) => {
+  await parseEmptyBody(c)
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM intel_entries WHERE user_id=?
+     ORDER BY log_date DESC, id DESC LIMIT 100`,
+  ).bind(c.get('userId')).all()
+  return c.json(results)
+})
+
 // Agent auto-journals anything it observes: intel, debrief updates, block check-offs
-app.post('/api/agent/intel', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/intel', async (c) => {
+  const userId = c.get('userId')
   const b = await parseJson(c, agentIntelBodySchema)
   const r = await c.env.DB.prepare(
     `INSERT INTO intel_entries
        (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
         principle_used, lesson, people, hermes_analysis)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(userId, b.log_date || (await userNow(c.env.DB, userId)).date,
+  ).bind(userId, await safeDate(c.env.DB, b.log_date, userId),
     b.domain, '[HERMES] ' + b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
     b.lesson || null, b.people || null, b.analysis || null).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 
-app.post('/api/agent/debrief', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/debrief', async (c) => {
+  const userId = c.get('userId')
   const DB = c.env.DB
   const b = await parseJson(c, agentDebriefBodySchema)
-  const date = b.date || (await userNow(DB, userId)).date
+  const date = await safeDate(DB, b.date, userId)
   const prev = await DB.prepare(
     `SELECT * FROM debriefs WHERE user_id=? AND log_date=?`,
   ).bind(userId, date).first<any>()
@@ -2385,9 +2712,8 @@ app.post('/api/agent/debrief', async (c) => {
   return c.json({ ok: true })
 })
 
-app.post('/api/agent/block-log', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/block-log', async (c) => {
+  const userId = c.get('userId')
   const DB = c.env.DB
   const { block_id, date, status, note } =
     await parseJson(c, agentBlockLogBodySchema)
@@ -2395,7 +2721,7 @@ app.post('/api/agent/block-log', async (c) => {
     `SELECT id FROM schedule_blocks WHERE id=? AND user_id=?`,
   ).bind(block_id, userId).first()
   if (!block) return c.json({ error: 'no such block' }, 404)
-  const logDate = date || (await userNow(DB, userId)).date
+  const logDate = await safeDate(DB, date, userId)
   const existing = await DB.prepare(
     `SELECT id, status FROM block_logs
      WHERE user_id=? AND block_id=? AND log_date=?`,
@@ -2422,9 +2748,8 @@ app.post('/api/agent/block-log', async (c) => {
 })
 
 // Agent posts its counsel into the app's Council log (visible in the COUNCIL tab)
-app.post('/api/agent/message', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/message', async (c) => {
+  const userId = c.get('userId')
   const { content, role } = await parseJson(c, agentMessageBodySchema)
   await c.env.DB.prepare(
     `INSERT INTO hermes_messages (user_id, role, content, context_date)
@@ -2435,9 +2760,9 @@ app.post('/api/agent/message', async (c) => {
 })
 
 // Everything endpoint: full DB export for the credential owner only.
-app.get('/api/agent/export', async (c) => {
-  const userId = await agentUserId(c)
-  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+app.post('/api/agent/v1/export', async (c) => {
+  await parseEmptyBody(c)
+  const userId = c.get('userId')
   const DB = c.env.DB
   const out: Record<string, any> = {}
   for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks', 'maxims']) {

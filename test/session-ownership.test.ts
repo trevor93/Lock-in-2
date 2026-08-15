@@ -108,6 +108,24 @@ async function mutationHeaders(cookie: string): Promise<Record<string, string>> 
   }
 }
 
+async function issueAgentCredential(
+  cookie: string,
+  deviceLabel: string,
+  scopes: string[],
+): Promise<string> {
+  const response = await app.request(
+    '/api/agent/credentials',
+    {
+      method: 'POST',
+      headers: await mutationHeaders(cookie),
+      body: JSON.stringify({ deviceLabel, scopes }),
+    },
+    baseEnv,
+  )
+  expect(response.status).toBe(201)
+  return (await response.json<{ token: string }>()).token
+}
+
 describe('Book 5.2 durable sessions', () => {
   it('sets an expiring host-only secure browser-session cookie', async () => {
     await clearAuth()
@@ -418,13 +436,11 @@ describe('Book 5.2 ownership', () => {
     ).bind(owner!.id).first<{ id: number }>())?.id ?? (await env.DB.prepare(
       `INSERT INTO users (password_hash, password_salt, role) VALUES ('foreign-hash','foreign-salt','owner')`,
     ).run()).meta.last_row_id)
-    const rotate = await app.request(
-      '/api/agent/token/rotate',
-      { method: 'POST', headers: await mutationHeaders(ownerCookie) },
-      baseEnv,
+    const token = await issueAgentCredential(
+      ownerCookie,
+      'Ownership briefing device',
+      ['briefing:read'],
     )
-    expect(rotate.status).toBe(200)
-    const { token } = await rotate.json<{ token: string }>()
 
     await env.DB.batch([
       env.DB.prepare(
@@ -443,8 +459,15 @@ describe('Book 5.2 ownership', () => {
     ])
 
     const response = await app.request(
-      '/api/agent/briefing',
-      { headers: { 'X-Agent-Token': token } },
+      '/api/agent/v1/briefing',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Token': token,
+        },
+        body: '{}',
+      },
       baseEnv,
     )
 
@@ -467,20 +490,25 @@ describe('Book 5.2 ownership', () => {
     ).bind(owner!.id).first<{ id: number }>())?.id ?? (await env.DB.prepare(
       `INSERT INTO users (password_hash, password_salt, role) VALUES ('foreign-hash','foreign-salt','owner')`,
     ).run()).meta.last_row_id)
-    const rotate = await app.request(
-      '/api/agent/token/rotate',
-      { method: 'POST', headers: await mutationHeaders(ownerCookie) },
-      baseEnv,
+    const token = await issueAgentCredential(
+      ownerCookie,
+      'Ownership export device',
+      ['export:read'],
     )
-    expect(rotate.status).toBe(200)
-    const { token } = await rotate.json<{ token: string }>()
     await env.DB.prepare(
       `INSERT INTO intel_entries (user_id, log_date, domain, title) VALUES (?,?,?,?)`,
     ).bind(otherUserId, '2026-08-15', 'other', 'FOREIGN-EXPORT-SECRET').run()
 
     const response = await app.request(
-      '/api/agent/export',
-      { headers: { 'X-Agent-Token': token } },
+      '/api/agent/v1/export',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Agent-Token': token,
+        },
+        body: '{}',
+      },
       baseEnv,
     )
 

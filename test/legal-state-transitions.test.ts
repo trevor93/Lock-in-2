@@ -79,13 +79,25 @@ async function authenticatedContext(): Promise<{
 }
 
 async function issueAgentToken(userId: number): Promise<string> {
-  const token = `transition-agent-${userId}`
+  const token = `wr_agent_v1_${'a'.repeat(50)}${userId}`
+  const hash = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(token),
+  )
+  const tokenHash = [...new Uint8Array(hash)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
   await env.DB.prepare(
-    `INSERT INTO settings (key, value, user_id)
-     VALUES ('agent_token',?,?)
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value,
-       user_id=excluded.user_id`,
-  ).bind(token, userId).run()
+    `INSERT INTO agent_credentials
+       (user_id, token_hash, token_prefix, device_label, scopes, expires_at)
+     VALUES (?,?,?,?,?,datetime('now','+1 day'))`,
+  ).bind(
+    userId,
+    tokenHash,
+    token.slice(0, 20),
+    'Transition test device',
+    JSON.stringify(['blocks:write']),
+  ).run()
   return token
 }
 
@@ -327,7 +339,7 @@ describe('Book 5.4 legal state transitions', () => {
     ).bind(userId, blockId).run()
 
     const rewrite = await app.request(
-      '/api/agent/block-log',
+      '/api/agent/v1/block-log',
       {
         method: 'POST',
         headers: {

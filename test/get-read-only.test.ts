@@ -25,9 +25,12 @@ const GET_ROUTES = [
   '/calendar.ics',
   '/api/hermes/history',
   '/api/agent/token',
-  '/api/agent/briefing',
-  '/api/agent/pending',
-  '/api/agent/export',
+  '/api/agent/v1/briefing',
+  '/api/agent/v1/pending',
+  '/api/agent/v1/debriefs',
+  '/api/agent/v1/intel',
+  '/api/agent/v1/intel/read',
+  '/api/agent/v1/export',
 ] as const
 
 function recordWrites(DB: D1Database) {
@@ -50,7 +53,6 @@ function recordWrites(DB: D1Database) {
 async function seedReadCoverage() {
   await env.DB.batch([
     env.DB.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('timezone', 'Africa/Nairobi')`),
-    env.DB.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('agent_token', 'test-agent-token')`),
     env.DB.prepare(`INSERT OR IGNORE INTO phases (id, sort_order, code, title, subtitle, track) VALUES (9901, 9901, 'TEST', 'Test phase', '', 'test')`),
     env.DB.prepare(`INSERT OR IGNORE INTO units (id, phase_id, sort_order, title) VALUES (9901, 9901, 1, 'Test unit')`),
     env.DB.prepare(`INSERT OR IGNORE INTO maxims (id, source, principle, naive_reading, master_reading) VALUES (9901, 'test', 'test', 'test', 'test')`),
@@ -61,9 +63,7 @@ async function seedReadCoverage() {
 
 function requestFor(path: string, method: 'GET' | 'HEAD', cookie: string) {
   const headers = new Headers()
-  if (path.startsWith('/api/agent/') && !path.startsWith('/api/agent/token')) {
-    headers.set('X-Agent-Token', 'test-agent-token')
-  } else if (path.startsWith('/api/') || path === '/calendar.ics') {
+  if (path.startsWith('/api/') || path === '/calendar.ics') {
     headers.set('Cookie', cookie)
   }
   return new Request(`https://warroom.test${path}`, { method, headers })
@@ -143,19 +143,6 @@ describe('GET and HEAD safety', () => {
         )
         expect(response.status, `${method} ${path}`).toBeLessThan(500)
         for (const sql of writes.slice(before)) violations.push(`${method} ${path}: ${sql}`)
-      }
-    }
-
-    for (const method of ['GET', 'HEAD'] as const) {
-      for (const path of ['/api/agent/token', '/api/agent/briefing']) {
-        await env.DB.prepare(`DELETE FROM settings WHERE key='agent_token'`).run()
-        const before = writes.length
-        const response = await app.fetch(
-          requestFor(path, method, cookie),
-          { DB, OPENAI_API_KEY: '', OPENAI_BASE_URL: 'https://model.invalid' },
-        )
-        expect(response.status, `${method} ${path} without stored token`).toBeLessThan(500)
-        for (const sql of writes.slice(before)) violations.push(`${method} ${path} without stored token: ${sql}`)
       }
     }
 
