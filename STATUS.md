@@ -76,7 +76,7 @@
 - B5.3.1 [DONE — SOURCE] Private path classification is `src/index.tsx:25`; private-response middleware begins at `src/index.tsx:60`.
 - B5.3.2 [DONE — SOURCE] Shared enforcement is `src/index.tsx:978`, browser invocation remains `POST /api/tick` at `src/index.tsx:960`, and protected internal invocation is `src/index.tsx:990`.
 - B5.3.3 [DONE — TESTED] `test/get-read-only.test.ts:113` proves repeated `GET`/`HEAD /api/state` executes zero mutating SQL; `test/get-read-only.test.ts:131` covers every explicit private GET/HEAD route and missing-token paths.
-- B5.3.4 [DONE — TESTED] `test/security-boundary.test.ts:220` and `test/security-boundary.test.ts:239` prove the internal route is POST-only, authenticated, server-clocked, and consequence-idempotent.
+- B5.3.4 [DONE — TESTED] `test/security-boundary.test.ts:244` and `test/security-boundary.test.ts:263` prove the internal route is POST-only, authenticated, server-clocked, and consequence-idempotent.
 - B5.3.5 [DONE — SOURCE/TEST] Scheduled caller implementation is `workers/enforcement-cron/src/index.ts:8`; scheduled handler is `workers/enforcement-cron/src/index.ts:26`; Access-header coverage is `workers/enforcement-cron/src/index.test.ts:30`. Deployment is operator-controlled.
 
 ### 5.4 CORS, headers, validation, and CSRF
