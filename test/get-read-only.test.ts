@@ -69,14 +69,35 @@ function requestFor(path: string, method: 'GET' | 'HEAD', cookie: string) {
   return new Request(`https://warroom.test${path}`, { method, headers })
 }
 
+async function passwordHash(password: string, saltHex: string): Promise<string> {
+  const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map((hex) => Number.parseInt(hex, 16)))
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+    key,
+    256,
+  )
+  return [...new Uint8Array(bits)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 async function authenticatedCookie(DB: D1Database): Promise<string> {
-  await DB.prepare(`DELETE FROM settings WHERE key IN ('auth_hash','auth_salt','session_secret')`).run()
+  const password = 'test-password-only'
+  const salt = '00112233445566778899aabbccddeeff'
+  await DB.prepare(
+    `UPDATE users SET password_hash=?, password_salt=?, failed_login_count=0, locked_until=NULL WHERE role='owner'`,
+  ).bind(await passwordHash(password, salt), salt).run()
   const response = await app.request(
-    '/api/auth/setup',
+    '/api/auth/login',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: 'test-password-only' }),
+      body: JSON.stringify({ password }),
     },
     { DB, OPENAI_API_KEY: '', OPENAI_BASE_URL: 'https://model.invalid' },
   )

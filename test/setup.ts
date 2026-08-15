@@ -4,6 +4,18 @@ import initialSchema from '../migrations/0001_initial_schema.sql?raw'
 import intelBooksAlarms from '../migrations/0002_intel_books_alarms.sql?raw'
 import tongue from '../migrations/0003_tongue.sql?raw'
 import reforge from '../migrations/0004_reforge.sql?raw'
+import sessionsAndOwnership from '../migrations/0005_sessions_and_ownership.sql?raw'
+
+export const personalTables = [
+  'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
+  'flashcards', 'card_reviews', 'honesty_flags', 'points_ledger',
+  'reward_redemptions', 'law_checks', 'settings', 'intel_entries',
+  'book_progress', 'hermes_messages', 'responses', 'response_srs',
+  'tongue_reviews', 'tongue_exams', 'day_summary', 'predictions',
+  'appeals', 'load_reductions',
+] as const
+
+export const preMigrationRowCounts: Record<string, number> = {}
 
 function statements(sql: string): string[] {
   return sql
@@ -13,10 +25,86 @@ function statements(sql: string): string[] {
     .filter(Boolean)
 }
 
+async function apply(sql: string): Promise<void> {
+  for (const statement of statements(sql)) {
+    await env.DB.prepare(statement).run()
+  }
+}
+
+async function seedPopulatedLegacySchema(): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES ('auth_hash','legacy-verifier-hash')`,
+  ).run()
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES ('auth_salt','legacy-verifier-salt')`,
+  ).run()
+
+  const block = await env.DB.prepare(
+    `INSERT INTO schedule_blocks
+       (sort_order, start_time, end_time, title, category, days, points)
+     VALUES (1,'06:00','06:30','Legacy block','admin','mon',10)`,
+  ).run()
+  const blockId = Number(block.meta.last_row_id)
+  const phase = await env.DB.prepare(
+    `INSERT INTO phases (sort_order, code, title) VALUES (1,'LEGACY','Legacy phase')`,
+  ).run()
+  const unit = await env.DB.prepare(
+    `INSERT INTO units (phase_id, sort_order, title) VALUES (?,?,?)`,
+  ).bind(Number(phase.meta.last_row_id), 1, 'Legacy unit').run()
+  const unitId = Number(unit.meta.last_row_id)
+  const maxim = await env.DB.prepare(
+    `INSERT INTO maxims
+       (source, principle, naive_reading, master_reading)
+     VALUES ('Legacy','Legacy principle','naive','master')`,
+  ).run()
+  const maximId = Number(maxim.meta.last_row_id)
+  const response = await env.DB.prepare(
+    `INSERT INTO responses (situation, trigger_q, response)
+     VALUES ('Legacy situation','Legacy trigger','Legacy response')`,
+  ).run()
+  const responseId = Number(response.meta.last_row_id)
+  const reward = await env.DB.prepare(
+    `INSERT INTO rewards (title, cost) VALUES ('Legacy reward',5)`,
+  ).run()
+  const law = await env.DB.prepare(
+    `INSERT INTO laws (sort_order, title, detail) VALUES (1,'Legacy law','Legacy detail')`,
+  ).run()
+  const lawId = Number(law.meta.last_row_id)
+
+  const statements = [
+    env.DB.prepare(`INSERT INTO block_logs (block_id, log_date, status) VALUES (?,'2026-08-14','done')`).bind(blockId),
+    env.DB.prepare(`INSERT INTO debriefs (log_date, wins) VALUES ('2026-08-14','Legacy win')`),
+    env.DB.prepare(`INSERT INTO unit_progress (unit_id, status) VALUES (?,'active')`).bind(unitId),
+    env.DB.prepare(`INSERT INTO flashcards (maxim_id, due_date) VALUES (?,'2026-08-15')`).bind(maximId),
+    env.DB.prepare(`INSERT INTO card_reviews (maxim_id, grade) VALUES (?,2)`).bind(maximId),
+    env.DB.prepare(`INSERT INTO honesty_flags (flag_date, flag_type, message) VALUES ('2026-08-14','legacy','Legacy flag')`),
+    env.DB.prepare(`INSERT INTO points_ledger (log_date, points, reason) VALUES ('2026-08-14',10,'Legacy points')`),
+    env.DB.prepare(`INSERT INTO reward_redemptions (reward_id) VALUES (?)`).bind(Number(reward.meta.last_row_id)),
+    env.DB.prepare(`INSERT INTO law_checks (law_id, log_date, kept) VALUES (?,'2026-08-14',1)`).bind(lawId),
+    env.DB.prepare(`INSERT INTO intel_entries (log_date, domain, title) VALUES ('2026-08-14','other','Legacy intel')`),
+    env.DB.prepare(`INSERT INTO book_progress (book_id, chapter_idx, status) VALUES ('legacy_book',0,'reading')`),
+    env.DB.prepare(`INSERT INTO hermes_messages (role, content) VALUES ('user','Legacy message')`),
+    env.DB.prepare(`INSERT INTO response_srs (response_id, due_date) VALUES (?,'2026-08-15')`).bind(responseId),
+    env.DB.prepare(`INSERT INTO tongue_reviews (response_id, review_date, mode, grade) VALUES (?,'2026-08-14','recall',2)`).bind(responseId),
+    env.DB.prepare(`INSERT INTO tongue_exams (exam_date, total, correct, score_pct, passed) VALUES ('2026-08-14',1,1,100,1)`),
+    env.DB.prepare(`INSERT INTO day_summary (summary_date) VALUES ('2026-08-14')`),
+    env.DB.prepare(`INSERT INTO predictions (made_date, claim, confidence, resolve_by) VALUES ('2026-08-14','Legacy prediction',70,'2026-08-20')`),
+    env.DB.prepare(`INSERT INTO appeals (appeal_date, block_id, block_date, reason, week_key) VALUES ('2026-08-15',?,'2026-08-14','Legacy appeal reason','2026-W33')`).bind(blockId),
+    env.DB.prepare(`INSERT INTO load_reductions (block_id, start_date, end_date) VALUES (?,'2026-08-14','2026-08-17')`).bind(blockId),
+  ]
+  await env.DB.batch(statements)
+}
+
 beforeAll(async () => {
   for (const migration of [initialSchema, intelBooksAlarms, tongue, reforge]) {
-    for (const statement of statements(migration)) {
-      await env.DB.prepare(statement).run()
-    }
+    await apply(migration)
   }
+  await seedPopulatedLegacySchema()
+  for (const table of personalTables) {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) AS total FROM ${table}`,
+    ).first<{ total: number }>()
+    preMigrationRowCounts[table] = row?.total ?? 0
+  }
+  await apply(sessionsAndOwnership)
 })

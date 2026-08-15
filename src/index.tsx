@@ -8,7 +8,17 @@ type Bindings = {
   ENFORCEMENT_JOB_SECRET?: string
   ALLOWED_ORIGINS?: string
 }
-const app = new Hono<{ Bindings: Bindings }>()
+
+type Variables = {
+  userId: number
+}
+
+type SessionRecord = {
+  id: number
+  user_id: number
+}
+
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 function privatePath(path: string): boolean {
   return path.startsWith('/api/') || path.startsWith('/internal/') || path === '/calendar.ics'
@@ -46,16 +56,26 @@ app.use('*', async (c, next) => {
 // ============ SERVER CLOCK (single source of truth) ============
 // The commander's timezone is captured ONCE (settings.timezone). After that the
 // SERVER derives date+time — the client can never time-travel the engines.
-async function getSetting(DB: D1Database, key: string): Promise<string | null> {
-  const r = await DB.prepare(`SELECT value FROM settings WHERE key=?`).bind(key).first<{ value: string }>()
-  return r?.value ?? null
+async function getSetting(DB: D1Database, key: string, userId?: number): Promise<string | null> {
+  const query = userId === undefined
+    ? DB.prepare(`SELECT value FROM settings WHERE key=? ORDER BY rowid LIMIT 1`).bind(key)
+    : DB.prepare(`SELECT value FROM settings WHERE user_id=? AND key=? ORDER BY rowid LIMIT 1`).bind(userId, key)
+  const row = await query.first<{ value: string }>()
+  return row?.value ?? null
 }
-async function setSetting(DB: D1Database, key: string, value: string) {
-  await DB.prepare(`INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
-    .bind(key, value).run()
+async function setSetting(DB: D1Database, key: string, value: string, userId?: number) {
+  const existing = userId === undefined
+    ? await DB.prepare(`SELECT rowid AS row_id FROM settings WHERE key=? ORDER BY rowid LIMIT 1`).bind(key).first<{ row_id: number }>()
+    : await DB.prepare(`SELECT rowid AS row_id FROM settings WHERE user_id=? AND key=? ORDER BY rowid LIMIT 1`).bind(userId, key).first<{ row_id: number }>()
+  if (existing) {
+    await DB.prepare(`UPDATE settings SET value=? WHERE rowid=?`).bind(value, existing.row_id).run()
+    return
+  }
+  await DB.prepare(`INSERT INTO settings (user_id, key, value) VALUES (?,?,?)`)
+    .bind(userId ?? null, key, value).run()
 }
-async function userNow(DB: D1Database): Promise<{ date: string; time: string; tz: string }> {
-  const tz = (await getSetting(DB, 'timezone')) || 'Africa/Nairobi'
+async function userNow(DB: D1Database, userId?: number): Promise<{ date: string; time: string; tz: string }> {
+  const tz = (await getSetting(DB, 'timezone', userId)) || 'Africa/Nairobi'
   const now = new Date()
   let date: string, time: string
   try {
@@ -69,14 +89,16 @@ async function userNow(DB: D1Database): Promise<{ date: string; time: string; tz
 }
 
 // Clamp any client-supplied date: valid format, never in the future.
-async function safeDate(DB: D1Database, q?: string | null): Promise<string> {
-  const { date: today } = await userNow(DB)
+async function safeDate(DB: D1Database, q?: string | null, userId?: number): Promise<string> {
+  const { date: today } = await userNow(DB, userId)
   if (!q || !/^\d{4}-\d{2}-\d{2}$/.test(q)) return today
   return q > today ? today : q
 }
 
-// ============ AUTH (session cookie, HMAC-signed; password PBKDF2) ============
+// ============ AUTH (durable users + hashed, revocable sessions) ============
 const enc = new TextEncoder()
+const SESSION_DAYS = 30
+
 function bufToHex(buf: ArrayBuffer): string {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
@@ -84,15 +106,14 @@ function randHex(n = 32): string {
   const a = new Uint8Array(n); crypto.getRandomValues(a)
   return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
 }
+async function sha256(value: string): Promise<string> {
+  return bufToHex(await crypto.subtle.digest('SHA-256', enc.encode(value)))
+}
 async function pbkdf2(password: string, saltHex: string): Promise<string> {
   const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map(h => parseInt(h, 16)))
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits'])
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256)
   return bufToHex(bits)
-}
-async function hmacSign(msg: string, secretHex: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', enc.encode(secretHex), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  return bufToHex(await crypto.subtle.sign('HMAC', key, enc.encode(msg)))
 }
 function timingSafeEq(a: string, b: string): boolean {
   if (a.length !== b.length) return false
@@ -100,67 +121,118 @@ function timingSafeEq(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i)
   return r === 0
 }
-async function sessionValid(c: any): Promise<boolean> {
-  const raw = getCookie(c, 'wr_session')
-  if (!raw) return false
-  const secret = await getSetting(c.env.DB, 'session_secret')
-  if (!secret) return false
-  const dot = raw.lastIndexOf('.')
-  if (dot < 1) return false
-  const exp = raw.slice(0, dot), sig = raw.slice(dot + 1)
-  if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false
-  return timingSafeEq(await hmacSign(exp, secret), sig)
-}
-async function issueSession(c: any) {
-  let secret = await getSetting(c.env.DB, 'session_secret')
-  if (!secret) { secret = randHex(32); await setSetting(c.env.DB, 'session_secret', secret) }
-  const exp = String(Date.now() + 30 * 24 * 3600 * 1000) // 30 days
-  const sig = await hmacSign(exp, secret)
-  setCookie(c, 'wr_session', `${exp}.${sig}`, {
-    httpOnly: true, sameSite: 'Strict', secure: true, path: '/', maxAge: 30 * 24 * 3600
+function sessionCookie(c: any, token: string, maxAge = SESSION_DAYS * 24 * 3600): void {
+  setCookie(c, 'wr_session', token, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: true,
+    path: '/',
+    maxAge,
   })
+}
+async function findSession(c: any): Promise<SessionRecord | null> {
+  const raw = getCookie(c, 'wr_session')
+  if (!raw) return null
+  const tokenHash = await sha256(raw)
+  return (await c.env.DB.prepare(
+    `SELECT id, user_id FROM sessions
+     WHERE token_hash=? AND revoked_at IS NULL
+       AND unixepoch(expires_at) > unixepoch('now')`,
+  ).bind(tokenHash).first()) as SessionRecord | null
+}
+async function sessionValid(c: any): Promise<boolean> {
+  const session = await findSession(c)
+  if (!session) return false
+  c.set('userId', session.user_id)
+  return true
+}
+async function revokePresentedSession(c: any): Promise<void> {
+  const raw = getCookie(c, 'wr_session')
+  if (!raw) return
+  await c.env.DB.prepare(
+    `UPDATE sessions SET revoked_at=COALESCE(revoked_at, datetime('now')) WHERE token_hash=?`,
+  ).bind(await sha256(raw)).run()
+}
+async function issueSession(c: any, userId: number, rotatedFromId?: number): Promise<void> {
+  const token = randHex(32)
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000).toISOString()
+  await c.env.DB.prepare(
+    `INSERT INTO sessions (user_id, token_hash, expires_at, rotated_from_id)
+     VALUES (?,?,?,?)`,
+  ).bind(userId, await sha256(token), expiresAt, rotatedFromId ?? null).run()
+  sessionCookie(c, token)
+}
+async function ownerUser(DB: D1Database): Promise<{ id: number; password_hash: string; password_salt: string; failed_login_count: number; locked_until: string | null } | null> {
+  return DB.prepare(
+    `SELECT id, password_hash, password_salt, failed_login_count, locked_until
+     FROM users WHERE role='owner' ORDER BY id LIMIT 1`,
+  ).first()
+}
+
+async function claimUnownedData(DB: D1Database, userId: number): Promise<void> {
+  const tables = [
+    'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
+    'flashcards', 'card_reviews', 'honesty_flags', 'points_ledger',
+    'reward_redemptions', 'law_checks', 'settings', 'intel_entries',
+    'book_progress', 'hermes_messages', 'responses', 'response_srs',
+    'tongue_reviews', 'tongue_exams', 'day_summary', 'predictions',
+    'appeals', 'load_reductions',
+  ]
+  await DB.batch(tables.map((table) =>
+    DB.prepare(`UPDATE ${table} SET user_id=? WHERE user_id IS NULL`).bind(userId),
+  ))
 }
 
 // -- auth endpoints (the ONLY unauthenticated API surface) --
 app.get('/api/auth/status', async (c) => {
-  const hasPass = !!(await getSetting(c.env.DB, 'auth_hash'))
-  return c.json({ setup: hasPass, authed: hasPass ? await sessionValid(c) : false })
+  const hasOwner = !!(await ownerUser(c.env.DB))
+  return c.json({ setup: hasOwner, authed: hasOwner ? await sessionValid(c) : false })
 })
 app.post('/api/auth/setup', async (c) => {
   const DB = c.env.DB
-  if (await getSetting(DB, 'auth_hash')) return c.json({ error: 'Already set up. Log in.' }, 400)
+  if (await ownerUser(DB)) return c.json({ error: 'Already set up. Log in.' }, 400)
   const { password } = await c.req.json()
   if (!password || password.length < 8) return c.json({ error: 'Password must be at least 8 characters. This gate protects everything.' }, 400)
   const salt = randHex(16)
   const hash = await pbkdf2(password, salt)
-  await DB.batch([
-    DB.prepare(`INSERT INTO settings (key,value) VALUES ('auth_salt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(salt),
-    DB.prepare(`INSERT INTO settings (key,value) VALUES ('auth_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(hash),
-  ])
-  await issueSession(c)
+  const created = await DB.prepare(
+    `INSERT INTO users (password_hash, password_salt, role) VALUES (?,?,'owner')`,
+  ).bind(hash, salt).run()
+  const userId = Number(created.meta.last_row_id)
+  await claimUnownedData(DB, userId)
+  await issueSession(c, userId)
   return c.json({ ok: true })
 })
 app.post('/api/auth/login', async (c) => {
   const DB = c.env.DB
-  const hash = await getSetting(DB, 'auth_hash'), salt = await getSetting(DB, 'auth_salt')
-  if (!hash || !salt) return c.json({ error: 'Not set up yet.', setup: false }, 400)
-  // brute-force throttle: 5 fails → 15-minute lockout
-  const failsRaw = await getSetting(DB, 'auth_fails')
-  const [nFails, lastFail] = (failsRaw || '0,0').split(',').map(Number)
-  if (nFails >= 5 && Date.now() - lastFail < 15 * 60 * 1000) {
+  const owner = await ownerUser(DB)
+  if (!owner) return c.json({ error: 'Not set up yet.', setup: false }, 400)
+  if (owner.locked_until && new Date(owner.locked_until).getTime() > Date.now()) {
     return c.json({ error: 'GATE SEALED. Too many failed attempts — wait 15 minutes. Patience is also discipline.' }, 429)
   }
   const { password } = await c.req.json()
-  const attempt = await pbkdf2(password || '', salt)
-  if (!timingSafeEq(attempt, hash)) {
-    await setSetting(DB, 'auth_fails', `${(Date.now() - lastFail < 15 * 60 * 1000 ? nFails : 0) + 1},${Date.now()}`)
+  const attempt = await pbkdf2(password || '', owner.password_salt)
+  if (!timingSafeEq(attempt, owner.password_hash)) {
+    const failures = owner.failed_login_count + 1
+    await DB.prepare(
+      `UPDATE users SET failed_login_count=?, locked_until=CASE WHEN ?>=5 THEN datetime('now','+15 minutes') ELSE NULL END, updated_at=datetime('now') WHERE id=?`,
+    ).bind(failures, failures, owner.id).run()
     return c.json({ error: 'Wrong password.' }, 401)
   }
-  await setSetting(DB, 'auth_fails', '0,0')
-  await issueSession(c)
+
+  const presented = await findSession(c)
+  await claimUnownedData(DB, owner.id)
+  await DB.prepare(
+    `UPDATE sessions SET revoked_at=COALESCE(revoked_at, datetime('now')) WHERE user_id=? AND revoked_at IS NULL`,
+  ).bind(owner.id).run()
+  await DB.prepare(
+    `UPDATE users SET failed_login_count=0, locked_until=NULL, updated_at=datetime('now') WHERE id=?`,
+  ).bind(owner.id).run()
+  await issueSession(c, owner.id, presented?.id)
   return c.json({ ok: true })
 })
 app.post('/api/auth/logout', async (c) => {
+  await revokePresentedSession(c)
   deleteCookie(c, 'wr_session', { path: '/' })
   return c.json({ ok: true })
 })
@@ -168,8 +240,8 @@ app.post('/api/auth/logout', async (c) => {
 // -- global API guard --
 // /api/auth/*            → open (it IS the gate)
 // /api/agent/token*      → session only (GET retired; POST rotates for Termux setup)
-// /api/agent/*           → X-Agent-Token ONLY (checked in each handler via agentAuthed)
-// everything else /api/* → session cookie required
+// /api/agent/*           → agent credential middleware in Book 5.5
+// everything else /api/* → durable session required
 app.use('/api/*', async (c, next) => {
   const p = new URL(c.req.url).pathname
   if (p.startsWith('/api/auth/')) return next()
@@ -177,7 +249,7 @@ app.use('/api/*', async (c, next) => {
     if (!(await sessionValid(c))) return c.json({ error: 'AUTH REQUIRED' }, 401)
     return next()
   }
-  if (p.startsWith('/api/agent/')) return next() // per-handler agent-token check (401 inside)
+  if (p.startsWith('/api/agent/')) return next()
   if (!(await sessionValid(c))) return c.json({ error: 'AUTH REQUIRED' }, 401)
   return next()
 })
@@ -193,15 +265,15 @@ function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-async function blocksForDate(DB: D1Database, date: string) {
+async function blocksForDate(DB: D1Database, userId: number, date: string) {
   const dow = dowOf(date)
   const { results } = await DB.prepare(
     `SELECT b.*, l.status as log_status, l.note as log_note, l.completed_at
      FROM schedule_blocks b
-     LEFT JOIN block_logs l ON l.block_id = b.id AND l.log_date = ?
-     WHERE (',' || b.days || ',') LIKE ?
+     LEFT JOIN block_logs l ON l.block_id = b.id AND l.log_date = ? AND l.user_id = ?
+     WHERE b.user_id = ? AND (',' || b.days || ',') LIKE ?
      ORDER BY b.start_time, b.sort_order`
-  ).bind(date, `%,${dow},%`).all()
+  ).bind(date, userId, userId, `%,${dow},%`).all()
   return results as any[]
 }
 
@@ -230,80 +302,118 @@ function dayAdherence(blocks: any[]) {
 }
 
 // Structured flag identity — no more message-LIKE matching.
-async function flagExists(DB: D1Database, date: string, type: string, refType?: string, refId?: number) {
+async function flagExists(
+  DB: D1Database,
+  userId: number,
+  date: string,
+  type: string,
+  refType?: string,
+  refId?: number,
+) {
   const q = refType
-    ? DB.prepare(`SELECT id FROM honesty_flags WHERE flag_date=? AND flag_type=? AND ref_type=? AND ref_id=?`).bind(date, type, refType, refId ?? 0)
-    : DB.prepare(`SELECT id FROM honesty_flags WHERE flag_date=? AND flag_type=? AND ref_type IS NULL`).bind(date, type)
+    ? DB.prepare(
+        `SELECT id FROM honesty_flags
+         WHERE user_id=? AND flag_date=? AND flag_type=? AND ref_type=? AND ref_id=?`,
+      ).bind(userId, date, type, refType, refId ?? 0)
+    : DB.prepare(
+        `SELECT id FROM honesty_flags
+         WHERE user_id=? AND flag_date=? AND flag_type=? AND ref_type IS NULL`,
+      ).bind(userId, date, type)
   return !!(await q.first())
 }
 
 // Race-safe flag+penalty: the UNIQUE identity index means INSERT OR IGNORE is the
 // arbiter — the penalty is written ONLY when the flag row was actually inserted.
-async function addFlag(DB: D1Database, date: string, type: string, severity: string, message: string, penalty: number, refType?: string, refId?: number) {
+async function addFlag(
+  DB: D1Database,
+  userId: number,
+  date: string,
+  type: string,
+  severity: string,
+  message: string,
+  penalty: number,
+  refType?: string,
+  refId?: number,
+) {
+  if (await flagExists(DB, userId, date, type, refType, refId)) return false
   const ins = await DB.prepare(
-    `INSERT OR IGNORE INTO honesty_flags (flag_date, flag_type, severity, message, ref_type, ref_id) VALUES (?,?,?,?,?,?)`
-  ).bind(date, type, severity, message, refType ?? null, refId ?? null).run()
+    `INSERT OR IGNORE INTO honesty_flags
+       (user_id, flag_date, flag_type, severity, message, ref_type, ref_id)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind(userId, date, type, severity, message, refType ?? null, refId ?? null).run()
   if (penalty !== 0 && (ins.meta as any).changes > 0) {
-    await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-      .bind(date, penalty, message, 'flag', refId ?? null).run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, date, penalty, message, 'flag', refId ?? null).run()
   }
   return (ins.meta as any).changes > 0
 }
 
 // ============ DAY SUMMARY (materialized — one row per day) ============
 // Written whenever a past day is processed; makes streak/stats O(1) reads.
-async function writeDaySummary(DB: D1Database, date: string, finalize = false) {
-  const blocks = await blocksForDate(DB, date)
+async function writeDaySummary(DB: D1Database, userId: number, date: string, finalize = false) {
+  const blocks = await blocksForDate(DB, userId, date)
   const adh = dayAdherence(blocks)
-  const deb = await DB.prepare(`SELECT id FROM debriefs WHERE log_date=?`).bind(date).first()
-  const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) t FROM points_ledger WHERE log_date=?`).bind(date).first<any>()
+  const deb = await DB.prepare(`SELECT id FROM debriefs WHERE user_id=? AND log_date=?`).bind(userId, date).first()
+  const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) t FROM points_ledger WHERE user_id=? AND log_date=?`).bind(userId, date).first<any>()
   // Victory = 80%+ weighted adherence with debrief. MVD held alone keeps the
   // streak ALIVE (survival), it does not count as a victory day.
   const victory = blocks.length > 0 && adh.pct >= 80 && !!deb
   const survives = victory || adh.mvdHeld
-  await DB.prepare(
-    `INSERT INTO day_summary (summary_date, adherence_pct, weighted_score, weighted_total, blocks_done, blocks_total,
+  const existing = await DB.prepare(`SELECT summary_date FROM day_summary WHERE user_id=? AND summary_date=?`)
+    .bind(userId, date).first()
+  if (existing) {
+    await DB.prepare(
+      `UPDATE day_summary SET adherence_pct=?, weighted_score=?, weighted_total=?, blocks_done=?, blocks_total=?,
+       mvd_held=?, debrief_filed=?, victory=?, points=?, finalized=MAX(finalized, ?), updated_at=datetime('now')
+       WHERE user_id=? AND summary_date=?`,
+    ).bind(adh.pct, adh.wScore, adh.wTotal, Math.round(adh.done), adh.total,
+      adh.mvdHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0,
+      userId, date).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO day_summary (user_id, summary_date, adherence_pct, weighted_score, weighted_total, blocks_done, blocks_total,
        mvd_held, debrief_filed, victory, points, finalized, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-     ON CONFLICT(summary_date) DO UPDATE SET adherence_pct=excluded.adherence_pct,
-       weighted_score=excluded.weighted_score, weighted_total=excluded.weighted_total,
-       blocks_done=excluded.blocks_done, blocks_total=excluded.blocks_total,
-       mvd_held=excluded.mvd_held, debrief_filed=excluded.debrief_filed,
-       victory=excluded.victory, points=excluded.points,
-       finalized=MAX(day_summary.finalized, excluded.finalized), updated_at=datetime('now')`
-  ).bind(date, adh.pct, adh.wScore, adh.wTotal, Math.round(adh.done), adh.total,
-    adh.mvdHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0).run()
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+    ).bind(userId, date, adh.pct, adh.wScore, adh.wTotal, Math.round(adh.done), adh.total,
+      adh.mvdHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0).run()
+  }
   return { adh, deb: !!deb, victory, survives }
 }
 
 // ============ HONESTY ENGINE ============
 // Runs against yesterday (and the day before) — ONLY from POST /api/tick, never on reads.
-async function runHonestyEngine(DB: D1Database, today: string) {
-  const startDate = (await getSetting(DB, 'start_date')) || today
+async function runHonestyEngine(DB: D1Database, userId: number, today: string) {
+  const startDate = (await getSetting(DB, 'start_date', userId)) || today
   const y1 = addDays(today, -1)
   const y2 = addDays(today, -2)
   if (y1 < startDate) return
 
   // Skip if yesterday is already finalized (engine idempotence, saves ~10 queries/req)
-  const done = await DB.prepare(`SELECT finalized FROM day_summary WHERE summary_date=?`).bind(y1).first<any>()
+  const done = await DB.prepare(
+    `SELECT finalized FROM day_summary WHERE user_id=? AND summary_date=?`,
+  ).bind(userId, y1).first<any>()
   const alreadyFinal = !!done?.finalized
 
   // 1. Missed debrief
-  const deb = await DB.prepare(`SELECT id FROM debriefs WHERE log_date=?`).bind(y1).first()
+  const deb = await DB.prepare(
+    `SELECT id FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, y1).first()
   if (!deb) {
-    await addFlag(DB, y1, 'missed_debrief', 'serious',
+    await addFlag(DB, userId, y1, 'missed_debrief', 'serious',
       `NIGHT DEBRIEF MISSED (${y1}). Law 5: Track, don't trust. An army without intelligence reports is blind. -15 pts. Write a catch-up debrief now.`, -15)
   }
 
   // 2. Missed non-negotiable blocks yesterday
   // (skip 'missed' — those were already punished LIVE by the same-day enforcement engine)
-  const yBlocks = await blocksForDate(DB, y1)
+  const yBlocks = await blocksForDate(DB, userId, y1)
   const adh = dayAdherence(yBlocks)
   if (!alreadyFinal) {
     for (const b of yBlocks) {
       if (b.is_non_negotiable && b.log_status !== 'done' && b.log_status !== 'partial' && b.log_status !== 'missed') {
         const skipped = b.log_status === 'skipped'
-        await addFlag(DB, y1, 'missed_block', skipped ? 'warn' : 'serious',
+        await addFlag(DB, userId, y1, 'missed_block', skipped ? 'warn' : 'serious',
           `[Block #${b.id}] NON-NEGOTIABLE ${skipped ? 'SKIPPED' : 'UNLOGGED'}: "${b.title}" (${y1}). ${skipped ? 'You were honest about it — logged, no ambush. -5 pts.' : 'Not even logged. Silence is the worst report. -10 pts.'}`,
           skipped ? -5 : -10, 'block', b.id)
       }
@@ -313,17 +423,18 @@ async function runHonestyEngine(DB: D1Database, today: string) {
     // Two straight misses = the schedule was wrong, not just the will.
     // Response: HALVE the block for 3 days + demand the WHY. No extra penalty stack.
     if (y2 >= startDate) {
-      const y2Blocks = await blocksForDate(DB, y2)
+      const y2Blocks = await blocksForDate(DB, userId, y2)
       const missY2 = new Set(y2Blocks.filter((b: any) => b.is_non_negotiable && b.log_status !== 'done' && b.log_status !== 'partial').map((b: any) => b.id))
       for (const b of yBlocks) {
         if (b.is_non_negotiable && missY2.has(b.id) && b.log_status !== 'done' && b.log_status !== 'partial') {
-          const created = await addFlag(DB, y1, 'load_reduction', 'serious',
+          const created = await addFlag(DB, userId, y1, 'load_reduction', 'serious',
             `[Block #${b.id}] TWO MISSES IN A ROW: "${b.title}" (${y2}, ${y1}). The block is now UNDER LOAD REDUCTION — half duration for 3 days. A plan that keeps breaking is a bad plan or a hidden refusal. Answer the why: wrong time? too long? wrong prerequisite? or you don't actually want it?`,
             0, 'block', b.id)
           if (created) {
             await DB.prepare(
-              `INSERT OR IGNORE INTO load_reductions (block_id, start_date, end_date) VALUES (?,?,?)`
-            ).bind(b.id, today, addDays(today, 2)).run()
+              `INSERT OR IGNORE INTO load_reductions (user_id, block_id, start_date, end_date)
+               VALUES (?,?,?,?)`
+            ).bind(userId, b.id, today, addDays(today, 2)).run()
           }
         }
       }
@@ -332,52 +443,62 @@ async function runHonestyEngine(DB: D1Database, today: string) {
     // 3.5 TONGUE NEGLECT — drills piling up unreviewed means the armory is rotting
     try {
       const overdue = await DB.prepare(
-        `SELECT COUNT(*) n FROM response_srs s JOIN responses r ON r.id=s.response_id
-         WHERE r.archived=0 AND s.due_date <= ?`
-      ).bind(addDays(today, -3)).first<any>()
+        `SELECT COUNT(*) n FROM response_srs s
+         JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+         WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`
+      ).bind(userId, addDays(today, -3)).first<any>()
       if ((overdue?.n ?? 0) >= 5) {
-        await addFlag(DB, y1, 'tongue_neglect', 'serious',
+        await addFlag(DB, userId, y1, 'tongue_neglect', 'serious',
           `TONGUE NEGLECT: ${overdue.n} wise responses are 3+ days overdue for drilling. You recorded wisdom and let it rot — a full armory you never trained with. -10 pts. Drill them today.`, -10)
       }
     } catch (_) { /* table may not exist pre-migration */ }
 
     // 4. Collapse day — but a HELD LINE (MVD) is NOT a collapse. Survival counts.
     if (yBlocks.length > 0 && adh.pct < 50 && !adh.mvdHeld) {
-      await addFlag(DB, y1, 'low_adherence', 'serious',
+      await addFlag(DB, userId, y1, 'low_adherence', 'serious',
         `ADHERENCE COLLAPSE: ${adh.pct}% on ${y1} (target: 80%). No shame — but no lies either. Read your debrief, find the breach point, patch the wall. -10 pts.`, -10)
     }
 
     // 4.5 MVD HELD on a hard day — the line held. Small positive, streak survives.
     if (yBlocks.length > 0 && adh.mvdHeld && adh.pct < 80) {
-      const already = await DB.prepare(`SELECT id FROM points_ledger WHERE log_date=? AND ref_type='mvd'`).bind(y1).first()
+      const already = await DB.prepare(
+        `SELECT id FROM points_ledger WHERE user_id=? AND log_date=? AND ref_type='mvd'`,
+      ).bind(userId, y1).first()
       if (!already) {
-        await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type) VALUES (?,?,?,?)`)
-          .bind(y1, 10, `HELD THE LINE: all ${adh.mvdTotal} core blocks hit on a hard day (${y1}). The streak lives. +10 pts.`, 'mvd').run()
+        await DB.prepare(
+          `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+           VALUES (?,?,?,?,?)`,
+        ).bind(userId, y1, 10, `HELD THE LINE: all ${adh.mvdTotal} core blocks hit on a hard day (${y1}). The streak lives. +10 pts.`, 'mvd').run()
       }
     }
 
     // 5. Victory: 80%+ weighted day with debrief
     if (yBlocks.length > 0 && adh.pct >= 80 && deb) {
-      const already = await DB.prepare(`SELECT id FROM points_ledger WHERE log_date=? AND ref_type='streak'`).bind(y1).first()
+      const already = await DB.prepare(
+        `SELECT id FROM points_ledger WHERE user_id=? AND log_date=? AND ref_type='streak'`,
+      ).bind(userId, y1).first()
       if (!already) {
-        await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type) VALUES (?,?,?,?)`)
-          .bind(y1, 30, `VICTORY DAY: ${adh.pct}% adherence + debrief filed (${y1}). +30 pts.`, 'streak').run()
+        await DB.prepare(
+          `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+           VALUES (?,?,?,?,?)`,
+        ).bind(userId, y1, 30, `VICTORY DAY: ${adh.pct}% adherence + debrief filed (${y1}). +30 pts.`, 'streak').run()
       }
     }
   }
 
   // 6. Materialize + FINALIZE yesterday (immutable close of books)
-  await writeDaySummary(DB, y1, true)
+  await writeDaySummary(DB, userId, y1, true)
 }
 
 // O(1) STREAK from day_summary. A day extends the streak if victory=1;
 // mvd_held=1 lets the streak SURVIVE (day is neutral, not a break).
-async function computeStreak(DB: D1Database, today: string): Promise<number> {
-  const startDate = (await getSetting(DB, 'start_date')) || today
+async function computeStreak(DB: D1Database, userId: number, today: string): Promise<number> {
+  const startDate = (await getSetting(DB, 'start_date', userId)) || today
   const { results } = await DB.prepare(
     `SELECT summary_date, victory, mvd_held FROM day_summary
-     WHERE summary_date < ? AND summary_date >= ? ORDER BY summary_date DESC LIMIT 180`
-  ).bind(today, startDate).all()
+     WHERE user_id=? AND summary_date < ? AND summary_date >= ?
+     ORDER BY summary_date DESC LIMIT 180`
+  ).bind(userId, today, startDate).all()
   const byDate = new Map((results as any[]).map(r => [r.summary_date, r]))
   let streak = 0
   let d = addDays(today, -1)
@@ -390,19 +511,20 @@ async function computeStreak(DB: D1Database, today: string): Promise<number> {
     d = addDays(d, -1)
   }
   // today counts live if already qualifying
-  const tBlocks = await blocksForDate(DB, today)
-  const tDeb = await DB.prepare(`SELECT id FROM debriefs WHERE log_date=?`).bind(today).first()
+  const tBlocks = await blocksForDate(DB, userId, today)
+  const tDeb = await DB.prepare(`SELECT id FROM debriefs WHERE user_id=? AND log_date=?`).bind(userId, today).first()
   if (tDeb && dayAdherence(tBlocks).pct >= 80) streak++
   return streak
 }
 
 // DELTA SCORING — today vs your trailing 14-day median (review Tier-1 #4).
 // The fixed 80% stays visible as the horizon; the fight is vs yesterday's self.
-async function trailingMedian(DB: D1Database, today: string): Promise<number | null> {
+async function trailingMedian(DB: D1Database, userId: number, today: string): Promise<number | null> {
   const { results } = await DB.prepare(
-    `SELECT adherence_pct FROM day_summary WHERE summary_date < ? AND summary_date >= ? AND blocks_total > 0
+    `SELECT adherence_pct FROM day_summary
+     WHERE user_id=? AND summary_date < ? AND summary_date >= ? AND blocks_total > 0
      ORDER BY summary_date DESC LIMIT 14`
-  ).bind(today, addDays(today, -14)).all()
+  ).bind(userId, today, addDays(today, -14)).all()
   const v = (results as any[]).map(r => r.adherence_pct).sort((a, b) => a - b)
   if (v.length < 3) return null // not enough history to be honest about a median
   const mid = Math.floor(v.length / 2)
@@ -412,14 +534,13 @@ async function trailingMedian(DB: D1Database, today: string): Promise<number | n
 // ============ SAME-DAY ENFORCEMENT (real-time honesty — no free passes) ============
 // A block whose end_time + grace has passed with no log is AUTO-MARKED 'missed':
 // instant penalty, instant flag, window closed. The day bleeds while you watch.
-async function runSameDayEnforcement(DB: D1Database, date: string, time: string) {
-  const start = await DB.prepare(`SELECT value FROM settings WHERE key='start_date'`).first<{ value: string }>()
-  if (start?.value && date < start.value) return
-  const graceRow = await DB.prepare(`SELECT value FROM settings WHERE key='grace_minutes'`).first<{ value: string }>()
-  const grace = Math.max(0, Number(graceRow?.value ?? 30))
+async function runSameDayEnforcement(DB: D1Database, userId: number, date: string, time: string) {
+  const start = await getSetting(DB, 'start_date', userId)
+  if (start && date < start) return
+  const grace = Math.max(0, Number((await getSetting(DB, 'grace_minutes', userId)) ?? 30))
   const [nh, nm] = time.split(':').map(Number)
   const nowMin = nh * 60 + nm
-  const blocks = await blocksForDate(DB, date)
+  const blocks = await blocksForDate(DB, userId, date)
   for (const b of blocks) {
     // 'pending' is NOT a real log — toggling a block back to pending after the
     // window closes must NOT let it escape the cancellation (honesty loophole).
@@ -429,17 +550,18 @@ async function runSameDayEnforcement(DB: D1Database, date: string, time: string)
     if (nowMin <= deadline) continue                // still inside the window
     // AUTO-CANCEL: the window closed unlogged (overwrites a lingering 'pending' row)
     await DB.prepare(
-      `INSERT INTO block_logs (block_id, log_date, status, note, completed_at) VALUES (?,?,?,?,datetime('now'))
+      `INSERT INTO block_logs (user_id, block_id, log_date, status, note, completed_at)
+       VALUES (?,?,?,?,?,datetime('now'))
        ON CONFLICT(block_id, log_date) DO UPDATE SET
          status='missed', note=excluded.note, completed_at=excluded.completed_at
-       WHERE block_logs.status='pending'`
-    ).bind(b.id, date, 'missed', `AUTO-CANCELED: window closed unlogged at ${time} (grace ${grace}m).`).run()
+       WHERE block_logs.user_id=excluded.user_id AND block_logs.status='pending'`
+    ).bind(userId, b.id, date, 'missed', `AUTO-CANCELED: window closed unlogged at ${time} (grace ${grace}m).`).run()
     const nn = !!b.is_non_negotiable
     const w = b.weight ?? 1
     // CONTEXT blocks (weight 0) are unscored AND unpenalized — canceled silently.
     if (w === 0) continue
     const penalty = nn ? -15 : -5
-    await addFlag(DB, date, 'missed_live', nn ? 'critical' : 'warn',
+    await addFlag(DB, userId, date, 'missed_live', nn ? 'critical' : 'warn',
       `[Block #${b.id}] ${nn ? 'NON-NEGOTIABLE ' : ''}MISSED — CANCELED: "${b.title}" (${b.start_time}–${b.end_time}) ended unlogged. The window is closed. ${penalty} pts. One appeal token per week can reopen a window — at the cost of a written, permanent reason.`,
       penalty, 'block', b.id)
   }
@@ -448,41 +570,60 @@ async function runSameDayEnforcement(DB: D1Database, date: string, time: string)
 // ============ STATE (read-only heartbeat) + TICK (the engine crank) ============
 // GET /api/state no longer mutates anything — engines run ONLY via POST /api/tick,
 // with the SERVER's clock. A client can no longer time-travel penalties into existence.
-async function buildState(DB: D1Database, date: string, time: string) {
-  const blocks = await blocksForDate(DB, date)
+async function buildState(DB: D1Database, userId: number, date: string, time: string) {
+  const blocks = await blocksForDate(DB, userId, date)
   const current = blocks.find((b: any) => b.start_time <= time && time < b.end_time) || null
   const next = blocks.find((b: any) => b.start_time > time) || null
   const adh = dayAdherence(blocks)
-  const streak = await computeStreak(DB, date)
+  const streak = await computeStreak(DB, userId, date)
 
-  const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) as total FROM points_ledger`).first<{ total: number }>()
-  const todayPts = await DB.prepare(`SELECT COALESCE(SUM(points),0) as total FROM points_ledger WHERE log_date=?`).bind(date).first<{ total: number }>()
-  const flags = (await DB.prepare(`SELECT * FROM honesty_flags WHERE acknowledged=0 ORDER BY created_at DESC LIMIT 20`).all()).results
-  const debrief = await DB.prepare(`SELECT * FROM debriefs WHERE log_date=?`).bind(date).first()
-  const yDebrief = await DB.prepare(`SELECT * FROM debriefs WHERE log_date=?`).bind(addDays(date, -1)).first()
-  const dueCards = await DB.prepare(`SELECT COUNT(*) as n FROM flashcards WHERE due_date <= ?`).bind(date).first<{ n: number }>()
+  const pts = await DB.prepare(
+    `SELECT COALESCE(SUM(points),0) as total FROM points_ledger WHERE user_id=?`,
+  ).bind(userId).first<{ total: number }>()
+  const todayPts = await DB.prepare(
+    `SELECT COALESCE(SUM(points),0) as total FROM points_ledger WHERE user_id=? AND log_date=?`,
+  ).bind(userId, date).first<{ total: number }>()
+  const flags = (await DB.prepare(
+    `SELECT * FROM honesty_flags WHERE user_id=? AND acknowledged=0 ORDER BY created_at DESC LIMIT 20`,
+  ).bind(userId).all()).results
+  const debrief = await DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, date).first()
+  const yDebrief = await DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, addDays(date, -1)).first()
+  const dueCards = await DB.prepare(
+    `SELECT COUNT(*) as n FROM flashcards WHERE user_id=? AND due_date <= ?`,
+  ).bind(userId, date).first<{ n: number }>()
   const dueTongue = await DB.prepare(
-    `SELECT COUNT(*) as n FROM response_srs s JOIN responses r ON r.id=s.response_id WHERE r.archived=0 AND s.due_date <= ?`
-  ).bind(date).first<{ n: number }>().catch(() => ({ n: 0 }))
+    `SELECT COUNT(*) as n FROM response_srs s
+     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+     WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`
+  ).bind(userId, date).first<{ n: number }>().catch(() => ({ n: 0 }))
 
   // active units per track
   const activeUnits = (await DB.prepare(
     `SELECT u.id, u.title, p.code, p.title as phase_title, p.track, up.status
      FROM units u JOIN phases p ON p.id=u.phase_id JOIN unit_progress up ON up.unit_id=u.id
-     WHERE up.status NOT IN ('locked','complete') ORDER BY p.sort_order, u.sort_order`
-  ).all()).results
+     WHERE up.user_id=? AND up.status NOT IN ('locked','complete')
+     ORDER BY p.sort_order, u.sort_order`
+  ).bind(userId).all()).results
 
   // delta scoring vs trailing 14-day median + appeal availability + active load reductions
-  const median = await trailingMedian(DB, date)
+  const median = await trailingMedian(DB, userId, date)
   const weekKey = isoWeekKey(date)
-  const appealUsed = await DB.prepare(`SELECT id FROM appeals WHERE week_key=?`).bind(weekKey).first()
+  const appealUsed = await DB.prepare(
+    `SELECT id FROM appeals WHERE user_id=? AND week_key=?`,
+  ).bind(userId, weekKey).first()
   const loadReductions = (await DB.prepare(
-    `SELECT lr.*, b.title FROM load_reductions lr JOIN schedule_blocks b ON b.id=lr.block_id
-     WHERE lr.end_date >= ? ORDER BY lr.start_date DESC`
-  ).bind(date).all().catch(() => ({ results: [] as any[] }))).results
+    `SELECT lr.*, b.title FROM load_reductions lr
+     JOIN schedule_blocks b ON b.id=lr.block_id AND b.user_id=lr.user_id
+     WHERE lr.user_id=? AND lr.end_date >= ? ORDER BY lr.start_date DESC`
+  ).bind(userId, date).all().catch(() => ({ results: [] as any[] }))).results
   const openPredictions = await DB.prepare(
-    `SELECT COUNT(*) n FROM predictions WHERE outcome='unresolved' AND resolve_by <= ?`
-  ).bind(date).first<any>().catch(() => ({ n: 0 }))
+    `SELECT COUNT(*) n FROM predictions
+     WHERE user_id=? AND outcome='unresolved' AND resolve_by <= ?`
+  ).bind(userId, date).first<any>().catch(() => ({ n: 0 }))
 
   return {
     date, time, blocks, current, next, adherence: adh, streak,
@@ -508,31 +649,33 @@ function isoWeekKey(dateStr: string): string {
 
 // READ — no side effects, ever. Server clock, client clock ignored.
 app.get('/api/state', async (c) => {
-  const { date, time } = await userNow(c.env.DB)
-  return c.json(await buildState(c.env.DB, date, time))
+  const userId = c.get('userId')
+  const { date, time } = await userNow(c.env.DB, userId)
+  return c.json(await buildState(c.env.DB, userId, date, time))
 })
 
 // CRANK — the ONLY place engines run. Server-derived date/time; future dates impossible.
 app.post('/api/tick', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   // capture the commander's timezone once (first tick from the UI sends it)
   try {
     const body = await c.req.json().catch(() => ({}))
-    if (body?.tz && !(await getSetting(DB, 'timezone_locked'))) {
-      try { new Intl.DateTimeFormat('en', { timeZone: body.tz }); await setSetting(DB, 'timezone', body.tz); await setSetting(DB, 'timezone_locked', '1') } catch (_) {}
+    if (body?.tz && !(await getSetting(DB, 'timezone_locked', userId))) {
+      try { new Intl.DateTimeFormat('en', { timeZone: body.tz }); await setSetting(DB, 'timezone', body.tz, userId); await setSetting(DB, 'timezone_locked', '1', userId) } catch (_) {}
     }
   } catch (_) {}
-  const { date, time } = await runEnforcement(c.env.DB)
-  return c.json(await buildState(DB, date, time))
+  const { date, time } = await runEnforcement(c.env.DB, userId)
+  return c.json(await buildState(DB, userId, date, time))
 })
 
-async function runEnforcement(DB: D1Database): Promise<{ date: string; time: string; tz: string }> {
-  const now = await userNow(DB)
-  await ensureUnlocks(DB)
-  await ensureCards(DB)
-  await runHonestyEngine(DB, now.date)
-  await runSameDayEnforcement(DB, now.date, now.time)
-  await writeDaySummary(DB, now.date, false)
+async function runEnforcement(DB: D1Database, userId: number): Promise<{ date: string; time: string; tz: string }> {
+  const now = await userNow(DB, userId)
+  await ensureUnlocks(DB, userId)
+  await ensureCards(DB, userId)
+  await runHonestyEngine(DB, userId, now.date)
+  await runSameDayEnforcement(DB, userId, now.date, now.time)
+  await writeDaySummary(DB, userId, now.date, false)
   return now
 }
 
@@ -546,21 +689,28 @@ app.post('/internal/jobs/enforcement', async (c) => {
     return c.json({ error: 'INVALID INTERNAL CREDENTIAL' }, 401)
   }
 
-  const { date, time, tz } = await runEnforcement(c.env.DB)
-  return c.json({ ok: true, date, time, tz })
+  const owners = (await c.env.DB.prepare(`SELECT id FROM users WHERE role='owner' ORDER BY id`).all()).results as Array<{ id: number }>
+  const runs = []
+  for (const owner of owners) runs.push(await runEnforcement(c.env.DB, owner.id))
+  return c.json({ ok: true, runs })
 })
 
 // ============ BLOCK LOGGING ============
 // Date is SERVER-derived. You log the block you are living, not the day you wish.
 app.post('/api/blocks/:id/log', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const id = Number(c.req.param('id'))
   const { status, note } = await c.req.json()
-  const { date } = await userNow(DB)
-  const block = await DB.prepare(`SELECT * FROM schedule_blocks WHERE id=?`).bind(id).first<any>()
+  const { date } = await userNow(DB, userId)
+  const block = await DB.prepare(
+    `SELECT * FROM schedule_blocks WHERE id=? AND user_id=?`,
+  ).bind(id, userId).first<any>()
   if (!block) return c.json({ error: 'no such block' }, 404)
 
-  const prev = await DB.prepare(`SELECT * FROM block_logs WHERE block_id=? AND log_date=?`).bind(id, date).first<any>()
+  const prev = await DB.prepare(
+    `SELECT * FROM block_logs WHERE block_id=? AND log_date=? AND user_id=?`,
+  ).bind(id, date, userId).first<any>()
   // THE WINDOW RULE: a block auto-canceled by the enforcement engine is CLOSED.
   // The only exit is the weekly appeal token (which costs a permanent written reason).
   if (prev && prev.status === 'missed') {
@@ -570,79 +720,109 @@ app.post('/api/blocks/:id/log', async (c) => {
   // atomic: log + points transition in one batch
   const stmts: D1PreparedStatement[] = [
     DB.prepare(
-      `INSERT INTO block_logs (block_id, log_date, status, note, completed_at) VALUES (?,?,?,?,datetime('now'))
-       ON CONFLICT(block_id, log_date) DO UPDATE SET status=excluded.status, note=excluded.note, completed_at=excluded.completed_at`
-    ).bind(id, date, status, note || null)
+      `INSERT INTO block_logs (user_id, block_id, log_date, status, note, completed_at)
+       VALUES (?,?,?,?,?,datetime('now'))
+       ON CONFLICT(block_id, log_date) DO UPDATE SET
+         status=excluded.status, note=excluded.note, completed_at=excluded.completed_at
+       WHERE block_logs.user_id=excluded.user_id`
+    ).bind(userId, id, date, status, note || null)
   ]
   const prevEarned = prev && (prev.status === 'done' || prev.status === 'partial')
   const nowEarns = status === 'done' || status === 'partial'
   if (nowEarns && !prevEarned) {
     const p = status === 'done' ? block.points : Math.ceil(block.points / 2)
-    stmts.push(DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-      .bind(date, p, `${status === 'done' ? 'Completed' : 'Partial'}: ${block.title} (+${p})`, 'block', id))
+    stmts.push(DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, date, p, `${status === 'done' ? 'Completed' : 'Partial'}: ${block.title} (+${p})`, 'block', id))
   } else if (!nowEarns && prevEarned) {
     const p = prev.status === 'done' ? block.points : Math.ceil(block.points / 2)
-    stmts.push(DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-      .bind(date, -p, `Reverted: ${block.title} (-${p})`, 'block', id))
+    stmts.push(DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, date, -p, `Reverted: ${block.title} (-${p})`, 'block', id))
   }
   await DB.batch(stmts)
-  await writeDaySummary(DB, date, false)
+  await writeDaySummary(DB, userId, date, false)
   return c.json({ ok: true, date })
 })
 
 // ============ APPEALS — one token per week, permanent reason ============
 app.post('/api/appeals', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { block_id, block_date, reason } = await c.req.json()
-  const { date } = await userNow(DB)
+  const { date } = await userNow(DB, userId)
   if (!reason || String(reason).trim().length < 100) {
     return c.json({ error: 'THE REASON IS THE PRICE. Write at least 100 characters explaining exactly what happened — this goes on the permanent record.' }, 400)
   }
   if (!block_id || !block_date) return c.json({ error: 'block_id and block_date required' }, 400)
   if (block_date > date) return c.json({ error: 'Cannot appeal the future.' }, 400)
   if (block_date < addDays(date, -7)) return c.json({ error: 'Too late. Appeals reach back 7 days at most — old wounds stay closed.' }, 400)
-  const log = await DB.prepare(`SELECT * FROM block_logs WHERE block_id=? AND log_date=?`).bind(block_id, block_date).first<any>()
+  const log = await DB.prepare(
+    `SELECT l.* FROM block_logs l JOIN schedule_blocks b ON b.id=l.block_id
+     WHERE l.user_id=? AND b.user_id=? AND l.block_id=? AND l.log_date=?`,
+  ).bind(userId, userId, block_id, block_date).first<any>()
   if (!log || log.status !== 'missed') return c.json({ error: 'That block was not auto-canceled. Appeals only reopen closed windows.' }, 400)
   const week = isoWeekKey(date)
-  // UNIQUE(week_key) makes this race-safe: the INSERT itself is the arbiter
+  const used = await DB.prepare(
+    `SELECT id FROM appeals WHERE user_id=? AND week_key=?`,
+  ).bind(userId, week).first()
+  if (used) return c.json({ error: 'APPEAL TOKEN SPENT. One per week — the next one arrives Monday.' }, 409)
   const ins = await DB.prepare(
-    `INSERT OR IGNORE INTO appeals (appeal_date, block_id, block_date, reason, week_key) VALUES (?,?,?,?,?)`
-  ).bind(date, block_id, block_date, String(reason).trim(), week).run()
+    `INSERT OR IGNORE INTO appeals
+       (user_id, appeal_date, block_id, block_date, reason, week_key)
+     VALUES (?,?,?,?,?,?)`
+  ).bind(userId, date, block_id, block_date, String(reason).trim(), week).run()
   if ((ins.meta as any).changes === 0) {
     return c.json({ error: 'APPEAL TOKEN SPENT. One per week — the next one arrives Monday.' }, 409)
   }
   // reopen the window: missed → pending, ack the flag, refund the penalty
   const pen = await DB.prepare(
-    `SELECT COALESCE(SUM(points),0) p FROM points_ledger WHERE log_date=? AND ref_type='flag' AND ref_id=? AND points<0`
-  ).bind(block_date, block_id).first<any>()
+    `SELECT COALESCE(SUM(points),0) p FROM points_ledger
+     WHERE user_id=? AND log_date=? AND ref_type='flag' AND ref_id=? AND points<0`
+  ).bind(userId, block_date, block_id).first<any>()
   const stmts: D1PreparedStatement[] = [
-    DB.prepare(`UPDATE block_logs SET status='pending', note='REOPENED BY APPEAL ('||?||')' WHERE block_id=? AND log_date=?`)
-      .bind(date, block_id, block_date),
-    DB.prepare(`UPDATE honesty_flags SET acknowledged=1 WHERE flag_date=? AND flag_type='missed_live' AND ref_type='block' AND ref_id=?`)
-      .bind(block_date, block_id),
+    DB.prepare(
+      `UPDATE block_logs SET status='pending', note='REOPENED BY APPEAL ('||?||')'
+       WHERE user_id=? AND block_id=? AND log_date=?`,
+    ).bind(date, userId, block_id, block_date),
+    DB.prepare(
+      `UPDATE honesty_flags SET acknowledged=1
+       WHERE user_id=? AND flag_date=? AND flag_type='missed_live'
+         AND ref_type='block' AND ref_id=?`,
+    ).bind(userId, block_date, block_id),
   ]
   if ((pen?.p ?? 0) < 0) {
-    stmts.push(DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-      .bind(date, -pen.p, `APPEAL GRANTED: penalty refunded for reopened window (block #${block_id}, ${block_date}). The reason is on the permanent record.`, 'appeal', block_id))
+    stmts.push(DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, date, -pen.p, `APPEAL GRANTED: penalty refunded for reopened window (block #${block_id}, ${block_date}). The reason is on the permanent record.`, 'appeal', block_id))
   }
   await DB.batch(stmts)
-  await writeDaySummary(DB, block_date, false)
+  await writeDaySummary(DB, userId, block_date, false)
   return c.json({ ok: true, refunded: -(pen?.p ?? 0) })
 })
 app.get('/api/appeals', async (c) => {
+  const userId = c.get('userId')
   const { results } = await c.env.DB.prepare(
-    `SELECT a.*, b.title FROM appeals a JOIN schedule_blocks b ON b.id=a.block_id ORDER BY a.created_at DESC LIMIT 50`
-  ).all()
+    `SELECT a.*, b.title FROM appeals a
+     JOIN schedule_blocks b ON b.id=a.block_id AND b.user_id=a.user_id
+     WHERE a.user_id=? ORDER BY a.created_at DESC LIMIT 50`
+  ).bind(userId).all()
   return c.json(results)
 })
 
 // ============ LOAD REDUCTION — answer the why ============
 app.post('/api/load-reductions/:id/answer', async (c) => {
+  const userId = c.get('userId')
   const { reason } = await c.req.json()
   const ok = ['wrong_time', 'too_long', 'wrong_prereq', 'dont_want_it']
   if (!ok.includes(reason)) return c.json({ error: 'Answer must be one of: wrong_time, too_long, wrong_prereq, dont_want_it' }, 400)
-  await c.env.DB.prepare(`UPDATE load_reductions SET reason=?, answered_at=datetime('now') WHERE id=?`)
-    .bind(reason, Number(c.req.param('id'))).run()
+  const updated = await c.env.DB.prepare(
+    `UPDATE load_reductions SET reason=?, answered_at=datetime('now') WHERE id=? AND user_id=?`,
+  ).bind(reason, Number(c.req.param('id')), userId).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   const advice: Record<string, string> = {
     wrong_time: 'Then MOVE it. Edit the block to the hour your energy actually supports it.',
     too_long: 'Then SHRINK it permanently. A 25-minute block done daily beats a 90-minute block done never.',
@@ -655,38 +835,46 @@ app.post('/api/load-reductions/:id/answer', async (c) => {
 // ============ PREDICTION LOG — the calibration instrument ============
 app.post('/api/predictions', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { claim, confidence, resolve_by, domain } = await c.req.json()
-  const { date } = await userNow(DB)
+  const { date } = await userNow(DB, userId)
   if (!claim || String(claim).trim().length < 10) return c.json({ error: 'State the claim precisely — a vague prediction is unfalsifiable, which is the disease this log cures.' }, 400)
   const conf = Number(confidence)
   if (!Number.isFinite(conf) || conf < 50 || conf > 99) return c.json({ error: 'Confidence must be 50–99%. Below 50, state the opposite claim. 100 does not exist for mortals.' }, 400)
   if (!resolve_by || resolve_by <= date) return c.json({ error: 'Resolution date must be in the future.' }, 400)
   const r = await DB.prepare(
-    `INSERT INTO predictions (made_date, claim, confidence, resolve_by, domain) VALUES (?,?,?,?,?)`
-  ).bind(date, String(claim).trim(), conf, resolve_by, domain || null).run()
+    `INSERT INTO predictions (user_id, made_date, claim, confidence, resolve_by, domain)
+     VALUES (?,?,?,?,?,?)`
+  ).bind(userId, date, String(claim).trim(), conf, resolve_by, domain || null).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 app.get('/api/predictions', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM predictions ORDER BY (outcome='unresolved') DESC, resolve_by ASC, id DESC LIMIT 200`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM predictions WHERE user_id=?
+     ORDER BY (outcome='unresolved') DESC, resolve_by ASC, id DESC LIMIT 200`,
+  ).bind(c.get('userId')).all()
   return c.json(results)
 })
 app.post('/api/predictions/:id/resolve', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { outcome, note } = await c.req.json()
   if (!['right', 'wrong', 'void'].includes(outcome)) return c.json({ error: 'Outcome: right, wrong, or void.' }, 400)
-  const { date } = await userNow(DB)
-  const p = await DB.prepare(`SELECT * FROM predictions WHERE id=?`).bind(Number(c.req.param('id'))).first<any>()
+  const { date } = await userNow(DB, userId)
+  const p = await DB.prepare(`SELECT * FROM predictions WHERE id=? AND user_id=?`)
+    .bind(Number(c.req.param('id')), userId).first<any>()
   if (!p) return c.json({ error: 'not found' }, 404)
   if (p.outcome !== 'unresolved') return c.json({ error: 'Already resolved. The record does not get rewritten.' }, 409)
-  await DB.prepare(`UPDATE predictions SET outcome=?, resolved_date=?, resolution_note=? WHERE id=?`)
-    .bind(outcome, date, note || null, p.id).run()
+  await DB.prepare(`UPDATE predictions SET outcome=?, resolved_date=?, resolution_note=? WHERE id=? AND user_id=?`)
+    .bind(outcome, date, note || null, p.id, userId).run()
   return c.json({ ok: true })
 })
 // Calibration report: Brier score, bucketed curve, plain-language bias
 app.get('/api/predictions/calibration', async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT confidence, outcome FROM predictions WHERE outcome IN ('right','wrong')`
-  ).all()
+    `SELECT confidence, outcome FROM predictions
+     WHERE user_id=? AND outcome IN ('right','wrong')`
+  ).bind(c.get('userId')).all()
   const rows = results as any[]
   if (!rows.length) return c.json({ n: 0, brier: null, buckets: [], verdict: 'No resolved predictions yet. Make claims. Date them. Grade them.' })
   let brier = 0
@@ -717,37 +905,60 @@ app.get('/api/predictions/calibration', async (c) => {
 // ============ DEBRIEF ============
 app.post('/api/debrief', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const b = await c.req.json()
-  b.date = await safeDate(DB, b.date) // clamp: no future debriefs
-  const existed = await DB.prepare(`SELECT id FROM debriefs WHERE log_date=?`).bind(b.date).first()
-  await DB.prepare(
-    `INSERT INTO debriefs (log_date, wins, breaks, tomorrow_targets, strategy_insight, mood, energy, sleep_time, wake_time, sleep_hours)
-     VALUES (?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(log_date) DO UPDATE SET wins=excluded.wins, breaks=excluded.breaks, tomorrow_targets=excluded.tomorrow_targets,
-       strategy_insight=excluded.strategy_insight, mood=excluded.mood, energy=excluded.energy,
-       sleep_time=excluded.sleep_time, wake_time=excluded.wake_time, sleep_hours=excluded.sleep_hours`
-  ).bind(b.date, b.wins || null, b.breaks || null, b.tomorrow_targets || null, b.strategy_insight || null,
-    b.mood || null, b.energy || null, b.sleep_time || null, b.wake_time || null, b.sleep_hours || null).run()
-  if (!existed) {
-    await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type) VALUES (?,?,?,?)`)
-      .bind(b.date, 25, 'Night debrief filed. Intelligence report received. (+25)', 'debrief').run()
+  b.date = await safeDate(DB, b.date, userId) // clamp: no future debriefs
+  const existing = await DB.prepare(
+    `SELECT id FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, b.date).first<{ id: number }>()
+  const values = [
+    b.wins || null,
+    b.breaks || null,
+    b.tomorrow_targets || null,
+    b.strategy_insight || null,
+    b.mood || null,
+    b.energy || null,
+    b.sleep_time || null,
+    b.wake_time || null,
+    b.sleep_hours || null,
+  ]
+  if (existing) {
+    await DB.prepare(
+      `UPDATE debriefs SET wins=?, breaks=?, tomorrow_targets=?, strategy_insight=?,
+       mood=?, energy=?, sleep_time=?, wake_time=?, sleep_hours=?
+       WHERE id=? AND user_id=?`,
+    ).bind(...values, existing.id, userId).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO debriefs
+         (user_id, log_date, wins, breaks, tomorrow_targets, strategy_insight,
+          mood, energy, sleep_time, wake_time, sleep_hours)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(userId, b.date, ...values).run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+       VALUES (?,?,?,?,?)`,
+    ).bind(userId, b.date, 25, 'Night debrief filed. Intelligence report received. (+25)', 'debrief').run()
   }
-  await writeDaySummary(DB, b.date, false)
+  await writeDaySummary(DB, userId, b.date, false)
   return c.json({ ok: true })
 })
 
 app.get('/api/debriefs', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM debriefs ORDER BY log_date DESC LIMIT 60`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? ORDER BY log_date DESC LIMIT 60`,
+  ).bind(c.get('userId')).all()
   return c.json(results)
 })
 
 // ============ CAMPAIGN (progress-locked) ============
-async function ensureUnlocks(DB: D1Database) {
+async function ensureUnlocks(DB: D1Database, userId: number) {
   // seed progress rows for all units
   await DB.prepare(
-    `INSERT INTO unit_progress (unit_id, status)
-     SELECT u.id, 'locked' FROM units u WHERE u.id NOT IN (SELECT unit_id FROM unit_progress)`
-  ).run()
+    `INSERT OR IGNORE INTO unit_progress (user_id, unit_id, status)
+     SELECT ?, u.id, 'locked' FROM units u
+     WHERE u.id NOT IN (SELECT unit_id FROM unit_progress WHERE user_id=?)`
+  ).bind(userId, userId).run()
   // per track: walk phases in order; first incomplete unit becomes active
   const phases = (await DB.prepare(`SELECT * FROM phases ORDER BY sort_order`).all()).results as any[]
   const tracks: Record<string, any[]> = {}
@@ -757,12 +968,15 @@ async function ensureUnlocks(DB: D1Database) {
     for (const p of tracks[track]) {
       if (blocked) break
       const units = (await DB.prepare(
-        `SELECT u.id, up.status FROM units u JOIN unit_progress up ON up.unit_id=u.id WHERE u.phase_id=? ORDER BY u.sort_order`
-      ).bind(p.id).all()).results as any[]
+        `SELECT u.id, up.status FROM units u JOIN unit_progress up ON up.unit_id=u.id
+         WHERE up.user_id=? AND u.phase_id=? ORDER BY u.sort_order`
+      ).bind(userId, p.id).all()).results as any[]
       for (const u of units) {
         if (u.status === 'complete') continue
         if (u.status === 'locked') {
-          await DB.prepare(`UPDATE unit_progress SET status='active' WHERE unit_id=?`).bind(u.id).run()
+          await DB.prepare(
+            `UPDATE unit_progress SET status='active' WHERE unit_id=? AND user_id=?`,
+          ).bind(u.id, userId).run()
         }
         blocked = true
         break
@@ -773,14 +987,16 @@ async function ensureUnlocks(DB: D1Database) {
 
 app.get('/api/campaign', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const phases = (await DB.prepare(`SELECT * FROM phases ORDER BY sort_order`).all()).results as any[]
   const out = []
   for (const p of phases) {
     const units = (await DB.prepare(
       `SELECT u.*, up.status, up.reading_done_at, up.drill_done_at, up.drill_report, up.debrief_answer,
               up.exam_answers, up.exam_self_score, up.completed_at, up.attempts
-       FROM units u JOIN unit_progress up ON up.unit_id=u.id WHERE u.phase_id=? ORDER BY u.sort_order`
-    ).bind(p.id).all()).results as any[]
+       FROM units u JOIN unit_progress up ON up.unit_id=u.id
+       WHERE up.user_id=? AND u.phase_id=? ORDER BY u.sort_order`
+    ).bind(userId, p.id).all()).results as any[]
     const complete = units.filter(u => u.status === 'complete').length
     out.push({ ...p, units, progress: units.length ? Math.round((complete / units.length) * 100) : 0, complete, total: units.length })
   }
@@ -789,39 +1005,59 @@ app.get('/api/campaign', async (c) => {
 
 app.post('/api/units/:id/step', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const id = Number(c.req.param('id'))
   const { step, drill_report, debrief_answer, exam_answers, exam_self_score, date } = await c.req.json()
-  const up = await DB.prepare(`SELECT * FROM unit_progress WHERE unit_id=?`).bind(id).first<any>()
+  const up = await DB.prepare(
+    `SELECT * FROM unit_progress WHERE user_id=? AND unit_id=?`,
+  ).bind(userId, id).first<any>()
   const unit = await DB.prepare(`SELECT * FROM units WHERE id=?`).bind(id).first<any>()
   if (!up || !unit) return c.json({ error: 'not found' }, 404)
   if (up.status === 'locked') return c.json({ error: 'UNIT LOCKED. Finish the previous unit first — this system is progress-based, no skipping.' }, 400)
-  const today = date || (await userNow(c.env.DB)).date
+  const today = date || (await userNow(c.env.DB, userId)).date
 
   if (step === 'reading') {
-    await DB.prepare(`UPDATE unit_progress SET status='reading_done', reading_done_at=datetime('now') WHERE unit_id=?`).bind(id).run()
-    await DB.prepare(`INSERT INTO points_ledger (log_date,points,reason,ref_type,ref_id) VALUES (?,?,?,?,?)`)
-      .bind(today, 20, `Reading complete: ${unit.title} (+20)`, 'unit', id).run()
+    await DB.prepare(
+      `UPDATE unit_progress SET status='reading_done', reading_done_at=datetime('now')
+       WHERE unit_id=? AND user_id=?`,
+    ).bind(id, userId).run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id,log_date,points,reason,ref_type,ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, today, 20, `Reading complete: ${unit.title} (+20)`, 'unit', id).run()
   } else if (step === 'drill') {
     if (!drill_report || drill_report.trim().length < 30) {
       return c.json({ error: 'DRILL REPORT TOO THIN. A field drill without a real report is a skipped drill — write at least a few honest sentences about what you actually DID and what happened.' }, 400)
     }
-    await DB.prepare(`UPDATE unit_progress SET status='drill_done', drill_done_at=datetime('now'), drill_report=? WHERE unit_id=?`).bind(drill_report, id).run()
-    await DB.prepare(`INSERT INTO points_ledger (log_date,points,reason,ref_type,ref_id) VALUES (?,?,?,?,?)`)
-      .bind(today, 30, `Field drill executed: ${unit.title} (+30)`, 'unit', id).run()
+    await DB.prepare(
+      `UPDATE unit_progress SET status='drill_done', drill_done_at=datetime('now'), drill_report=?
+       WHERE unit_id=? AND user_id=?`,
+    ).bind(drill_report, id, userId).run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id,log_date,points,reason,ref_type,ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, today, 30, `Field drill executed: ${unit.title} (+30)`, 'unit', id).run()
   } else if (step === 'complete') {
     if (unit.is_exam) {
       if (!exam_answers) return c.json({ error: 'Exam answers required.' }, 400)
       const score = Number(exam_self_score ?? 0)
-      await DB.prepare(`UPDATE unit_progress SET exam_answers=?, exam_self_score=?, attempts=attempts+1 WHERE unit_id=?`)
-        .bind(JSON.stringify(exam_answers), score, id).run()
+      await DB.prepare(
+        `UPDATE unit_progress SET exam_answers=?, exam_self_score=?, attempts=attempts+1
+         WHERE unit_id=? AND user_id=?`,
+      ).bind(JSON.stringify(exam_answers), score, id, userId).run()
       if (score < 70) {
-        await addFlag(DB, today, 'exam_failed', 'serious',
+        await addFlag(DB, userId, today, 'exam_failed', 'serious',
           `EXAM NOT PASSED: ${unit.title} — self-score ${score}/100 (pass: 70). No shame: the weak chapters are now visible. Re-study them, retake when ready. The gate stays closed until earned. -10 pts.`, -10)
         return c.json({ ok: false, failed: true, message: `Score ${score}/100. Pass mark is 70. The honesty engine has logged this attempt. Restudy your weak chapters and retake — the next phase stays locked until you EARN it.` })
       }
-      await DB.prepare(`UPDATE unit_progress SET status='complete', completed_at=datetime('now') WHERE unit_id=?`).bind(id).run()
-      await DB.prepare(`INSERT INTO points_ledger (log_date,points,reason,ref_type,ref_id) VALUES (?,?,?,?,?)`)
-        .bind(today, 100, `EXAM PASSED (${score}/100): ${unit.title} (+100)`, 'exam', id).run()
+      await DB.prepare(
+        `UPDATE unit_progress SET status='complete', completed_at=datetime('now')
+         WHERE unit_id=? AND user_id=?`,
+      ).bind(id, userId).run()
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id,log_date,points,reason,ref_type,ref_id)
+         VALUES (?,?,?,?,?,?)`,
+      ).bind(userId, today, 100, `EXAM PASSED (${score}/100): ${unit.title} (+100)`, 'exam', id).run()
     } else {
       if (up.status !== 'drill_done' && up.status !== 'reading_done') {
         return c.json({ error: 'Mark the reading done first.' }, 400)
@@ -829,52 +1065,78 @@ app.post('/api/units/:id/step', async (c) => {
       if (up.status === 'reading_done' && unit.field_drill) {
         return c.json({ error: 'FIELD DRILL NOT REPORTED. Reading without application is entertainment, not training. Execute the drill, file the report, then complete.' }, 400)
       }
-      await DB.prepare(`UPDATE unit_progress SET status='complete', completed_at=datetime('now'), debrief_answer=COALESCE(?,debrief_answer) WHERE unit_id=?`)
-        .bind(debrief_answer || null, id).run()
-      await DB.prepare(`INSERT INTO points_ledger (log_date,points,reason,ref_type,ref_id) VALUES (?,?,?,?,?)`)
-        .bind(today, 50, `UNIT CONQUERED: ${unit.title} (+50)`, 'unit', id).run()
+      await DB.prepare(
+        `UPDATE unit_progress SET status='complete', completed_at=datetime('now'),
+         debrief_answer=COALESCE(?,debrief_answer) WHERE unit_id=? AND user_id=?`,
+      ).bind(debrief_answer || null, id, userId).run()
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id,log_date,points,reason,ref_type,ref_id)
+         VALUES (?,?,?,?,?,?)`,
+      ).bind(userId, today, 50, `UNIT CONQUERED: ${unit.title} (+50)`, 'unit', id).run()
     }
-    await ensureUnlocks(DB)
+    await ensureUnlocks(DB, userId)
   }
   return c.json({ ok: true })
 })
 
 // ============ MAXIMS + FLASHCARDS ============
 app.get('/api/maxims', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM maxims ORDER BY source, id`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM maxims WHERE user_id=? ORDER BY source, id`,
+  ).bind(c.get('userId')).all()
   return c.json(results)
 })
 app.post('/api/maxims', async (c) => {
+  const userId = c.get('userId')
   const b = await c.req.json()
   const r = await c.env.DB.prepare(
-    `INSERT INTO maxims (source, principle, naive_reading, master_reading, my_words, created_by_user) VALUES (?,?,?,?,?,1)`
-  ).bind(b.source, b.principle, b.naive_reading || '(write it)', b.master_reading || '(write it)', b.my_words || null).run()
-  await c.env.DB.prepare(`INSERT INTO flashcards (maxim_id) VALUES (?)`).bind(r.meta.last_row_id).run()
+    `INSERT INTO maxims
+       (user_id, source, principle, naive_reading, master_reading, my_words, created_by_user)
+     VALUES (?,?,?,?,?,?,1)`
+  ).bind(userId, b.source, b.principle, b.naive_reading || '(write it)', b.master_reading || '(write it)', b.my_words || null).run()
+  await c.env.DB.prepare(
+    `INSERT INTO flashcards (user_id, maxim_id) VALUES (?,?)`,
+  ).bind(userId, r.meta.last_row_id).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 app.post('/api/maxims/:id/my-words', async (c) => {
-  const { my_words } = await c.req.json()
-  await c.env.DB.prepare(`UPDATE maxims SET my_words=? WHERE id=?`).bind(my_words, Number(c.req.param('id'))).run()
+  const updated = await c.env.DB.prepare(
+    `UPDATE maxims SET my_words=? WHERE id=? AND user_id=?`,
+  ).bind(myWordsOrNull(await c.req.json()), Number(c.req.param('id')), c.get('userId')).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 
-async function ensureCards(DB: D1Database) {
-  await DB.prepare(`INSERT INTO flashcards (maxim_id) SELECT id FROM maxims WHERE id NOT IN (SELECT maxim_id FROM flashcards)`).run()
+function myWordsOrNull(body: any): string | null {
+  return body.my_words ?? null
+}
+
+async function ensureCards(DB: D1Database, userId: number) {
+  await DB.prepare(
+    `INSERT OR IGNORE INTO flashcards (user_id, maxim_id)
+     SELECT ?, id FROM maxims
+     WHERE user_id=? AND id NOT IN (SELECT maxim_id FROM flashcards WHERE user_id=?)`,
+  ).bind(userId, userId, userId).run()
 }
 app.get('/api/cards/due', async (c) => {
   const DB = c.env.DB
-  const date = await safeDate(c.env.DB, c.req.query('date'))
+  const userId = c.get('userId')
+  const date = await safeDate(DB, c.req.query('date'), userId)
   const { results } = await DB.prepare(
     `SELECT f.*, m.source, m.principle, m.naive_reading, m.master_reading, m.my_words
-     FROM flashcards f JOIN maxims m ON m.id=f.maxim_id WHERE f.due_date <= ? ORDER BY f.due_date LIMIT 15`
-  ).bind(date).all()
+     FROM flashcards f JOIN maxims m ON m.id=f.maxim_id AND m.user_id=f.user_id
+     WHERE f.user_id=? AND f.due_date <= ? ORDER BY f.due_date LIMIT 15`
+  ).bind(userId, date).all()
   return c.json(results)
 })
 app.post('/api/cards/:maximId/review', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const mid = Number(c.req.param('maximId'))
   const { grade, date } = await c.req.json() // 0 fail, 1 hard, 2 good, 3 easy
-  const card = await DB.prepare(`SELECT * FROM flashcards WHERE maxim_id=?`).bind(mid).first<any>()
+  const card = await DB.prepare(
+    `SELECT * FROM flashcards WHERE maxim_id=? AND user_id=?`,
+  ).bind(mid, userId).first<any>()
   if (!card) return c.json({ error: 'no card' }, 404)
   let { interval_days, ease, reps, lapses } = card
   if (grade === 0) { lapses++; reps = 0; interval_days = 0; ease = Math.max(1.3, ease - 0.2) }
@@ -885,21 +1147,30 @@ app.post('/api/cards/:maximId/review', async (c) => {
     else if (reps === 2) interval_days = 3
     else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
   }
-  const today = date || (await userNow(c.env.DB)).date
+  const today = date || (await userNow(DB, userId)).date
   const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
-  await DB.prepare(`UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due_date=? WHERE maxim_id=?`)
-    .bind(interval_days, ease, reps, lapses, due, mid).run()
-  await DB.prepare(`INSERT INTO card_reviews (maxim_id, grade) VALUES (?,?)`).bind(mid, grade).run()
+  await DB.prepare(
+    `UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?
+     WHERE maxim_id=? AND user_id=?`,
+  ).bind(interval_days, ease, reps, lapses, due, mid, userId).run()
+  await DB.prepare(
+    `INSERT INTO card_reviews (user_id, maxim_id, grade) VALUES (?,?,?)`,
+  ).bind(userId, mid, grade).run()
   return c.json({ ok: true, next_due: due })
 })
 
 // ============ FLAGS ============
 app.post('/api/flags/:id/ack', async (c) => {
-  await c.env.DB.prepare(`UPDATE honesty_flags SET acknowledged=1 WHERE id=?`).bind(Number(c.req.param('id'))).run()
+  const updated = await c.env.DB.prepare(
+    `UPDATE honesty_flags SET acknowledged=1 WHERE id=? AND user_id=?`,
+  ).bind(Number(c.req.param('id')), c.get('userId')).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 app.get('/api/flags/history', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM honesty_flags ORDER BY created_at DESC LIMIT 100`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM honesty_flags WHERE user_id=? ORDER BY created_at DESC LIMIT 100`,
+  ).bind(c.get('userId')).all()
   return c.json(results)
 })
 
@@ -918,28 +1189,37 @@ function tongueMastery(s: any): string {
 // Capture a wise response (the daily field-recording ritual)
 app.post('/api/tongue', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { situation, trigger_q, response, why_works, source, category } = await c.req.json()
   if (!situation?.trim() || !trigger_q?.trim() || !response?.trim())
     return c.json({ error: 'Situation, the question, and the exact response are all required. Record it fully or it is lost.' }, 400)
-  const today = (await userNow(c.env.DB)).date
+  const today = (await userNow(DB, userId)).date
   const r = await DB.prepare(
-    `INSERT INTO responses (situation, trigger_q, response, why_works, source, category) VALUES (?,?,?,?,?,?)`
-  ).bind(situation.trim(), trigger_q.trim(), response.trim(), (why_works || '').trim() || null, (source || '').trim() || null, category || 'wit').run()
+    `INSERT INTO responses
+       (user_id, situation, trigger_q, response, why_works, source, category)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind(userId, situation.trim(), trigger_q.trim(), response.trim(), (why_works || '').trim() || null, (source || '').trim() || null, category || 'wit').run()
   const rid = r.meta.last_row_id
-  await DB.prepare(`INSERT INTO response_srs (response_id, due_date) VALUES (?,?)`).bind(rid, today).run()
-  await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-    .bind(today, 3, `INTEL CAPTURED: recorded a wise response ("${String(trigger_q).slice(0, 50)}…"). +3 pts. Now memorize it.`, 'tongue', rid).run()
+  await DB.prepare(
+    `INSERT INTO response_srs (user_id, response_id, due_date) VALUES (?,?,?)`,
+  ).bind(userId, rid, today).run()
+  await DB.prepare(
+    `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(userId, today, 3, `INTEL CAPTURED: recorded a wise response ("${String(trigger_q).slice(0, 50)}…"). +3 pts. Now memorize it.`, 'tongue', rid).run()
   return c.json({ ok: true, id: rid })
 })
 
 // List / filter the armory
 app.get('/api/tongue', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const cat = c.req.query('category')
   const q = c.req.query('q')
   let sql = `SELECT r.*, s.mastery, s.due_date, s.reps, s.lapses, s.interval_days, s.total_reviews, s.correct_reviews
-             FROM responses r JOIN response_srs s ON s.response_id=r.id WHERE r.archived=0`
-  const binds: any[] = []
+             FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
+             WHERE r.user_id=? AND r.archived=0`
+  const binds: any[] = [userId]
   if (cat && cat !== 'all') { sql += ` AND r.category=?`; binds.push(cat) }
   if (q) { sql += ` AND (r.situation LIKE ? OR r.trigger_q LIKE ? OR r.response LIKE ?)`; binds.push(`%${q}%`, `%${q}%`, `%${q}%`) }
   sql += ` ORDER BY r.created_at DESC LIMIT 300`
@@ -951,12 +1231,18 @@ app.put('/api/tongue/:id', async (c) => {
   const DB = c.env.DB
   const id = Number(c.req.param('id'))
   const { situation, trigger_q, response, why_works, source, category } = await c.req.json()
-  await DB.prepare(`UPDATE responses SET situation=?, trigger_q=?, response=?, why_works=?, source=?, category=? WHERE id=?`)
-    .bind(situation, trigger_q, response, why_works || null, source || null, category || 'wit', id).run()
+  const updated = await DB.prepare(
+    `UPDATE responses SET situation=?, trigger_q=?, response=?, why_works=?, source=?, category=?
+     WHERE id=? AND user_id=?`,
+  ).bind(situation, trigger_q, response, why_works || null, source || null, category || 'wit', id, c.get('userId')).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 app.delete('/api/tongue/:id', async (c) => {
-  await c.env.DB.prepare(`UPDATE responses SET archived=1 WHERE id=?`).bind(Number(c.req.param('id'))).run()
+  const updated = await c.env.DB.prepare(
+    `UPDATE responses SET archived=1 WHERE id=? AND user_id=?`,
+  ).bind(Number(c.req.param('id')), c.get('userId')).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 
@@ -964,12 +1250,13 @@ app.delete('/api/tongue/:id', async (c) => {
 // brain is attacked from 5 angles: recall / cloze / first_letters / reverse / delivery
 app.get('/api/tongue/due', async (c) => {
   const DB = c.env.DB
-  const date = await safeDate(c.env.DB, c.req.query('date'))
+  const userId = c.get('userId')
+  const date = await safeDate(DB, c.req.query('date'), userId)
   const { results } = await DB.prepare(
     `SELECT r.*, s.mastery, s.due_date, s.reps, s.lapses, s.interval_days, s.total_reviews, s.correct_reviews, s.last_mode
-     FROM responses r JOIN response_srs s ON s.response_id=r.id
-     WHERE r.archived=0 AND s.due_date <= ? ORDER BY s.due_date LIMIT 20`
-  ).bind(date).all()
+     FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
+     WHERE r.user_id=? AND r.archived=0 AND s.due_date <= ? ORDER BY s.due_date LIMIT 20`
+  ).bind(userId, date).all()
   const MODES = ['recall', 'cloze', 'first_letters', 'reverse', 'delivery']
   const out = (results as any[]).map((r: any) => {
     // rotate: never repeat the last mode; deeper mastery gets harder modes more often
@@ -984,9 +1271,12 @@ app.get('/api/tongue/due', async (c) => {
 // Grade a drill (0 blank | 1 shaky | 2 solid | 3 fluent) — SM-2 with mastery ladder
 app.post('/api/tongue/:id/review', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const id = Number(c.req.param('id'))
   const { grade, mode, date } = await c.req.json()
-  const s = await DB.prepare(`SELECT * FROM response_srs WHERE response_id=?`).bind(id).first<any>()
+  const s = await DB.prepare(
+    `SELECT * FROM response_srs WHERE response_id=? AND user_id=?`,
+  ).bind(id, userId).first<any>()
   if (!s) return c.json({ error: 'no such response' }, 404)
   let { interval_days, ease, reps, lapses, total_reviews, correct_reviews } = s
   total_reviews++
@@ -998,24 +1288,31 @@ app.post('/api/tongue/:id/review', async (c) => {
     else if (reps === 2) interval_days = 3
     else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
   }
-  const today = date || (await userNow(c.env.DB)).date
+  const today = date || (await userNow(DB, userId)).date
   const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
   const mastery = tongueMastery({ correct_reviews, interval_days })
   const prevMastery = s.mastery
   await DB.prepare(
-    `UPDATE response_srs SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=? WHERE response_id=?`
-  ).bind(interval_days, ease, reps, lapses, due, mastery, total_reviews, correct_reviews, mode || 'recall', id).run()
-  await DB.prepare(`INSERT INTO tongue_reviews (response_id, review_date, mode, grade) VALUES (?,?,?,?)`)
-    .bind(id, today, mode || 'recall', grade).run()
+    `UPDATE response_srs SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=?
+     WHERE response_id=? AND user_id=?`
+  ).bind(interval_days, ease, reps, lapses, due, mastery, total_reviews, correct_reviews, mode || 'recall', id, userId).run()
+  await DB.prepare(
+    `INSERT INTO tongue_reviews (user_id, response_id, review_date, mode, grade)
+     VALUES (?,?,?,?,?)`,
+  ).bind(userId, id, today, mode || 'recall', grade).run()
   // Mastery promotion bonuses — real, earned progress
   let promoted: string | null = null
   if (mastery !== prevMastery) {
     const bonus: any = { learning: 2, memorized: 8, ingrained: 15, reflex: 30 }
     if (bonus[mastery]) {
       promoted = mastery
-      const r = await DB.prepare(`SELECT trigger_q FROM responses WHERE id=?`).bind(id).first<any>()
-      await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-        .bind(today, bonus[mastery], `TONGUE ${mastery.toUpperCase()}: "${String(r?.trigger_q || '').slice(0, 50)}…" climbed to ${mastery.toUpperCase()}. +${bonus[mastery]} pts.`, 'tongue', id).run()
+      const r = await DB.prepare(
+        `SELECT trigger_q FROM responses WHERE id=? AND user_id=?`,
+      ).bind(id, userId).first<any>()
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+         VALUES (?,?,?,?,?,?)`,
+      ).bind(userId, today, bonus[mastery], `TONGUE ${mastery.toUpperCase()}: "${String(r?.trigger_q || '').slice(0, 50)}…" climbed to ${mastery.toUpperCase()}. +${bonus[mastery]} pts.`, 'tongue', id).run()
     }
   }
   return c.json({ ok: true, next_due: due, mastery, promoted })
@@ -1024,26 +1321,32 @@ app.post('/api/tongue/:id/review', async (c) => {
 // Weekly exam — strict. 10 random armed responses (or all if fewer). Pass ≥ 80%.
 app.get('/api/tongue/exam', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { results } = await DB.prepare(
     `SELECT r.id, r.situation, r.trigger_q, r.response, r.category, s.mastery
-     FROM responses r JOIN response_srs s ON s.response_id=r.id
-     WHERE r.archived=0 AND s.total_reviews > 0 ORDER BY RANDOM() LIMIT 10`
-  ).all()
+     FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
+     WHERE r.user_id=? AND r.archived=0 AND s.total_reviews > 0 ORDER BY RANDOM() LIMIT 10`
+  ).bind(userId).all()
   return c.json(results)
 })
 app.post('/api/tongue/exam/submit', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { total, correct, date } = await c.req.json()
-  const today = date || (await userNow(c.env.DB)).date
+  const today = date || (await userNow(DB, userId)).date
   const pct = total ? Math.round((correct / total) * 100) : 0
   const passed = pct >= 80 ? 1 : 0
-  await DB.prepare(`INSERT INTO tongue_exams (exam_date, total, correct, score_pct, passed) VALUES (?,?,?,?,?)`)
-    .bind(today, total, correct, pct, passed).run()
+  await DB.prepare(
+    `INSERT INTO tongue_exams (user_id, exam_date, total, correct, score_pct, passed)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(userId, today, total, correct, pct, passed).run()
   if (passed) {
-    await DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type) VALUES (?,?,?,?)`)
-      .bind(today, 25, `TONGUE EXAM PASSED: ${correct}/${total} (${pct}%). The armory is in your head. +25 pts.`, 'tongue').run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+       VALUES (?,?,?,?,?)`,
+    ).bind(userId, today, 25, `TONGUE EXAM PASSED: ${correct}/${total} (${pct}%). The armory is in your head. +25 pts.`, 'tongue').run()
   } else {
-    await addFlag(DB, today, 'tongue_exam_failed', 'serious',
+    await addFlag(DB, userId, today, 'tongue_exam_failed', 'serious',
       `TONGUE EXAM FAILED: ${correct}/${total} (${pct}%). You recorded wisdom you cannot recall — that is decoration, not armament. −10 pts. Drill and retake.`, -10)
   }
   return c.json({ ok: true, score_pct: pct, passed: !!passed })
@@ -1052,22 +1355,36 @@ app.post('/api/tongue/exam/submit', async (c) => {
 // Tongue stats — the real-progress dashboard
 app.get('/api/tongue/stats', async (c) => {
   const DB = c.env.DB
-  const date = await safeDate(c.env.DB, c.req.query('date'))
+  const userId = c.get('userId')
+  const date = await safeDate(DB, c.req.query('date'), userId)
   const byMastery = (await DB.prepare(
-    `SELECT s.mastery, COUNT(*) n FROM response_srs s JOIN responses r ON r.id=s.response_id WHERE r.archived=0 GROUP BY s.mastery`
-  ).all()).results
+    `SELECT s.mastery, COUNT(*) n FROM response_srs s
+     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+     WHERE r.user_id=? AND r.archived=0 GROUP BY s.mastery`
+  ).bind(userId).all()).results
   const totals = await DB.prepare(
-    `SELECT COUNT(*) total FROM responses WHERE archived=0`).first<any>()
+    `SELECT COUNT(*) total FROM responses WHERE user_id=? AND archived=0`,
+  ).bind(userId).first<any>()
   const due = await DB.prepare(
-    `SELECT COUNT(*) n FROM response_srs s JOIN responses r ON r.id=s.response_id WHERE r.archived=0 AND s.due_date<=?`).bind(date).first<any>()
+    `SELECT COUNT(*) n FROM response_srs s
+     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+     WHERE r.user_id=? AND r.archived=0 AND s.due_date<=?`,
+  ).bind(userId, date).first<any>()
   const reviews7 = await DB.prepare(
-    `SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN grade>=2 THEN 1 ELSE 0 END),0) solid FROM tongue_reviews WHERE review_date >= ?`
-  ).bind(addDays(date, -7)).first<any>()
-  const exams = (await DB.prepare(`SELECT * FROM tongue_exams ORDER BY created_at DESC LIMIT 8`).all()).results
+    `SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN grade>=2 THEN 1 ELSE 0 END),0) solid
+     FROM tongue_reviews WHERE user_id=? AND review_date >= ?`,
+  ).bind(userId, addDays(date, -7)).first<any>()
+  const exams = (await DB.prepare(
+    `SELECT * FROM tongue_exams WHERE user_id=? ORDER BY created_at DESC LIMIT 8`,
+  ).bind(userId).all()).results
   const captured7 = await DB.prepare(
-    `SELECT COUNT(*) n FROM responses WHERE archived=0 AND created_at >= datetime(?, '-7 days')`).bind(date + ' 00:00:00').first<any>()
+    `SELECT COUNT(*) n FROM responses
+     WHERE user_id=? AND archived=0 AND created_at >= datetime(?, '-7 days')`,
+  ).bind(userId, date + ' 00:00:00').first<any>()
   const byCat = (await DB.prepare(
-    `SELECT category, COUNT(*) n FROM responses WHERE archived=0 GROUP BY category ORDER BY n DESC`).all()).results
+    `SELECT category, COUNT(*) n FROM responses
+     WHERE user_id=? AND archived=0 GROUP BY category ORDER BY n DESC`,
+  ).bind(userId).all()).results
   const lastExam = (exams as any[])[0] || null
   const weekExamDone = lastExam && (lastExam as any).exam_date >= addDays(date, -6)
   return c.json({
@@ -1079,18 +1396,32 @@ app.get('/api/tongue/stats', async (c) => {
 
 // ============ LAWS ============
 app.get('/api/laws', async (c) => {
-  const date = await safeDate(c.env.DB, c.req.query('date'))
+  const userId = c.get('userId')
+  const date = await safeDate(c.env.DB, c.req.query('date'), userId)
   const { results } = await c.env.DB.prepare(
-    `SELECT l.*, lc.kept, lc.note FROM laws l LEFT JOIN law_checks lc ON lc.law_id=l.id AND lc.log_date=? ORDER BY l.sort_order`
-  ).bind(date).all()
+    `SELECT l.*, lc.kept, lc.note FROM laws l
+     LEFT JOIN law_checks lc ON lc.law_id=l.id AND lc.log_date=? AND lc.user_id=?
+     ORDER BY l.sort_order`
+  ).bind(date, userId).all()
   return c.json(results)
 })
 app.post('/api/laws/:id/check', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
   const { date, kept, note } = await c.req.json()
-  await c.env.DB.prepare(
-    `INSERT INTO law_checks (law_id, log_date, kept, note) VALUES (?,?,?,?)
-     ON CONFLICT(law_id, log_date) DO UPDATE SET kept=excluded.kept, note=excluded.note`
-  ).bind(Number(c.req.param('id')), date, kept ? 1 : 0, note || null).run()
+  const lawId = Number(c.req.param('id'))
+  const existing = await DB.prepare(
+    `SELECT id FROM law_checks WHERE user_id=? AND law_id=? AND log_date=?`,
+  ).bind(userId, lawId, date).first<{ id: number }>()
+  if (existing) {
+    await DB.prepare(
+      `UPDATE law_checks SET kept=?, note=? WHERE id=? AND user_id=?`,
+    ).bind(kept ? 1 : 0, note || null, existing.id, userId).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO law_checks (user_id, law_id, log_date, kept, note) VALUES (?,?,?,?,?)`,
+    ).bind(userId, lawId, date, kept ? 1 : 0, note || null).run()
+  }
   return c.json({ ok: true })
 })
 
@@ -1101,25 +1432,28 @@ app.get('/api/rewards', async (c) => {
 })
 app.post('/api/rewards/:id/redeem', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const id = Number(c.req.param('id'))
-  const { date } = await userNow(DB) // server clock
+  const { date } = await userNow(DB, userId) // server clock
   const reward = await DB.prepare(`SELECT * FROM rewards WHERE id=?`).bind(id).first<any>()
   if (!reward) return c.json({ error: 'no reward' }, 404)
-  // RACE-SAFE: the debit INSERT itself re-checks the balance atomically —
-  // two simultaneous redeems cannot both pass, because each INSERT only fires
-  // if the CURRENT ledger sum still covers the cost.
+  // RACE-SAFE: the debit INSERT itself re-checks this owner's balance atomically.
   const debit = await DB.prepare(
-    `INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id)
-     SELECT ?, ?, ?, 'reward', ?
-     WHERE (SELECT COALESCE(SUM(points),0) FROM points_ledger) >= ?`
-  ).bind(date, -reward.cost, `REWARD REDEEMED: ${reward.title} (-${reward.cost})`, id, reward.cost).run()
+    `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+     SELECT ?, ?, ?, ?, 'reward', ?
+     WHERE (SELECT COALESCE(SUM(points),0) FROM points_ledger WHERE user_id=?) >= ?`
+  ).bind(userId, date, -reward.cost, `REWARD REDEEMED: ${reward.title} (-${reward.cost})`, id, userId, reward.cost).run()
   if ((debit.meta as any).changes === 0) {
-    const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) as total FROM points_ledger`).first<{ total: number }>()
+    const pts = await DB.prepare(
+      `SELECT COALESCE(SUM(points),0) as total FROM points_ledger WHERE user_id=?`,
+    ).bind(userId).first<{ total: number }>()
     return c.json({ error: `NOT EARNED YET. You have ${pts?.total ?? 0} pts, this costs ${reward.cost}. Rewards are taken, not given. Back to work.` }, 400)
   }
   await DB.batch([
     DB.prepare(`UPDATE rewards SET redeemed_count=redeemed_count+1 WHERE id=?`).bind(id),
-    DB.prepare(`INSERT INTO reward_redemptions (reward_id) VALUES (?)`).bind(id),
+    DB.prepare(
+      `INSERT INTO reward_redemptions (user_id, reward_id) VALUES (?,?)`,
+    ).bind(userId, id),
   ])
   return c.json({ ok: true })
 })
@@ -1127,15 +1461,17 @@ app.post('/api/rewards/:id/redeem', async (c) => {
 // ============ STATS ============
 app.get('/api/stats', async (c) => {
   const DB = c.env.DB
-  const date = await safeDate(c.env.DB, c.req.query('date'))
+  const userId = c.get('userId')
+  const date = await safeDate(DB, c.req.query('date'), userId)
   // 14-day strip straight from day_summary (2 queries, not 28+)
   const from14 = addDays(date, -13)
   const sumRows = (await DB.prepare(
-    `SELECT * FROM day_summary WHERE summary_date BETWEEN ? AND ?`
-  ).bind(from14, date).all()).results as any[]
+    `SELECT * FROM day_summary WHERE user_id=? AND summary_date BETWEEN ? AND ?`
+  ).bind(userId, from14, date).all()).results as any[]
   const debRows = (await DB.prepare(
-    `SELECT log_date, sleep_hours, mood, energy FROM debriefs WHERE log_date BETWEEN ? AND ?`
-  ).bind(from14, date).all()).results as any[]
+    `SELECT log_date, sleep_hours, mood, energy FROM debriefs
+     WHERE user_id=? AND log_date BETWEEN ? AND ?`
+  ).bind(userId, from14, date).all()).results as any[]
   const sumBy = new Map(sumRows.map(r => [r.summary_date, r]))
   const debBy = new Map(debRows.map(r => [r.log_date, r]))
   const days = [] as any[]
@@ -1145,7 +1481,7 @@ app.get('/api/stats', async (c) => {
     // today (or an unmaterialized day) falls back to live computation once
     let pct = s?.adherence_pct ?? null, done = s?.blocks_done ?? 0, total = s?.blocks_total ?? 0, mvd = !!s?.mvd_held
     if (pct === null && d === date) {
-      const adh = dayAdherence(await blocksForDate(DB, d))
+      const adh = dayAdherence(await blocksForDate(DB, userId, d))
       pct = adh.pct; done = Math.round(adh.done); total = adh.total; mvd = adh.mvdHeld
     }
     days.push({ date: d, pct: pct ?? 0, done, total, mvdHeld: mvd, sleep: deb?.sleep_hours ?? null, mood: deb?.mood ?? null, energy: deb?.energy ?? null, debrief: !!deb })
@@ -1155,33 +1491,51 @@ app.get('/api/stats', async (c) => {
   const { results: catRows } = await DB.prepare(
     `SELECT b.category, COUNT(*) as total,
             SUM(CASE WHEN l.status='done' THEN 1 WHEN l.status='partial' THEN 0.5 ELSE 0 END) as done
-     FROM block_logs l JOIN schedule_blocks b ON b.id=l.block_id
-     WHERE l.log_date BETWEEN ? AND ? GROUP BY b.category`
-  ).bind(from, date).all()
-  const ledger = (await DB.prepare(`SELECT * FROM points_ledger ORDER BY created_at DESC LIMIT 40`).all()).results
+     FROM block_logs l JOIN schedule_blocks b ON b.id=l.block_id AND b.user_id=l.user_id
+     WHERE l.user_id=? AND l.log_date BETWEEN ? AND ? GROUP BY b.category`
+  ).bind(userId, from, date).all()
+  const ledger = (await DB.prepare(
+    `SELECT * FROM points_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT 40`,
+  ).bind(userId).all()).results
   const unitStats = await DB.prepare(
-    `SELECT COUNT(*) as total, SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) as complete FROM unit_progress`
-  ).first<any>()
+    `SELECT COUNT(*) as total, SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) as complete
+     FROM unit_progress WHERE user_id=?`,
+  ).bind(userId).first<any>()
   const cardStats = await DB.prepare(
-    `SELECT COUNT(*) as reviews, AVG(grade) as avg_grade FROM card_reviews`
-  ).first<any>()
+    `SELECT COUNT(*) as reviews, AVG(grade) as avg_grade FROM card_reviews WHERE user_id=?`,
+  ).bind(userId).first<any>()
   const flagCounts = (await DB.prepare(
-    `SELECT flag_type, COUNT(*) as n FROM honesty_flags GROUP BY flag_type`
-  ).all()).results
-  const streak = await computeStreak(DB, date)
-  const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) as total FROM points_ledger`).first<{ total: number }>()
+    `SELECT flag_type, COUNT(*) as n FROM honesty_flags WHERE user_id=? GROUP BY flag_type`,
+  ).bind(userId).all()).results
+  const streak = await computeStreak(DB, userId, date)
+  const pts = await DB.prepare(
+    `SELECT COALESCE(SUM(points),0) as total FROM points_ledger WHERE user_id=?`,
+  ).bind(userId).first<{ total: number }>()
 
   // ── MEDALS (war decorations, computed live — earned, never given) ──
-  const debriefCount = (await DB.prepare(`SELECT COUNT(*) as n FROM debriefs`).first<any>())?.n ?? 0
-  const chaptersDone = (await DB.prepare(`SELECT COUNT(*) as n FROM book_progress WHERE status='done'`).first<any>())?.n ?? 0
+  const debriefCount = (await DB.prepare(
+    `SELECT COUNT(*) as n FROM debriefs WHERE user_id=?`,
+  ).bind(userId).first<any>())?.n ?? 0
+  const chaptersDone = (await DB.prepare(
+    `SELECT COUNT(*) as n FROM book_progress WHERE user_id=? AND status='done'`,
+  ).bind(userId).first<any>())?.n ?? 0
   const booksDone = (await DB.prepare(
-    `SELECT COUNT(*) as n FROM (SELECT book_id, COUNT(*) c FROM book_progress WHERE status='done' GROUP BY book_id HAVING c >= 12)`
-  ).first<any>())?.n ?? 0
-  const intelCount = (await DB.prepare(`SELECT COUNT(*) as n FROM intel_entries`).first<any>())?.n ?? 0
-  const examsPassed = (await DB.prepare(`SELECT COUNT(*) as n FROM unit_progress up JOIN units u ON u.id=up.unit_id WHERE u.is_exam=1 AND up.status='complete'`).first<any>())?.n ?? 0
+    `SELECT COUNT(*) as n FROM (
+       SELECT book_id, COUNT(*) c FROM book_progress
+       WHERE user_id=? AND status='done' GROUP BY book_id HAVING c >= 12
+     )`,
+  ).bind(userId).first<any>())?.n ?? 0
+  const intelCount = (await DB.prepare(
+    `SELECT COUNT(*) as n FROM intel_entries WHERE user_id=?`,
+  ).bind(userId).first<any>())?.n ?? 0
+  const examsPassed = (await DB.prepare(
+    `SELECT COUNT(*) as n FROM unit_progress up JOIN units u ON u.id=up.unit_id
+     WHERE up.user_id=? AND u.is_exam=1 AND up.status='complete'`,
+  ).bind(userId).first<any>())?.n ?? 0
   const earlyWakes = (await DB.prepare(
-    `SELECT COUNT(*) as n FROM debriefs WHERE wake_time IS NOT NULL AND wake_time <= '06:00'`
-  ).first<any>())?.n ?? 0
+    `SELECT COUNT(*) as n FROM debriefs
+     WHERE user_id=? AND wake_time IS NOT NULL AND wake_time <= '06:00'`,
+  ).bind(userId).first<any>())?.n ?? 0
   const victoryDays = days.filter(d => d.pct >= 80 && d.debrief).length
   const reviews = cardStats?.reviews ?? 0
   const unitsWon = unitStats?.complete ?? 0
@@ -1209,31 +1563,47 @@ app.get('/api/stats', async (c) => {
 
 // ============ LIFE INTEL (The Council) ============
 app.get('/api/intel', async (c) => {
+  const userId = c.get('userId')
   const domain = c.req.query('domain')
   const q = domain
-    ? c.env.DB.prepare(`SELECT * FROM intel_entries WHERE domain=? ORDER BY log_date DESC, id DESC LIMIT 100`).bind(domain)
-    : c.env.DB.prepare(`SELECT * FROM intel_entries ORDER BY log_date DESC, id DESC LIMIT 100`)
+    ? c.env.DB.prepare(
+      `SELECT * FROM intel_entries WHERE user_id=? AND domain=?
+       ORDER BY log_date DESC, id DESC LIMIT 100`,
+    ).bind(userId, domain)
+    : c.env.DB.prepare(
+      `SELECT * FROM intel_entries WHERE user_id=? ORDER BY log_date DESC, id DESC LIMIT 100`,
+    ).bind(userId)
   return c.json((await q.all()).results)
 })
 
 app.post('/api/intel', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
   const b = await c.req.json()
   if (!b.title || !b.domain) return c.json({ error: 'Domain and title required.' }, 400)
-  const r = await c.env.DB.prepare(
-    `INSERT INTO intel_entries (log_date, domain, title, situation, my_move, outcome, verdict, principle_used, lesson, people)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
-  ).bind(b.log_date || (await userNow(c.env.DB)).date, b.domain, b.title, b.situation || null,
+  const logDate = b.log_date || (await userNow(DB, userId)).date
+  const r = await DB.prepare(
+    `INSERT INTO intel_entries
+       (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
+        principle_used, lesson, people)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(userId, logDate, b.domain, b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
     b.lesson || null, b.people || null).run()
-  await c.env.DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type, ref_id) VALUES (?,?,?,?,?)`)
-    .bind(b.log_date || (await userNow(c.env.DB)).date, 15, `Intel filed: [${b.domain}] ${b.title} (+15)`, 'intel', r.meta.last_row_id).run()
+  await DB.prepare(
+    `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(userId, logDate, 15, `Intel filed: [${b.domain}] ${b.title} (+15)`, 'intel', r.meta.last_row_id).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 
 app.post('/api/intel/:id/verdict', async (c) => {
   const { verdict, lesson } = await c.req.json()
-  await c.env.DB.prepare(`UPDATE intel_entries SET verdict=?, lesson=COALESCE(?,lesson) WHERE id=?`)
-    .bind(verdict, lesson || null, Number(c.req.param('id'))).run()
+  const updated = await c.env.DB.prepare(
+    `UPDATE intel_entries SET verdict=?, lesson=COALESCE(?,lesson)
+     WHERE id=? AND user_id=?`,
+  ).bind(verdict, lesson || null, Number(c.req.param('id')), c.get('userId')).run()
+  if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
 })
 
@@ -1253,7 +1623,9 @@ const BOOKS_META = [
 ]
 
 app.get('/api/library', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT book_id, chapter_idx, status, last_para FROM book_progress`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT book_id, chapter_idx, status, last_para FROM book_progress WHERE user_id=?`,
+  ).bind(c.get('userId')).all()
   const prog: Record<string, any[]> = {}
   for (const r of results as any[]) (prog[r.book_id] ||= []).push(r)
   return c.json(BOOKS_META.map(b => {
@@ -1265,20 +1637,32 @@ app.get('/api/library', async (c) => {
 })
 
 app.post('/api/library/:bookId/chapter/:idx', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
   const bookId = c.req.param('bookId')
   const idx = Number(c.req.param('idx'))
   const { status, last_para, notes, date } = await c.req.json()
-  const prev = await c.env.DB.prepare(`SELECT status FROM book_progress WHERE book_id=? AND chapter_idx=?`).bind(bookId, idx).first<any>()
-  await c.env.DB.prepare(
-    `INSERT INTO book_progress (book_id, chapter_idx, status, last_para, notes, completed_at)
-     VALUES (?,?,?,?,?, CASE WHEN ?='done' THEN datetime('now') ELSE NULL END)
-     ON CONFLICT(book_id, chapter_idx) DO UPDATE SET status=excluded.status,
-       last_para=excluded.last_para, notes=COALESCE(excluded.notes, notes),
-       completed_at=CASE WHEN excluded.status='done' THEN datetime('now') ELSE completed_at END`
-  ).bind(bookId, idx, status || 'reading', last_para ?? 0, notes || null, status || 'reading').run()
+  const prev = await DB.prepare(
+    `SELECT id, status FROM book_progress WHERE user_id=? AND book_id=? AND chapter_idx=?`,
+  ).bind(userId, bookId, idx).first<{ id: number; status: string }>()
+  if (prev) {
+    await DB.prepare(
+      `UPDATE book_progress SET status=?, last_para=?, notes=COALESCE(?,notes),
+         completed_at=CASE WHEN ?='done' THEN datetime('now') ELSE completed_at END
+       WHERE id=? AND user_id=?`,
+    ).bind(status || 'reading', last_para ?? 0, notes || null, status || 'reading', prev.id, userId).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO book_progress
+         (user_id, book_id, chapter_idx, status, last_para, notes, completed_at)
+       VALUES (?,?,?,?,?,?, CASE WHEN ?='done' THEN datetime('now') ELSE NULL END)`,
+    ).bind(userId, bookId, idx, status || 'reading', last_para ?? 0, notes || null, status || 'reading').run()
+  }
   if (status === 'done' && prev?.status !== 'done') {
-    await c.env.DB.prepare(`INSERT INTO points_ledger (log_date, points, reason, ref_type) VALUES (?,?,?,?)`)
-      .bind(date || (await userNow(c.env.DB)).date, 20, `Real chapter finished: ${bookId} ch.${idx + 1} (+20)`, 'book').run()
+    await DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+       VALUES (?,?,?,?,?)`,
+    ).bind(userId, date || (await userNow(DB, userId)).date, 20, `Real chapter finished: ${bookId} ch.${idx + 1} (+20)`, 'book').run()
   }
   return c.json({ ok: true })
 })
@@ -1290,7 +1674,9 @@ app.use('/calendar.ics', async (c, next) => {
 })
 
 app.get('/calendar.ics', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM schedule_blocks ORDER BY start_time`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM schedule_blocks WHERE user_id=? ORDER BY start_time`,
+  ).bind(c.get('userId')).all()
   const dayMap: Record<string, string> = { mon: 'MO', tue: 'TU', wed: 'WE', thu: 'TH', fri: 'FR', sat: 'SA', sun: 'SU' }
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//WarRoom//LockIn//EN\r\nX-WR-CALNAME:War Room Schedule\r\n'
   for (const b of results as any[]) {
@@ -1311,23 +1697,32 @@ app.get('/calendar.ics', async (c) => {
 })
 
 // ============ HERMES — the autonomous counsel ============
-async function hermesBriefing(DB: D1Database, date: string): Promise<string> {
-  const y1 = addDays(date, -1)
-  const blocks = await blocksForDate(DB, date)
+async function hermesBriefing(DB: D1Database, userId: number, date: string): Promise<string> {
+  const blocks = await blocksForDate(DB, userId, date)
   const adh = dayAdherence(blocks)
-  const streak = await computeStreak(DB, date)
-  const pts = await DB.prepare(`SELECT COALESCE(SUM(points),0) as t FROM points_ledger`).first<any>()
-  const debriefs = (await DB.prepare(`SELECT * FROM debriefs ORDER BY log_date DESC LIMIT 7`).all()).results as any[]
-  const flags = (await DB.prepare(`SELECT * FROM honesty_flags ORDER BY created_at DESC LIMIT 10`).all()).results as any[]
-  const intel = (await DB.prepare(`SELECT * FROM intel_entries ORDER BY id DESC LIMIT 15`).all()).results as any[]
+  const streak = await computeStreak(DB, userId, date)
+  const pts = await DB.prepare(
+    `SELECT COALESCE(SUM(points),0) as t FROM points_ledger WHERE user_id=?`,
+  ).bind(userId).first<any>()
+  const debriefs = (await DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? ORDER BY log_date DESC LIMIT 7`,
+  ).bind(userId).all()).results as any[]
+  const flags = (await DB.prepare(
+    `SELECT * FROM honesty_flags WHERE user_id=? ORDER BY created_at DESC LIMIT 10`,
+  ).bind(userId).all()).results as any[]
+  const intel = (await DB.prepare(
+    `SELECT * FROM intel_entries WHERE user_id=? ORDER BY id DESC LIMIT 15`,
+  ).bind(userId).all()).results as any[]
   const units = (await DB.prepare(
     `SELECT u.title, p.code, up.status, up.drill_report FROM units u
      JOIN phases p ON p.id=u.phase_id JOIN unit_progress up ON up.unit_id=u.id
-     WHERE up.status NOT IN ('locked') ORDER BY p.sort_order, u.sort_order LIMIT 12`
-  ).all()).results as any[]
+     WHERE up.user_id=? AND up.status NOT IN ('locked')
+     ORDER BY p.sort_order, u.sort_order LIMIT 12`
+  ).bind(userId).all()).results as any[]
   const lawBreaks = (await DB.prepare(
-    `SELECT l.title, COUNT(*) n FROM law_checks lc JOIN laws l ON l.id=lc.law_id WHERE lc.kept=0 GROUP BY l.id ORDER BY n DESC LIMIT 3`
-  ).all()).results as any[]
+    `SELECT l.title, COUNT(*) n FROM law_checks lc JOIN laws l ON l.id=lc.law_id
+     WHERE lc.user_id=? AND lc.kept=0 GROUP BY l.id ORDER BY n DESC LIMIT 3`
+  ).bind(userId).all()).results as any[]
 
   return `=== COMMANDER'S FILE (auto-generated live from the War Room database) ===
 DATE: ${date} | STREAK: ${streak} victory days | POINTS: ${pts?.t} | TODAY'S ADHERENCE SO FAR: ${adh.pct}% (${adh.done}/${adh.total})
@@ -1363,12 +1758,18 @@ app.post('/api/hermes', async (c) => {
   const DB = c.env.DB
   const { message, date } = await c.req.json()
   if (!message?.trim()) return c.json({ error: 'Say something, Commander.' }, 400)
-  const today = date || (await userNow(c.env.DB)).date
+  const userId = c.get('userId')
+  const today = date || (await userNow(DB, userId)).date
 
-  const briefing = await hermesBriefing(DB, today)
-  const history = ((await DB.prepare(`SELECT role, content FROM hermes_messages ORDER BY id DESC LIMIT 12`).all()).results as any[]).reverse()
+  const briefing = await hermesBriefing(DB, userId, today)
+  const history = ((await DB.prepare(
+    `SELECT role, content FROM hermes_messages WHERE user_id=? ORDER BY id DESC LIMIT 12`,
+  ).bind(userId).all()).results as any[]).reverse()
 
-  await DB.prepare(`INSERT INTO hermes_messages (role, content, context_date) VALUES ('user', ?, ?)`).bind(message, today).run()
+  await DB.prepare(
+    `INSERT INTO hermes_messages (user_id, role, content, context_date)
+     VALUES (?, 'user', ?, ?)`,
+  ).bind(userId, message, today).run()
 
   const apiKey = c.env.OPENAI_API_KEY
   const baseURL = c.env.OPENAI_BASE_URL
@@ -1393,21 +1794,27 @@ app.post('/api/hermes', async (c) => {
   }
   const data: any = await resp.json()
   const answer = data.choices?.[0]?.message?.content || '(no response)'
-  await DB.prepare(`INSERT INTO hermes_messages (role, content, context_date) VALUES ('assistant', ?, ?)`).bind(answer, today).run()
+  await DB.prepare(
+    `INSERT INTO hermes_messages (user_id, role, content, context_date)
+     VALUES (?, 'assistant', ?, ?)`,
+  ).bind(userId, answer, today).run()
   return c.json({ answer })
 })
 
 app.get('/api/hermes/history', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT * FROM hermes_messages ORDER BY id DESC LIMIT 40`).all()
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM hermes_messages WHERE user_id=? ORDER BY id DESC LIMIT 40`,
+  ).bind(c.get('userId')).all()
   return c.json((results as any[]).reverse())
 })
 
 // Morning war council: Hermes proactively reviews the file and issues the day's orders
 app.post('/api/hermes/council', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const { date } = await c.req.json()
-  const today = date || (await userNow(c.env.DB)).date
-  const briefing = await hermesBriefing(DB, today)
+  const today = date || (await userNow(DB, userId)).date
+  const briefing = await hermesBriefing(DB, userId, today)
   const apiKey = c.env.OPENAI_API_KEY
   if (!apiKey) return c.json({ error: 'Hermes offline: no LLM key.' }, 500)
   const resp = await fetch(`${c.env.OPENAI_BASE_URL}/chat/completions`, {
@@ -1425,15 +1832,21 @@ app.post('/api/hermes/council', async (c) => {
   if (!resp.ok) return c.json({ error: `Council failed (${resp.status})` }, 500)
   const data: any = await resp.json()
   const answer = data.choices?.[0]?.message?.content || '(silence)'
-  await DB.prepare(`INSERT INTO hermes_messages (role, content, context_date) VALUES ('assistant', ?, ?)`).bind(`[MORNING WAR COUNCIL ${today}]\n${answer}`, today).run()
+  await DB.prepare(
+    `INSERT INTO hermes_messages (user_id, role, content, context_date)
+     VALUES (?, 'assistant', ?, ?)`,
+  ).bind(userId, `[MORNING WAR COUNCIL ${today}]\n${answer}`, today).run()
   return c.json({ answer })
 })
 
 // Hermes analysis of a specific intel entry
 app.post('/api/intel/:id/analyze', async (c) => {
   const DB = c.env.DB
+  const userId = c.get('userId')
   const id = Number(c.req.param('id'))
-  const entry = await DB.prepare(`SELECT * FROM intel_entries WHERE id=?`).bind(id).first<any>()
+  const entry = await DB.prepare(
+    `SELECT * FROM intel_entries WHERE id=? AND user_id=?`,
+  ).bind(id, userId).first<any>()
   if (!entry) return c.json({ error: 'No such entry' }, 404)
   const apiKey = c.env.OPENAI_API_KEY
   if (!apiKey) return c.json({ error: 'Hermes offline: no LLM key.' }, 500)
@@ -1451,7 +1864,9 @@ app.post('/api/intel/:id/analyze', async (c) => {
   if (!resp.ok) return c.json({ error: `Analysis failed (${resp.status})` }, 500)
   const data: any = await resp.json()
   const answer = data.choices?.[0]?.message?.content || '(no analysis)'
-  await DB.prepare(`UPDATE intel_entries SET hermes_analysis=? WHERE id=?`).bind(answer, id).run()
+  await DB.prepare(
+    `UPDATE intel_entries SET hermes_analysis=? WHERE id=? AND user_id=?`,
+  ).bind(answer, id, userId).run()
   return c.json({ analysis: answer })
 })
 
@@ -1468,17 +1883,24 @@ function genToken(): string {
   return t
 }
 
-async function getAgentToken(DB: D1Database): Promise<string | null> {
-  const row = await DB.prepare(`SELECT value FROM settings WHERE key='agent_token'`).first<{ value: string }>()
-  return row?.value ?? null
+async function getAgentToken(
+  DB: D1Database,
+): Promise<{ userId: number; value: string } | null> {
+  const row = await DB.prepare(
+    `SELECT user_id, value FROM settings
+     WHERE key='agent_token' AND user_id IS NOT NULL
+     ORDER BY rowid LIMIT 1`,
+  ).first<{ user_id: number; value: string }>()
+  return row ? { userId: row.user_id, value: row.value } : null
 }
 
-async function agentAuthed(c: any): Promise<boolean> {
+async function agentUserId(c: any): Promise<number | null> {
   // HEADER ONLY — tokens in query strings leak into logs and referrers.
   const token = c.req.header('x-agent-token')
-  if (!token) return false
+  if (!token) return null
   const stored = await getAgentToken(c.env.DB)
-  return stored !== null && timingSafeEq(token, stored)
+  if (!stored || !timingSafeEq(token, stored.value)) return null
+  return stored.userId
 }
 
 // Raw agent credentials are issued only by the explicit rotation POST below.
@@ -1487,35 +1909,46 @@ app.get('/api/agent/token', async (c) => {
   return c.json({ error: 'Agent tokens are issued only by POST /api/agent/token/rotate.' }, 405, { Allow: 'POST' })
 })
 app.post('/api/agent/token/rotate', async (c) => {
+  const userId = c.get('userId')
   const t = genToken()
-  await c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('agent_token', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(t).run()
+  await setSetting(c.env.DB, 'agent_token', t, userId)
   return c.json({ token: t })
 })
 
 // Full situational briefing for the agent (text + structured JSON)
 app.get('/api/agent/briefing', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const DB = c.env.DB
-  const { date, time } = await userNow(DB) // server clock; reads never run engines
-  const briefing = await hermesBriefing(DB, date)
-  const blocks = await blocksForDate(DB, date)
+  const { date, time } = await userNow(DB, userId) // server clock; reads never run engines
+  const briefing = await hermesBriefing(DB, userId, date)
+  const blocks = await blocksForDate(DB, userId, date)
   const current = blocks.find((b: any) => b.start_time <= time && time < b.end_time) || null
   const next = blocks.find((b: any) => b.start_time > time) || null
-  const flags = (await DB.prepare(`SELECT * FROM honesty_flags WHERE acknowledged=0`).all()).results
+  const flags = (await DB.prepare(
+    `SELECT * FROM honesty_flags WHERE user_id=? AND acknowledged=0`,
+  ).bind(userId).all()).results
   return c.json({ date, briefing, current, next, adherence: dayAdherence(blocks), flags, blocks })
 })
 
 // What needs attention RIGHT NOW (for the agent's watch loop → Telegram/termux-notification)
 app.get('/api/agent/pending', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const DB = c.env.DB
-  const { date, time } = await userNow(DB) // server clock; reads never run engines
-  const blocks = await blocksForDate(DB, date)
+  const { date, time } = await userNow(DB, userId) // server clock; reads never run engines
+  const blocks = await blocksForDate(DB, userId, date)
   const overdue = blocks.filter((b: any) => b.end_time <= time && !b.log_status)
   const current = blocks.find((b: any) => b.start_time <= time && time < b.end_time) || null
-  const flags = (await DB.prepare(`SELECT * FROM honesty_flags WHERE acknowledged=0 ORDER BY created_at DESC`).all()).results
-  const debriefToday = await DB.prepare(`SELECT id FROM debriefs WHERE log_date=?`).bind(date).first()
-  const dueCards = await DB.prepare(`SELECT COUNT(*) n FROM flashcards WHERE due_date<=?`).bind(date).first<any>()
+  const flags = (await DB.prepare(
+    `SELECT * FROM honesty_flags WHERE user_id=? AND acknowledged=0 ORDER BY created_at DESC`,
+  ).bind(userId).all()).results
+  const debriefToday = await DB.prepare(
+    `SELECT id FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, date).first()
+  const dueCards = await DB.prepare(
+    `SELECT COUNT(*) n FROM flashcards WHERE user_id=? AND due_date<=?`,
+  ).bind(userId, date).first<any>()
   return c.json({
     date, time,
     current_block: current ? { id: current.id, title: current.title, start: current.start_time, end: current.end_time, status: current.log_status } : null,
@@ -1528,68 +1961,112 @@ app.get('/api/agent/pending', async (c) => {
 
 // Agent auto-journals anything it observes: intel, debrief updates, block check-offs
 app.post('/api/agent/intel', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const b = await c.req.json()
   if (!b.title || !b.domain) return c.json({ error: 'domain and title required' }, 400)
   const r = await c.env.DB.prepare(
-    `INSERT INTO intel_entries (log_date, domain, title, situation, my_move, outcome, verdict, principle_used, lesson, people, hermes_analysis)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(b.log_date || (await userNow(c.env.DB)).date, b.domain, '[HERMES] ' + b.title, b.situation || null,
+    `INSERT INTO intel_entries
+       (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
+        principle_used, lesson, people, hermes_analysis)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(userId, b.log_date || (await userNow(c.env.DB, userId)).date,
+    b.domain, '[HERMES] ' + b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
     b.lesson || null, b.people || null, b.analysis || null).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
 })
 
 app.post('/api/agent/debrief', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+  const DB = c.env.DB
   const b = await c.req.json()
-  const date = b.date || (await userNow(c.env.DB)).date
-  const prev = await c.env.DB.prepare(`SELECT * FROM debriefs WHERE log_date=?`).bind(date).first<any>()
+  const date = b.date || (await userNow(DB, userId)).date
+  const prev = await DB.prepare(
+    `SELECT * FROM debriefs WHERE user_id=? AND log_date=?`,
+  ).bind(userId, date).first<any>()
   const merge = (a: string | null | undefined, x: string | null | undefined) =>
     x ? (a ? a + '\n[HERMES] ' + x : '[HERMES] ' + x) : (a ?? null)
-  await c.env.DB.prepare(
-    `INSERT INTO debriefs (log_date, wins, breaks, tomorrow_targets, strategy_insight, mood, energy, sleep_time, wake_time, sleep_hours)
-     VALUES (?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(log_date) DO UPDATE SET wins=excluded.wins, breaks=excluded.breaks,
-       tomorrow_targets=excluded.tomorrow_targets, strategy_insight=excluded.strategy_insight,
-       mood=COALESCE(excluded.mood, mood), energy=COALESCE(excluded.energy, energy),
-       sleep_time=COALESCE(excluded.sleep_time, sleep_time), wake_time=COALESCE(excluded.wake_time, wake_time),
-       sleep_hours=COALESCE(excluded.sleep_hours, sleep_hours)`
-  ).bind(date, merge(prev?.wins, b.wins), merge(prev?.breaks, b.breaks),
-    merge(prev?.tomorrow_targets, b.tomorrow_targets), merge(prev?.strategy_insight, b.strategy_insight),
-    b.mood ?? prev?.mood ?? null, b.energy ?? prev?.energy ?? null,
-    b.sleep_time ?? prev?.sleep_time ?? null, b.wake_time ?? prev?.wake_time ?? null,
-    b.sleep_hours ?? prev?.sleep_hours ?? null).run()
+  const values = [
+    merge(prev?.wins, b.wins),
+    merge(prev?.breaks, b.breaks),
+    merge(prev?.tomorrow_targets, b.tomorrow_targets),
+    merge(prev?.strategy_insight, b.strategy_insight),
+    b.mood ?? prev?.mood ?? null,
+    b.energy ?? prev?.energy ?? null,
+    b.sleep_time ?? prev?.sleep_time ?? null,
+    b.wake_time ?? prev?.wake_time ?? null,
+    b.sleep_hours ?? prev?.sleep_hours ?? null,
+  ]
+  if (prev) {
+    await DB.prepare(
+      `UPDATE debriefs SET wins=?, breaks=?, tomorrow_targets=?, strategy_insight=?,
+         mood=?, energy=?, sleep_time=?, wake_time=?, sleep_hours=?
+       WHERE id=? AND user_id=?`,
+    ).bind(...values, prev.id, userId).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO debriefs
+         (user_id, log_date, wins, breaks, tomorrow_targets, strategy_insight,
+          mood, energy, sleep_time, wake_time, sleep_hours)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(userId, date, ...values).run()
+  }
   return c.json({ ok: true })
 })
 
 app.post('/api/agent/block-log', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
+  const DB = c.env.DB
   const { block_id, date, status, note } = await c.req.json()
-  await c.env.DB.prepare(
-    `INSERT INTO block_logs (block_id, log_date, status, note, completed_at) VALUES (?,?,?,?,datetime('now'))
-     ON CONFLICT(block_id, log_date) DO UPDATE SET status=excluded.status, note=excluded.note, completed_at=excluded.completed_at`
-  ).bind(block_id, date || (await userNow(c.env.DB)).date, status, note ? '[HERMES] ' + note : null).run()
+  const block = await DB.prepare(
+    `SELECT id FROM schedule_blocks WHERE id=? AND user_id=?`,
+  ).bind(block_id, userId).first()
+  if (!block) return c.json({ error: 'no such block' }, 404)
+  const logDate = date || (await userNow(DB, userId)).date
+  const existing = await DB.prepare(
+    `SELECT id FROM block_logs WHERE user_id=? AND block_id=? AND log_date=?`,
+  ).bind(userId, block_id, logDate).first<{ id: number }>()
+  if (existing) {
+    await DB.prepare(
+      `UPDATE block_logs SET status=?, note=?, completed_at=datetime('now')
+       WHERE id=? AND user_id=?`,
+    ).bind(status, note ? '[HERMES] ' + note : null, existing.id, userId).run()
+  } else {
+    await DB.prepare(
+      `INSERT INTO block_logs
+         (user_id, block_id, log_date, status, note, completed_at)
+       VALUES (?,?,?,?,?,datetime('now'))`,
+    ).bind(userId, block_id, logDate, status, note ? '[HERMES] ' + note : null).run()
+  }
   return c.json({ ok: true })
 })
 
 // Agent posts its counsel into the app's Council log (visible in the COUNCIL tab)
 app.post('/api/agent/message', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const { content, role } = await c.req.json()
   if (!content) return c.json({ error: 'content required' }, 400)
-  await c.env.DB.prepare(`INSERT INTO hermes_messages (role, content, context_date) VALUES (?,?,?)`)
-    .bind(role === 'user' ? 'user' : 'assistant', '[LOCAL-HERMES] ' + content, (await userNow(c.env.DB)).date).run()
+  await c.env.DB.prepare(
+    `INSERT INTO hermes_messages (user_id, role, content, context_date)
+     VALUES (?,?,?,?)`,
+  ).bind(userId, role === 'user' ? 'user' : 'assistant', '[LOCAL-HERMES] ' + content,
+    (await userNow(c.env.DB, userId)).date).run()
   return c.json({ ok: true })
 })
 
-// Everything endpoint: full DB export for the agent's memory sync
+// Everything endpoint: full DB export for the credential owner only.
 app.get('/api/agent/export', async (c) => {
-  if (!(await agentAuthed(c))) return c.json({ error: 'Invalid agent token' }, 401)
+  const userId = await agentUserId(c)
+  if (userId === null) return c.json({ error: 'Invalid agent token' }, 401)
   const DB = c.env.DB
   const out: Record<string, any> = {}
-  for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks', 'maxims'])
-    out[t] = (await DB.prepare(`SELECT * FROM ${t}`).all()).results
+  for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks', 'maxims']) {
+    out[t] = (await DB.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId).all()).results
+  }
   return c.json(out)
 })
 
