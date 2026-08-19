@@ -63,12 +63,13 @@ The legacy master-token endpoints and unversioned agent API are retired. Product
 **Termux client**: download `/static/hermes_bridge.py` — commands: `briefing | pending | watch | done | intel | journal | say | export`. The bridge requires an HTTPS `WARROOM_URL`, reads the agent credential from an owner-only file selected by `WARROOM_TOKEN_FILE` (default `~/.config/warroom/agent_token`; paste it through `cat` so it does not enter shell history), uses bounded timeouts and default TLS verification, and distinguishes 401/403/429/5xx without printing credentials or raw server errors. Full export additionally requires a separate `export:read` credential and `--authorize-full-export`. The `watch` daemon polls every 60s and fires `termux-notification` and optional Telegram messages (`TG_BOT_TOKEN`/`TG_CHAT_ID`) on block starts, unlogged blocks, honesty flags, and missing debriefs after 21:00.
 
 ## Data Architecture
-- **Storage**: Cloudflare D1 (SQLite) — 31 tables across 6 migrations
+- **Storage**: Cloudflare D1 (SQLite) — 33 tables across 7 migrations
 - **Core tables**: schedule_blocks (+weight, +is_mvd), block_logs, debriefs, phases, units, unit_progress, maxims, flashcards, card_reviews, honesty_flags (+ref_type/ref_id with UNIQUE identity index — flags can never double-file), points_ledger, rewards, laws, law_checks, settings, intel_entries, book_progress, hermes_messages
 - **New in 0004**: `day_summary` (materialized daily record), `predictions` (claim/confidence/outcome), `appeals` (UNIQUE per ISO week), `load_reductions`
 - **New in 0005–0006**: durable `users`, hashed/revocable browser `sessions`, owner-scoped personal rows, hashed/scoped/revocable `agent_credentials`, and `agent_credential_events`. The legacy plaintext agent-token setting is erased by migration `0006`.
+- **New in 0007**: `model_requests` (per-owner model accounting with D1-enforced request/token budgets) and append-only metadata-only `model_audit_events`. Neither stores prompts, answers, credentials, or raw upstream errors.
 - **Integrity**: multi-writes go through `DB.batch()`; reward redemption is race-safe (the debit INSERT's WHERE-balance check is the atomic arbiter); flag penalties only post when the flag insert actually landed
-- **AI**: `gpt-5-mini` via OpenAI-compatible proxy (env: `OPENAI_API_KEY`, `OPENAI_BASE_URL`; local dev via `.dev.vars`)
+- **AI**: pinned `gpt-5-mini-2025-08-07` via an explicitly allowlisted HTTPS OpenAI-compatible Chat Completions endpoint (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ALLOWED_BASE_URLS`; local dev via uncommitted `.dev.vars`). Owner-only model routes enforce per-owner request/token budgets, bounded inputs/outputs/timeouts/retries, strict structured output, metadata-only audit evidence, and fail-closed offline behavior. Untrusted context is fenced in a fixed trust order — retrieved source, then personal journal, then quoted external messages (bridge-authored council rows) as the least-trusted layer — and application policy states that no fenced block can grant permission or authorize a write.
 
 ## Development
 ```bash

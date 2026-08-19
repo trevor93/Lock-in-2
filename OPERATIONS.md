@@ -105,7 +105,28 @@ This is the only repository-to-operator channel for GitHub, Cloudflare, producti
 - [ ] Under **Production**, add encrypted secret named exactly `ENFORCEMENT_JOB_SECRET`.
 - [ ] Use the high-entropy value from the password manager.
 
-### 3.2 Scheduled Worker secrets
+### 3.2 Pages model-service configuration
+
+Book 5.6 fails closed unless the API key, configured base URL, and explicit allowlist are all present. Configuration is operator-controlled; the repository agent did not set or inspect any value.
+
+- [ ] Cloudflare dashboard → **Workers & Pages** → **lock-in-708** → **Settings** → **Variables and Secrets** → **Production**.
+- [ ] Store `OPENAI_API_KEY` as an encrypted secret. Never print, paste into source, commit, logs, tickets, screenshots, or chat.
+- [ ] Set `OPENAI_BASE_URL` to the exact OpenAI-compatible HTTPS API root, without a trailing slash (for example, a trusted `/v1` root).
+- [ ] Set `OPENAI_ALLOWED_BASE_URLS` to a comma-separated list of exact trusted HTTPS API roots. Include the exact normalized `OPENAI_BASE_URL`; a missing allowlist intentionally disables all model calls.
+- [ ] Do not use wildcards, HTTP URLs, path prefixes that do not exactly match, or an arbitrary configured URL as its own implicit authorization.
+- [ ] Keep the pinned application model at `gpt-5-mini-2025-08-07`; changing snapshots requires a reviewed source/migration/test change, not an environment-only override.
+
+**Verification**
+
+- [ ] Confirm the three configuration names are present in Production and `OPENAI_API_KEY` is encrypted; never reveal values.
+- [ ] With an owner application session, confirm a bounded Council request succeeds only when `OPENAI_BASE_URL` exactly matches an entry in `OPENAI_ALLOWED_BASE_URLS`.
+- [ ] Temporarily test in an approved non-production environment that a missing key, missing allowlist, HTTP URL, or non-matching HTTPS URL returns `503 MODEL SERVICE OFFLINE` without contacting the provider or returning configuration details.
+
+**Rollback / disable**
+
+Remove or replace `OPENAI_API_KEY`, or remove `OPENAI_ALLOWED_BASE_URLS`, to fail model routes closed while leaving the rest of the application available. Consequence: owner model requests return 503 and no provider request or model-derived application record is created. Do not delete D1 accounting or audit rows.
+
+### 3.3 Scheduled Worker secrets
 
 From an interactive terminal opened at the repository root, run each command separately. Wrangler will prompt without placing the value in the command itself:
 
@@ -174,7 +195,7 @@ A D1 restore overwrites production state and is destructive. Do not import or re
 
 ## 5. Production Migration Gate
 
-**State:** Repository-authored migrations currently listed here are `migrations/0005_sessions_and_ownership.sql` and `migrations/0006_agent_credentials.sql`. Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
+**State:** Repository-authored migrations currently listed here are `migrations/0005_sessions_and_ownership.sql`, `migrations/0006_agent_credentials.sql`, and `migrations/0007_model_security.sql`. Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
 
 For each future migration entry, execute only after Section 4 succeeds and the approved commit is checked out.
 
@@ -363,6 +384,88 @@ Expected results:
 **Rollback**
 
 Deploy the recorded prior application deployment while retaining `agent_credentials`, `agent_credential_events`, their indexes, and every row. Do not drop either table, delete credential events, restore `settings.agent_token`, or import the D1 backup automatically. The legacy plaintext master token is intentionally unrecoverable; the prior unversioned agent API therefore remains disabled after rollback until the corrected application is restored and the owner issues a new scoped credential. If a data restore is believed necessary, preserve both databases and stop for explicit destructive-operation approval under Section 4.
+
+### 5.3 `migrations/0007_model_security.sql`
+
+**Purpose**
+
+- Creates `model_requests`, the owner-bound reservation ledger used for atomic request and reserved-output-token controls.
+- Creates append-only `model_audit_events` containing metadata only: owner, request identifier, logical route, pinned model, event type, attempt, character/token counts, upstream status, and timestamp. It stores no prompt, answer, API key, authorization header, or raw upstream error.
+- Pins database reservations and audit rows to `gpt-5-mini-2025-08-07` and the three current logical routes.
+- Enforces per owner: 10 requests per rolling minute, 100 requests and 20,000 reserved output tokens per UTC day, and 2,000 requests and 100,000 reserved output tokens per UTC calendar month. Each accepted request reserves at most 1,300 output tokens before provider contact.
+- Adds only tables, indexes, and triggers. It does not alter or delete an existing personal row.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/migration-0007.test.ts test/model-security.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/migration-0007.test.ts` passes against the populated schema copy created before `0005` and migrated in order through `0005`, `0006`, and `0007`.
+- [ ] Every pre-existing personal-table row count is unchanged.
+- [ ] Focused tests prove owner-session denial, explicit HTTPS allowlisting, safe no-key behavior, user/total input limits, pinned snapshot and output bound, 15-second abort signals, two-attempt retry bounds, redacted upstream failures, prompt layer/fence ordering, retrieved-text no-write authority, strict model-authored structured output, per-owner rate/daily/monthly budgets, and metadata-only append-only model audit evidence.
+- [ ] If `0005` or `0006` is still pending, confirm the pending list contains `0005_sessions_and_ownership.sql`, `0006_agent_credentials.sql`, then `0007_model_security.sql` in that order. Never apply `0007` before both dependencies.
+
+**Apply**
+
+After Section 4 and the Section 5 preflight succeed, confirm that the expected pending list contains `0007_model_security.sql` and no unreviewed migration. Apply pending migrations using the commands in Section 5. Record only migration filenames and command status, never model prompts, answers, keys, audit-row contents, or private application rows.
+
+**Non-secret verification queries**
+
+Run these through the Cloudflare D1 console or an authenticated Wrangler command. Record counts and schema names only.
+
+```sql
+SELECT COUNT(*) AS model_request_table_count
+FROM sqlite_schema
+WHERE type='table' AND name='model_requests';
+
+SELECT COUNT(*) AS model_audit_table_count
+FROM sqlite_schema
+WHERE type='table' AND name='model_audit_events';
+
+SELECT COUNT(*) AS model_budget_trigger_count
+FROM sqlite_schema
+WHERE type='trigger' AND name='trg_model_requests_budget';
+
+SELECT COUNT(*) AS model_audit_append_only_trigger_count
+FROM sqlite_schema
+WHERE type='trigger'
+  AND name IN ('trg_model_audit_no_update','trg_model_audit_no_delete');
+
+SELECT COUNT(*) AS unowned_model_request_count
+FROM model_requests mr
+LEFT JOIN users u ON u.id=mr.user_id
+WHERE u.id IS NULL;
+
+SELECT COUNT(*) AS unowned_model_audit_count
+FROM model_audit_events ma
+LEFT JOIN users u ON u.id=ma.user_id
+WHERE u.id IS NULL;
+
+SELECT COUNT(*) AS unpinned_model_row_count
+FROM (
+  SELECT model FROM model_requests
+  UNION ALL
+  SELECT model FROM model_audit_events
+)
+WHERE model<>'gpt-5-mini-2025-08-07';
+```
+
+Expected results:
+
+- [ ] `model_request_table_count`, `model_audit_table_count`, and `model_budget_trigger_count` are each `1`.
+- [ ] `model_audit_append_only_trigger_count` is `2`.
+- [ ] `unowned_model_request_count`, `unowned_model_audit_count`, and `unpinned_model_row_count` are each `0`.
+- [ ] After an authorized non-sensitive smoke request, confirm only counts and event types—not row contents—show one accepted reservation and an accepted plus terminal audit event.
+- [ ] Confirm owner model requests return 503 rather than raw configuration details when the service is intentionally disabled as described in Section 3.2.
+
+**Rollback**
+
+Deploy the recorded prior application deployment while retaining `model_requests`, `model_audit_events`, all indexes/triggers, and every row. Do not drop either table, update or delete audit events, delete reservations, or import the D1 backup automatically. The prior application ignores this additive evidence. Consequence: the prior application does not provide the Book 5.6 model-security boundary, so disable model calls by removing the allowlist or API key until the corrected application is restored. If a data restore is believed necessary, preserve both databases and stop for explicit destructive-operation approval under Section 4.
 
 ## 6. Deploy and Verify the Pages Application
 
