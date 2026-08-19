@@ -6,6 +6,10 @@ export default defineConfig({
     cloudflareTest({
       main: './src/index.tsx',
       miniflare: {
+        // Pinned to wrangler.jsonc so tests run against the same runtime
+        // semantics as production instead of the current calendar date.
+        compatibilityDate: '2026-04-26',
+        compatibilityFlags: ['nodejs_compat'],
         d1Databases: ['DB'],
         bindings: {
           OPENAI_API_KEY: '',

@@ -6,6 +6,7 @@ import tongue from '../migrations/0003_tongue.sql?raw'
 import reforge from '../migrations/0004_reforge.sql?raw'
 import sessionsAndOwnership from '../migrations/0005_sessions_and_ownership.sql?raw'
 import agentCredentials from '../migrations/0006_agent_credentials.sql?raw'
+import modelSecurity from '../migrations/0007_model_security.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -19,11 +20,43 @@ export const personalTables = [
 export const preMigrationRowCounts: Record<string, number> = {}
 
 function statements(sql: string): string[] {
-  return sql
-    .replace(/--.*$/gm, '')
-    .split(';')
-    .map((statement) => statement.trim())
-    .filter(Boolean)
+  const out: string[] = []
+  let normal = ''
+  let trigger = ''
+
+  const flushNormalStatements = () => {
+    const parts = normal.split(';')
+    normal = parts.pop() || ''
+    out.push(...parts.map((statement) => statement.trim()).filter(Boolean))
+  }
+  const flushNormalAll = () => {
+    flushNormalStatements()
+    if (normal.trim()) out.push(normal.trim())
+    normal = ''
+  }
+
+  for (const line of sql.replace(/--.*$/gm, '').split('\n')) {
+    if (trigger) {
+      trigger += `${line}\n`
+      if (/^END;\s*$/i.test(line.trim())) {
+        out.push(trigger.trim().replace(/;$/, ''))
+        trigger = ''
+      }
+      continue
+    }
+
+    if (/^\s*CREATE\s+TRIGGER\b/i.test(line)) {
+      flushNormalAll()
+      trigger = `${line}\n`
+      continue
+    }
+
+    normal += `${line}\n`
+  }
+
+  if (trigger.trim()) out.push(trigger.trim().replace(/;$/, ''))
+  flushNormalAll()
+  return out
 }
 
 async function apply(sql: string): Promise<void> {
@@ -112,4 +145,5 @@ beforeAll(async () => {
   }
   await apply(sessionsAndOwnership)
   await apply(agentCredentials)
+  await apply(modelSecurity)
 })
