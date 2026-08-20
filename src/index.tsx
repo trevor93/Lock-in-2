@@ -14,14 +14,12 @@ import { type ChapterCursor, readChapterCursor } from './cursor'
 import { hermesBriefing, continuityBrief } from './commanders-file'
 import { callModel, fencedModelData, EXTERNAL_MESSAGE_PREFIX, modelAudit, modelBaseURL } from './ai'
 import { flagExists, addFlag, writeDaySummary, runHonestyEngine, runSameDayEnforcement } from './enforcement'
+import { userNow, safeDate } from './clock'
+import { type SessionRecord, sessionCookie, findSession, sessionValid, revokePresentedSession, issueSession, ownerUser } from './auth'
 import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
 
-type SessionRecord = {
-  id: number
-  user_id: number
-}
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -361,27 +359,7 @@ const agentCredentialBodySchema = z.strictObject({
 // The commander's timezone is captured ONCE (settings.timezone). After that the
 // SERVER derives date+time — the client can never time-travel the engines.
 // getSetting/setSetting extracted to ./repositories (Book 7).
-async function userNow(DB: D1Database, userId?: number): Promise<{ date: string; time: string; tz: string }> {
-  const tz = (await getSetting(DB, 'timezone', userId)) || 'Africa/Nairobi'
-  const now = new Date()
-  let date: string, time: string
-  try {
-    date = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)
-    time = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
-  } catch (_) {
-    date = now.toISOString().slice(0, 10); time = now.toISOString().slice(11, 16)
-  }
-  if (time.startsWith('24')) time = '00' + time.slice(2)
-  return { date, time, tz }
-}
-
-// Clamp any validated client-supplied date, never into the future.
-async function safeDate(DB: D1Database, q?: string | null, userId?: number): Promise<string> {
-  const { date: today } = await userNow(DB, userId)
-  if (!q) return today
-  const validated = parseValue(dateSchema, q)
-  return validated > today ? today : validated
-}
+// userNow/safeDate extracted to ./clock (Book 7).
 
 // ============ AUTH (durable users + hashed, revocable sessions) ============
 const SESSION_DAYS = 30
