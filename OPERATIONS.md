@@ -467,7 +467,172 @@ Expected results:
 
 Deploy the recorded prior application deployment while retaining `model_requests`, `model_audit_events`, all indexes/triggers, and every row. Do not drop either table, update or delete audit events, delete reservations, or import the D1 backup automatically. The prior application ignores this additive evidence. Consequence: the prior application does not provide the Book 5.6 model-security boundary, so disable model calls by removing the allowlist or API key until the corrected application is restored. If a data restore is believed necessary, preserve both databases and stop for explicit destructive-operation approval under Section 4.
 
+### 5.4 `migrations/0008_audit_idempotency.sql`
+
+**Purpose**
+
+- Creates `audit_events` with the exact Book 5.7 column set (owner, actor type/id, request id, action, entity type/id, before/after/metadata JSON, timestamp), the two mandated indexes, append-only `BEFORE UPDATE`/`BEFORE DELETE` triggers, and an actor-type guard trigger. It stores metadata and before/after state only — never tokens, passwords, hashes, or keys.
+- Creates `idempotency_keys` with `UNIQUE(user_id, scope, request_id)` and a stored first-response for verbatim replay of a redelivered request.
+- Adds only tables, indexes, and triggers. It does not alter or delete an existing personal row.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/migration-0008.test.ts test/audit-idempotency.test.ts test/enforcement-idempotency.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/migration-0008.test.ts` passes against the populated schema copy migrated in order through `0008`.
+- [ ] Every pre-existing personal-table row count is unchanged.
+- [ ] Focused tests prove append-only audit rejection, the actor-type guard, verbatim idempotent replay across the mandated consequence classes, and single-award enforcement when the job runs twice.
+- [ ] Confirm the pending list applies `0008_audit_idempotency.sql` only after `0005`–`0007`.
+
+**Apply**
+
+After Section 4 and the Section 5 preflight succeed, apply pending migrations using the Section 5 commands. Record only migration filenames and command status.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS audit_table FROM sqlite_schema WHERE type='table' AND name='audit_events';
+SELECT COUNT(*) AS idem_table FROM sqlite_schema WHERE type='table' AND name='idempotency_keys';
+SELECT COUNT(*) AS audit_append_only_triggers FROM sqlite_schema
+  WHERE type='trigger' AND name IN ('trg_audit_no_update','trg_audit_no_delete');
+SELECT COUNT(*) AS idem_unique_index FROM sqlite_schema
+  WHERE type='index' AND name='idx_idempotency_identity';
+SELECT COUNT(*) AS unowned_audit FROM audit_events a LEFT JOIN users u ON u.id=a.user_id WHERE u.id IS NULL;
+```
+
+Expected: `audit_table`, `idem_table`, `idem_unique_index` each `1`; `audit_append_only_triggers` is `2`; `unowned_audit` is `0`.
+
+**Rollback**
+
+Deploy the recorded prior application while retaining both tables, all indexes/triggers, and every row. Do not drop tables, update/delete audit rows, or import the D1 backup automatically. The prior application ignores this additive evidence. Consequence: the prior application does not enforce delivery idempotency, so a retried bridge write may duplicate; disable the bridge if that risk is unacceptable until the corrected application is restored.
+
+### 5.5 `migrations/0009_recovery_catchup.sql`
+
+**Purpose**
+
+- Adds the additive column `day_summary.mvr_held` (default 0): a Minimum Viable Recovery was logged, so the streak survives that day (survival, never victory).
+- Creates `recovery_actions` with `UNIQUE(user_id, action_date)` (one restoring action per day) and append-only `catchup_sessions` recording each `/catchup` re-entry run as metadata.
+- Adds only a column, tables, indexes, and triggers. It does not alter or delete an existing personal row.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/recovery-catchup.test.ts test/catchup-wiring.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/recovery-catchup.test.ts` passes; pre-existing row counts unchanged.
+- [ ] Focused tests prove MVR marks the day survived without creating a victory, one recovery per day, append-only `catchup_sessions`, and the fixed six-part protocol.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS mvr_column FROM pragma_table_info('day_summary') WHERE name='mvr_held';
+SELECT COUNT(*) AS recovery_table FROM sqlite_schema WHERE type='table' AND name='recovery_actions';
+SELECT COUNT(*) AS catchup_table FROM sqlite_schema WHERE type='table' AND name='catchup_sessions';
+SELECT COUNT(*) AS catchup_append_only FROM sqlite_schema
+  WHERE type='trigger' AND name IN ('trg_catchup_no_update','trg_catchup_no_delete');
+```
+
+Expected: `mvr_column`, `recovery_table`, `catchup_table` each `1`; `catchup_append_only` is `2`.
+
+**Rollback**
+
+Deploy the prior application while retaining the column, tables, and rows. `mvr_held` defaults to 0, so the prior application simply never reads it. No user data is deleted. Consequence: the prior application offers no re-entry protocol; the operator resumes manually.
+
+### 5.6 `migrations/0010_alternative_explanation_gate.sql`
+
+**Purpose**
+
+- Adds nullable `intel_entries.heat` and `intel_entries.alternative_explanation`.
+- Creates the append-only, counted `alternative_explanations` ledger (`none_plausible` flag) and indexes.
+- Installs `BEFORE INSERT`/`BEFORE UPDATE` triggers on `intel_entries` that abort a non-calm capture with no alternative explanation (`ALT_EXPLANATION_REQUIRED`) — Law 23 enforced in schema.
+- Adds only columns, a table, indexes, and triggers. It does not alter or delete an existing personal row.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/alt-explanation-gate.test.ts test/alt-gate-wiring.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] Focused tests prove the schema gate rejects a heated capture with no alternative, allows a calm one, counts the "none plausible" tell, and surfaces the counts in `/api/stats`.
+- [ ] Pre-existing row counts unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS heat_col FROM pragma_table_info('intel_entries') WHERE name='heat';
+SELECT COUNT(*) AS alt_col FROM pragma_table_info('intel_entries') WHERE name='alternative_explanation';
+SELECT COUNT(*) AS alt_table FROM sqlite_schema WHERE type='table' AND name='alternative_explanations';
+SELECT COUNT(*) AS gate_triggers FROM sqlite_schema
+  WHERE type='trigger' AND name IN ('trg_intel_alt_gate_insert','trg_intel_alt_gate_update');
+```
+
+Expected: `heat_col`, `alt_col`, `alt_table` each `1`; `gate_triggers` is `2`.
+
+**Rollback**
+
+Deploy the prior application while retaining the columns, table, and rows. The added columns are nullable and ignored by the prior application; no user data is deleted. Consequence: the prior application does not enforce the alternative-explanation brake.
+
+### 5.7 `migrations/0011_chapter_cursor.sql`
+
+**Purpose**
+
+- Creates `chapter_cursor` (one row per owner) holding book, part, chapter, figure, and cycle day. The application reads it read-only and returns the documented default (Chapter 2 — Anaphora) when no row exists; the row is persisted only by `POST /api/cursor`.
+- Adds only a table. It does not alter or delete an existing personal row.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/cursor-continuity.test.ts test/get-read-only.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] Focused tests prove the cursor persists an update, rejects an out-of-range cycle day, drives the Continuity Brief, and that `GET /api/cursor` and `GET /api/continuity-brief` perform zero writes.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS cursor_table FROM sqlite_schema WHERE type='table' AND name='chapter_cursor';
+SELECT COUNT(*) AS unowned_cursor FROM chapter_cursor c LEFT JOIN users u ON u.id=c.user_id WHERE u.id IS NULL;
+```
+
+Expected: `cursor_table` is `1`; `unowned_cursor` is `0`.
+
+**Rollback**
+
+Deploy the prior application while retaining the table and rows. The prior application ignores it; no user data is deleted. Consequence: the chapter cursor and Continuity Brief are unavailable until the corrected application is restored.
+
 ## 6. Deploy and Verify the Pages Application
+
 
 ### 6.1 Book 5.4 application-only change
 

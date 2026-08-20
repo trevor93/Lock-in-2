@@ -281,9 +281,12 @@ describe('Book 5.7 delivery idempotency', () => {
         },
         baseEnv,
       )
-      // Unauthenticated internal job must stay closed; the point of this test is
-      // that a *delivered* enforcement pass cannot double-award.
-      expect([200, 401, 403]).toContain(response.status)
+      // This asserts only that the internal job stays CLOSED without the shared
+      // secret (so an unauthenticated caller cannot drive enforcement). The real
+      // end-to-end duplicate-award guard is proven in
+      // test/enforcement-idempotency.test.ts, which supplies the secret and runs
+      // the pass twice against a seeded victory day.
+      expect([401, 403]).toContain(response.status)
     }
     expect(await pointsFor(userId, 'mvd')).toBe(mvdBefore)
     expect(await pointsFor(userId, 'streak')).toBe(streakBefore)

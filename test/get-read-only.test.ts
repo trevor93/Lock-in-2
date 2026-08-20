@@ -5,6 +5,10 @@ import app from '../src/index'
 const MUTATING_SQL = /^(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|VACUUM|REINDEX|PRAGMA\s+(?!table_info\b|table_xinfo\b|index_list\b|index_info\b|foreign_key_list\b))/i
 const GET_ROUTES = [
   '/api/state',
+  '/api/version',
+  '/api/changelog',
+  '/api/cursor',
+  '/api/continuity-brief',
   '/api/appeals',
   '/api/predictions',
   '/api/predictions/calibration',

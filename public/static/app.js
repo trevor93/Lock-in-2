@@ -5,10 +5,14 @@ let TAB = 'now';
 let STATE = null;
 let CSRF_TOKEN = null;
 
-// Delivery idempotency (Book 5.7). One id per user intent, REUSED on retry so
-// the server recognises a redelivery instead of applying the consequence twice.
-// axios retries and double-taps reuse the same config object, so the id is
-// stamped once and survives the retry; a genuinely new action gets a new id.
+// Delivery idempotency (Book 5.7). Each mutating submission is stamped with a
+// request id so the server can recognise a redelivery of the SAME request. The
+// documented transport-retry path is the Termux bridge, which resends with the
+// same id after a network failure. In the browser, a caller that wants a retry
+// to be idempotent pins config.headers['X-Request-Id'] before calling (the
+// interceptor only stamps when absent); otherwise each deliberate submission is
+// a distinct request and gets its own id. Same-request write races that are not
+// transport retries stay guarded by their own UNIQUE/conditional-INSERT rules.
 const newRequestId = () => {
   if (crypto && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().replace(/-/g, '');

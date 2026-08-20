@@ -17,7 +17,7 @@ window.renderExtra = async function(tab){
   }
   else if (tab==='tongue'){ await window.loadTongue(); shell(window.viewTongue()); }
   else if (tab==='debrief'){ if(!DEBRIEFS) DEBRIEFS=(await axios.get('/api/debriefs')).data; shell(viewDebrief()); }
-  else if (tab==='stats'){ STATS=(await axios.get('/api/stats?date='+todayStr())).data; shell(viewStats()); }
+  else if (tab==='stats'){ STATS=(await axios.get('/api/stats?date='+todayStr())).data; try{ STATS.changelog=(await axios.get('/api/changelog')).data; }catch(_){ STATS.changelog=[]; } shell(viewStats()); }
 };
 
 /* ============ CAMPAIGN ============ */

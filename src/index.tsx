@@ -1645,26 +1645,28 @@ type ChapterCursor = {
   book: string; part: string; chapter: number; figure: string; cycle_day: number
 }
 
-// The cursor is a database value, never a code constant. On first read it is
-// seeded to the documented current value (Chapter 2 — Anaphora, R9); thereafter
-// every figure/drill/card selection reads whatever the operator has advanced to.
-async function getChapterCursor(DB: D1Database, userId: number): Promise<ChapterCursor> {
-  let row = await DB.prepare(
+// The documented current cursor (R9). It also matches the migration DEFAULTs,
+// so a read before any explicit set returns the same value the row would hold.
+const DEFAULT_CURSOR: ChapterCursor = {
+  book: 'Farnsworth — Classical English Rhetoric',
+  part: 'Repetition at the Start',
+  chapter: 2,
+  figure: 'Anaphora',
+  cycle_day: 1,
+}
+
+// READ-ONLY (Book 5.3): never writes. Returns the stored cursor, or the
+// documented default when none is set yet. The cursor is only PERSISTED by the
+// POST route, so a GET can never mutate.
+async function readChapterCursor(DB: D1Database, userId: number): Promise<ChapterCursor> {
+  const row = await DB.prepare(
     `SELECT book, part, chapter, figure, cycle_day FROM chapter_cursor WHERE user_id=?`,
   ).bind(userId).first<ChapterCursor>()
-  if (!row) {
-    await DB.prepare(
-      `INSERT OR IGNORE INTO chapter_cursor (user_id) VALUES (?)`,
-    ).bind(userId).run()
-    row = await DB.prepare(
-      `SELECT book, part, chapter, figure, cycle_day FROM chapter_cursor WHERE user_id=?`,
-    ).bind(userId).first<ChapterCursor>()
-  }
-  return row as ChapterCursor
+  return row ?? { ...DEFAULT_CURSOR }
 }
 
 app.get('/api/cursor', async (c) => {
-  const cur = await getChapterCursor(c.env.DB, c.get('userId'))
+  const cur = await readChapterCursor(c.env.DB, c.get('userId'))
   return c.json(cur)
 })
 
@@ -1672,7 +1674,7 @@ app.post('/api/cursor', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const b = await parseJson(c, cursorBodySchema)
-  const cur = await getChapterCursor(DB, userId)  // ensure a row exists
+  const cur = await readChapterCursor(DB, userId)   // read-only; default if unset
   const next: ChapterCursor = {
     book: b.book ?? cur.book,
     part: b.part ?? cur.part,
@@ -1680,10 +1682,14 @@ app.post('/api/cursor', async (c) => {
     figure: b.figure ?? cur.figure,
     cycle_day: b.cycle_day ?? cur.cycle_day,
   }
+  // Single upsert — the only place the cursor is persisted (a write route).
   await DB.prepare(
-    `UPDATE chapter_cursor SET book=?, part=?, chapter=?, figure=?, cycle_day=?, updated_at=datetime('now')
-     WHERE user_id=?`,
-  ).bind(next.book, next.part, next.chapter, next.figure, next.cycle_day, userId).run()
+    `INSERT INTO chapter_cursor (user_id, book, part, chapter, figure, cycle_day, updated_at)
+     VALUES (?,?,?,?,?,?,datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET
+       book=excluded.book, part=excluded.part, chapter=excluded.chapter,
+       figure=excluded.figure, cycle_day=excluded.cycle_day, updated_at=datetime('now')`,
+  ).bind(userId, next.book, next.part, next.chapter, next.figure, next.cycle_day).run()
   const rid = requestId(c)
   if (rid) {
     await auditEvent(DB, {
@@ -1701,7 +1707,7 @@ app.post('/api/cursor', async (c) => {
 // by hand. Second output mode of the Commander's File serialiser: it survives
 // conversation compaction in any external tool. Read-only.
 async function continuityBrief(DB: D1Database, userId: number, date: string): Promise<string> {
-  const cur = await getChapterCursor(DB, userId)
+  const cur = await readChapterCursor(DB, userId)
   const streak = await computeStreak(DB, userId, date)
   const pts = await DB.prepare(
     `SELECT COALESCE(SUM(points),0) AS t FROM points_ledger WHERE user_id=?`,
@@ -2588,6 +2594,21 @@ app.post('/api/rewards/:id/redeem', async (c) => withIdempotency(c, 'reward:rede
 }))
 
 // ============ STATS ============
+// ============ SCORING CHANGELOG (Book 4) ============
+// "Every behavioural change to scoring ships with a one-line entry in a
+// changelog visible inside the application — the operator must be able to see
+// when the rules of his own game changed." Static, honest, newest first.
+const SCORING_CHANGELOG: Array<{ date: string; change: string }> = [
+  { date: '2026-08-20', change: 'Minimum Viable Recovery: on a declared breach day, one logged restoring action makes the day survive the streak — survival, never a victory.' },
+  { date: '2026-08-20', change: 'Alternative-explanation brake: a capture logged with non-calm heat now requires a written alternative explanation; a rising "none plausible" count is surfaced as the paranoia tell.' },
+  { date: '2026-08-20', change: 'Duplicate delivery of the same request (retries, double-taps) can no longer create a second consequence; enforcement run twice awards once.' },
+  { date: '2026-08-12', change: 'Reforge wave 1: weighted adherence (CORE 3 / STANDARD 1 / CONTEXT 0), the Minimum Viable Day HELD-THE-LINE bonus, load reduction on repeated misses, delta scoring against your trailing 14-day median, and the weekly appeal token.' },
+]
+
+app.get('/api/changelog', async (c) => {
+  return c.json(SCORING_CHANGELOG)
+})
+
 app.get('/api/stats', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')
@@ -2729,7 +2750,9 @@ app.post('/api/intel', async (c) => withIdempotency(c, 'intel:file', async () =>
   // Book 13.2 brake: a heated capture cannot be filed without an alternative.
   const gated = altGate(c, b.heat, b.alternative_explanation)
   if (gated) return gated
-  const logDate = b.log_date || (await userNow(DB, userId)).date
+  // Book 5.3/6: clamp a client date never-future (safeDate) so a filed intel
+  // entry can be honestly back-dated but its +15 can never land on a future day.
+  const logDate = await safeDate(DB, b.log_date, userId)
   const r = await DB.prepare(
     `INSERT INTO intel_entries
        (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
@@ -2913,7 +2936,7 @@ async function hermesBriefing(DB: D1Database, userId: number, date: string): Pro
      WHERE lc.user_id=? AND lc.kept=0 GROUP BY l.id ORDER BY n DESC LIMIT 3`
   ).bind(userId).all()).results as any[]
 
-  const cursor = await getChapterCursor(DB, userId)
+  const cursor = await readChapterCursor(DB, userId)
   return `=== COMMANDER'S FILE (auto-generated live from the War Room database) ===
 DATE: ${date} | STREAK: ${streak} victory days | POINTS: ${pts?.t} | TODAY'S ADHERENCE SO FAR: ${adh.pct}% (${adh.done}/${adh.total})
 CHAPTER CURSOR: Chapter ${cursor.chapter} — ${cursor.figure} (${cursor.book} / ${cursor.part}) · cycle day ${cursor.cycle_day} of 7
