@@ -8,6 +8,8 @@ import { dayAdherence } from './scoring'
 import type { Bindings, Variables } from './env'
 import { bufToHex, randHex, sha256, csrfToken, pbkdf2, timingSafeEq } from './crypto'
 import { MANIFEST, SERVICE_WORKER, SHELL_HTML } from './renderer'
+import { getSetting, setSetting, blocksForDate } from './repositories'
+import { computeStreak, trailingMedian } from './streak'
 import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -354,24 +356,7 @@ const agentCredentialBodySchema = z.strictObject({
 // ============ SERVER CLOCK (single source of truth) ============
 // The commander's timezone is captured ONCE (settings.timezone). After that the
 // SERVER derives date+time — the client can never time-travel the engines.
-async function getSetting(DB: D1Database, key: string, userId?: number): Promise<string | null> {
-  const query = userId === undefined
-    ? DB.prepare(`SELECT value FROM settings WHERE key=? ORDER BY rowid LIMIT 1`).bind(key)
-    : DB.prepare(`SELECT value FROM settings WHERE user_id=? AND key=? ORDER BY rowid LIMIT 1`).bind(userId, key)
-  const row = await query.first<{ value: string }>()
-  return row?.value ?? null
-}
-async function setSetting(DB: D1Database, key: string, value: string, userId?: number) {
-  const existing = userId === undefined
-    ? await DB.prepare(`SELECT rowid AS row_id FROM settings WHERE key=? ORDER BY rowid LIMIT 1`).bind(key).first<{ row_id: number }>()
-    : await DB.prepare(`SELECT rowid AS row_id FROM settings WHERE user_id=? AND key=? ORDER BY rowid LIMIT 1`).bind(userId, key).first<{ row_id: number }>()
-  if (existing) {
-    await DB.prepare(`UPDATE settings SET value=? WHERE rowid=?`).bind(value, existing.row_id).run()
-    return
-  }
-  await DB.prepare(`INSERT INTO settings (user_id, key, value) VALUES (?,?,?)`)
-    .bind(userId ?? null, key, value).run()
-}
+// getSetting/setSetting extracted to ./repositories (Book 7).
 async function userNow(DB: D1Database, userId?: number): Promise<{ date: string; time: string; tz: string }> {
   const tz = (await getSetting(DB, 'timezone', userId)) || 'Africa/Nairobi'
   const now = new Date()
@@ -785,17 +770,7 @@ app.use('/api/*', async (c, next) => {
 // DOWS/dowOf/addDays/isoWeekKey extracted to ./time (Book 7).
 
 
-async function blocksForDate(DB: D1Database, userId: number, date: string) {
-  const dow = dowOf(date)
-  const { results } = await DB.prepare(
-    `SELECT b.*, l.status as log_status, l.note as log_note, l.completed_at
-     FROM schedule_blocks b
-     LEFT JOIN block_logs l ON l.block_id = b.id AND l.log_date = ? AND l.user_id = ?
-     WHERE b.user_id = ? AND (',' || b.days || ',') LIKE ?
-     ORDER BY b.start_time, b.sort_order`
-  ).bind(date, userId, userId, `%,${dow},%`).all()
-  return results as any[]
-}
+// blocksForDate extracted to ./repositories (Book 7).
 
 // WEIGHTED ADHERENCE — CORE(3) / STANDARD(1) / CONTEXT(0).
 // adherence = Σ(weight × credit) / Σ(weight) over non-zero-weight blocks.
@@ -1002,44 +977,7 @@ async function runHonestyEngine(DB: D1Database, userId: number, today: string) {
 
 // O(1) STREAK from day_summary. A day extends the streak if victory=1;
 // mvd_held=1 lets the streak SURVIVE (day is neutral, not a break).
-async function computeStreak(DB: D1Database, userId: number, today: string): Promise<number> {
-  const startDate = (await getSetting(DB, 'start_date', userId)) || today
-  const { results } = await DB.prepare(
-    `SELECT summary_date, victory, mvd_held, mvr_held FROM day_summary
-     WHERE user_id=? AND summary_date < ? AND summary_date >= ?
-     ORDER BY summary_date DESC LIMIT 180`
-  ).bind(userId, today, startDate).all()
-  const byDate = new Map((results as any[]).map(r => [r.summary_date, r]))
-  let streak = 0
-  let d = addDays(today, -1)
-  for (let i = 0; i < 180; i++) {
-    if (d < startDate) break
-    const r = byDate.get(d)
-    if (r?.victory) streak++
-    else if (r?.mvd_held || r?.mvr_held) { /* survives, contributes nothing */ }
-    else break
-    d = addDays(d, -1)
-  }
-  // today counts live if already qualifying
-  const tBlocks = await blocksForDate(DB, userId, today)
-  const tDeb = await DB.prepare(`SELECT id FROM debriefs WHERE user_id=? AND log_date=?`).bind(userId, today).first()
-  if (tDeb && dayAdherence(tBlocks).pct >= 80) streak++
-  return streak
-}
-
-// DELTA SCORING — today vs your trailing 14-day median (review Tier-1 #4).
-// The fixed 80% stays visible as the horizon; the fight is vs yesterday's self.
-async function trailingMedian(DB: D1Database, userId: number, today: string): Promise<number | null> {
-  const { results } = await DB.prepare(
-    `SELECT adherence_pct FROM day_summary
-     WHERE user_id=? AND summary_date < ? AND summary_date >= ? AND blocks_total > 0
-     ORDER BY summary_date DESC LIMIT 14`
-  ).bind(userId, today, addDays(today, -14)).all()
-  const v = (results as any[]).map(r => r.adherence_pct).sort((a, b) => a - b)
-  if (v.length < 3) return null // not enough history to be honest about a median
-  const mid = Math.floor(v.length / 2)
-  return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2)
-}
+// computeStreak/trailingMedian extracted to ./streak (Book 7).
 
 // ============ SAME-DAY ENFORCEMENT (real-time honesty — no free passes) ============
 // A block whose end_time + grace has passed with no log is AUTO-MARKED 'missed':
