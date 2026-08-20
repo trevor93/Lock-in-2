@@ -7,6 +7,10 @@ import reforge from '../migrations/0004_reforge.sql?raw'
 import sessionsAndOwnership from '../migrations/0005_sessions_and_ownership.sql?raw'
 import agentCredentials from '../migrations/0006_agent_credentials.sql?raw'
 import modelSecurity from '../migrations/0007_model_security.sql?raw'
+import auditIdempotency from '../migrations/0008_audit_idempotency.sql?raw'
+import recoveryCatchup from '../migrations/0009_recovery_catchup.sql?raw'
+import altExplanationGate from '../migrations/0010_alternative_explanation_gate.sql?raw'
+import chapterCursor from '../migrations/0011_chapter_cursor.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -19,13 +23,51 @@ export const personalTables = [
 
 export const preMigrationRowCounts: Record<string, number> = {}
 
+// Split on ';' and strip '--' comments only OUTSIDE single-quoted strings.
+// A naive split truncates any statement whose prose contains a semicolon
+// (e.g. '...health, skills); ...'), silently applying a partial schema.
+function splitOutsideQuotes(text: string): string[] {
+  const parts: string[] = []
+  let buf = ''
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === "'") {
+      if (inString && text[i + 1] === "'") { buf += "''"; i++; continue }
+      inString = !inString
+      buf += ch
+      continue
+    }
+    if (ch === ';' && !inString) { parts.push(buf); buf = ''; continue }
+    buf += ch
+  }
+  parts.push(buf)
+  return parts
+}
+
+function stripComments(sql: string): string {
+  return sql.split('\n').map((line) => {
+    let inString = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === "'") {
+        if (inString && line[i + 1] === "'") { i++; continue }
+        inString = !inString
+        continue
+      }
+      if (!inString && ch === '-' && line[i + 1] === '-') return line.slice(0, i)
+    }
+    return line
+  }).join('\n')
+}
+
 function statements(sql: string): string[] {
   const out: string[] = []
   let normal = ''
   let trigger = ''
 
   const flushNormalStatements = () => {
-    const parts = normal.split(';')
+    const parts = splitOutsideQuotes(normal)
     normal = parts.pop() || ''
     out.push(...parts.map((statement) => statement.trim()).filter(Boolean))
   }
@@ -35,7 +77,7 @@ function statements(sql: string): string[] {
     normal = ''
   }
 
-  for (const line of sql.replace(/--.*$/gm, '').split('\n')) {
+  for (const line of stripComments(sql).split('\n')) {
     if (trigger) {
       trigger += `${line}\n`
       if (/^END;\s*$/i.test(line.trim())) {
@@ -146,4 +188,8 @@ beforeAll(async () => {
   await apply(sessionsAndOwnership)
   await apply(agentCredentials)
   await apply(modelSecurity)
+  await apply(auditIdempotency)
+  await apply(recoveryCatchup)
+  await apply(altExplanationGate)
+  await apply(chapterCursor)
 })

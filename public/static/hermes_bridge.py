@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -76,15 +77,37 @@ def read(path):
     return response.json()
 
 
-def post(path, body):
-    response = requests.post(
-        f"{BASE}{path}",
-        headers=HEADERS,
-        json=body,
-        timeout=TIMEOUT,
-    )
-    fail_for_status(response)
-    return response.json()
+def post(path, body, request_id=None):
+    """Write through the agent API with delivery idempotency (Book 5.7).
+
+    The request id identifies one intent. It is generated once per call and
+    REUSED across transport retries, so a write that actually landed before a
+    connection dropped is recognised as a redelivery and replayed rather than
+    applied a second time. Without it a retried debrief or block log would
+    duplicate its consequence.
+    """
+    headers = dict(HEADERS)
+    headers["X-Request-Id"] = request_id or uuid.uuid4().hex
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                f"{BASE}{path}",
+                headers=headers,          # same id on every attempt
+                json=body,
+                timeout=TIMEOUT,
+            )
+        except requests.RequestException as error:
+            # The write may or may not have landed. Retrying with the SAME id
+            # is safe precisely because the server deduplicates on it.
+            last_error = error
+            if attempt == 2:
+                sys.exit("War Room unreachable; the write was not confirmed.")
+            time.sleep(2 ** attempt)
+            continue
+        fail_for_status(response)
+        return response.json()
+    raise AssertionError(f"unreachable retry state: {last_error}")
 
 
 def notify(title, message):

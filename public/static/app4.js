@@ -163,6 +163,7 @@ function viewStats(){
           :'<p class="text-[10px] text-gold mt-0.5">MAXIMUM RANK ACHIEVED</p>')+
       '</div>'+
     '</div>'+
+    (s.alternativeExplanations?(function(){var ae=s.alternativeExplanations;var rate=ae.total?Math.round(ae.nonePlausible/ae.total*100):0;return '<div class="card p-3 mb-3 border-amber-800/40">'+'<h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1"><i class="fas fa-scale-balanced mr-1"></i>THE BRAKE — alternative explanations</h3>'+'<p class="text-xs text-gray-300">You logged <b>'+ae.total+'</b> alternative explanations on heated captures. <b class="'+(rate>=50?'text-red-400':'text-gray-300')+'">'+ae.nonePlausible+'</b> were \"none plausible\" ('+rate+'%).</p>'+'<p class="text-[10px] text-gray-500 mt-1">A rising none-plausible rate is the paranoia tell (Law 23). Low is good — it means you keep considering the charitable reading.</p>'+'</div>';})():'')+
     '<div class="grid grid-cols-3 gap-2 mb-3">'+
       '<div class="card-glass p-3 text-center"><p class="font-disp font-bold text-xl '+(avg>=80?'text-jade':avg>=50?'text-amber-400':'text-red-400')+'" data-countup="'+avg+'">'+avg+'</p><p class="text-[8px] text-gray-500 font-bold tracking-widest">14-DAY ADH %</p></div>'+
       '<div class="card-glass p-3 text-center"><p class="font-disp font-bold text-xl text-sky-400">'+avgSleep+'h</p><p class="text-[8px] text-gray-500 font-bold tracking-widest">AVG SLEEP</p></div>'+

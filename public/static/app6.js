@@ -16,6 +16,7 @@ const domainMeta = (d) => DOMAINS.find(x => x[0] === d) || DOMAINS[DOMAINS.lengt
 function viewCouncil() {
   return header() +
   '<section id="council-section" class="fade-in">' +
+    '<button class="btn w-full p-2 mb-3 text-xs font-bold bg-panel border border-line text-gray-300" onclick="copyContinuityBrief()"><i class="fas fa-clipboard-list mr-1"></i>COPY SESSION CONTINUITY BRIEF</button>' +
     '<div class="flex gap-2 mb-3">' +
       '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'hermes' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" onclick="COUNCIL_MODE=\'hermes\';render()"><i class="fas fa-user-secret mr-1"></i>HERMES</button>' +
       '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'intel' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" onclick="COUNCIL_MODE=\'intel\';render()"><i class="fas fa-folder-open mr-1"></i>LIFE INTEL (' + (INTEL ? INTEL.length : 0) + ')</button>' +
@@ -157,6 +158,10 @@ function viewIntel() {
       '<input id="in-people" placeholder="People involved (names/roles)" class="mb-1.5">' +
       '<input id="in-principle" placeholder="Principle used or violated (if known)" class="mb-1.5">' +
       '<select id="in-verdict" class="mb-1.5"><option value="pending">Verdict: pending</option><option value="smart">Verdict: SMART move</option><option value="dumb">Verdict: DUMB move (owned)</option><option value="neutral">Verdict: neutral</option></select>' +
+      '<label class="text-[10px] font-bold text-gray-400">HEAT — how did this land in you?</label>' +
+      '<select id="in-heat" class="mb-1.5"><option value="calm">Calm</option><option value="baited">Baited</option><option value="proud">Proud</option><option value="afraid">Afraid</option></select>' +
+      '<label class="text-[10px] font-bold text-amber-400">ALTERNATIVE EXPLANATION — required when heat is not calm (Law 23). The brake before you attribute intent. None plausible is allowed, but it is counted.</label>' +
+      '<textarea id="in-alt" rows="2" placeholder="The most charitable reading. What else could explain it?" class="mb-1.5"></textarea>' +
       '<button class="btn w-full p-2.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" onclick="fileIntel()">FILE INTO THE RECORD</button>' +
     '</div>';
   }
@@ -187,10 +192,20 @@ function viewIntel() {
 }
 
 async function fileIntel() {
+  const heatEl = $('#in-heat'); const altEl = $('#in-alt');
+  const heat = heatEl ? heatEl.value : 'calm';
+  const alt = altEl ? altEl.value.trim() : '';
   const b = { domain: $('#in-domain').value, title: $('#in-title').value, situation: $('#in-situation').value,
     my_move: $('#in-move').value, outcome: $('#in-outcome').value, people: $('#in-people').value,
-    principle_used: $('#in-principle').value, verdict: $('#in-verdict').value, log_date: todayStr() };
+    principle_used: $('#in-principle').value, verdict: $('#in-verdict').value, log_date: todayStr(),
+    heat: heat };
   if (!b.title) { toast('A title is required — name the move.', true); return; }
+  if (heat && heat !== 'calm' && !alt) {
+    toast('The heat is not calm. Name one alternative explanation before you file — that is the brake.', true);
+    if (altEl) altEl.focus();
+    return;
+  }
+  if (heat && heat !== 'calm') b.alternative_explanation = alt;
   await api('post', '/api/intel', b);
   FX.success(); FX.toast('INTEL FILED INTO THE RECORD  +15 — Hermes now knows','gold');
   INTEL_OPEN = false;
@@ -206,4 +221,17 @@ async function analyzeIntel(id) {
 }
 
 window.viewCouncil = viewCouncil; window.askHermes = askHermes; window.convene = convene;
+async function copyContinuityBrief() {
+  try {
+    const res = await axios.get('/api/continuity-brief', { responseType: 'text' });
+    const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      FX.success && FX.success(); toast('Continuity brief copied — paste it into any external session.');
+    } else {
+      const w = window.open('', '_blank'); if (w) { w.document.write('<pre>' + esc(text) + '</pre>'); }
+    }
+  } catch (e) { toast('Could not generate the continuity brief.', true); }
+}
+window.copyContinuityBrief = copyContinuityBrief;
 window.fileIntel = fileIntel; window.analyzeIntel = analyzeIntel;

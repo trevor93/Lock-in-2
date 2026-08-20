@@ -112,7 +112,7 @@ const Alarm = {
     }
     // refresh state so current-block view stays live — and detect fresh auto-cancellations
     const prevMissed = new Set((STATE.blocks || []).filter(b => b.log_status === 'missed').map(b => b.id));
-    loadState().then(() => {
+    (window.refreshIfStale ? window.refreshIfStale() : loadState()).then(() => {
       for (const b of (STATE.blocks || [])) {
         if (b.log_status === 'missed' && !prevMissed.has(b.id)) {
           const mkey = today + '-missed-' + b.id;

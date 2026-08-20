@@ -21,5 +21,7 @@ export default defineConfig({
   test: {
     globals: true,
     setupFiles: ['./test/setup.ts'],
+    // DOM tests run under happy-dom in vitest.dom.config.ts, not the workers pool.
+    exclude: ['**/node_modules/**', '**/*.dom.test.ts'],
   },
 })

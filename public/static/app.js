@@ -5,12 +5,33 @@ let TAB = 'now';
 let STATE = null;
 let CSRF_TOKEN = null;
 
+// Delivery idempotency (Book 5.7). One id per user intent, REUSED on retry so
+// the server recognises a redelivery instead of applying the consequence twice.
+// axios retries and double-taps reuse the same config object, so the id is
+// stamped once and survives the retry; a genuinely new action gets a new id.
+const newRequestId = () => {
+  if (crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
 axios.interceptors.request.use((config) => {
   const method = String(config.method || 'get').toLowerCase();
   const url = new URL(config.url || '/', location.origin);
-  if (CSRF_TOKEN && url.origin === location.origin && !['get','head','options'].includes(method)) {
+  const mutating = !['get','head','options'].includes(method);
+  if (CSRF_TOKEN && url.origin === location.origin && mutating) {
     config.headers = config.headers || {};
     config.headers['X-CSRF-Token'] = CSRF_TOKEN;
+  }
+  if (url.origin === location.origin && mutating) {
+    config.headers = config.headers || {};
+    // Only stamp if absent: a retry of this same config keeps the first id.
+    if (!config.headers['X-Request-Id']) {
+      config.headers['X-Request-Id'] = newRequestId();
+    }
   }
   return config;
 });
@@ -108,8 +129,8 @@ function shell(content) {
     ['debrief','fa-pen-nib','LOG'],
     ['stats','fa-chart-line','STATS'],
   ];
-  app().innerHTML = `
-    <main class="max-w-lg mx-auto px-3 pt-3 pb-28">${content}</main>
+  const markup = `
+    <main id="app-main" class="max-w-lg mx-auto px-3 pt-3 pb-28">${content}</main>
     <nav class="tabbar flex max-w-lg mx-auto" id="main-nav">
       ${tabs.map(([id,ic,label])=>{
         const badge = tabBadge(id);
@@ -119,6 +140,7 @@ function shell(content) {
           <i class="fas ${ic}"></i>${label}
         </button>`;}).join('')}
     </nav>`;
+  if (window.morphInto) window.morphInto(app(), markup); else app().innerHTML = markup;
   document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ FX.tap(); TAB=b.dataset.tab; render(); window.scrollTo({top:0}); });
   FX.countUpAll();
 }
@@ -213,6 +235,12 @@ function viewNow() {
   const adhColor = adh.pct>=80?'#22c55e':adh.pct>=50?'#f59e0b':'#dc2626';
   return `${header()}${flagsPanel()}
   <section id="now-section" class="stagger">
+    ${s.needsCatchup?`
+    <div class="card-lux p-4 mb-3 border-gold/40" id="catchup-door">
+      <h3 class="text-[11px] font-bold tracking-[.2em] gold-text mb-1"><i class="fas fa-door-open"></i> THERE IS A WAY BACK IN</h3>
+      <p class="text-xs text-gray-400 leading-relaxed mb-3">A few days have gone dark. That is data, not a verdict. Run the re-entry protocol — it forgives the backlog and gives you one action.</p>
+      <button class="btn w-full p-2.5 bg-gold/15 border border-gold/50 text-gold font-bold text-xs" onclick="runCatchup()"><i class="fas fa-compass mr-1"></i>RUN /catchup</button>
+    </div>`:''}
     ${s.yesterdayTargets?`
     <div class="card p-3 mb-3 border-gold/30">
       <h3 class="text-[10px] font-bold tracking-widest text-gold mb-1"><i class="fas fa-bullseye"></i> TODAY'S 3 TARGETS (set last night — Law 4)</h3>
@@ -390,6 +418,61 @@ function render() {
 }
 window.render = render;
 
+/* ============ /catchup — the re-entry door (Book 8.6) ============ */
+async function runCatchup() {
+  let p;
+  try { p = (await axios.post('/api/catchup', {})).data; }
+  catch (e) { toast('Could not reach the re-entry protocol.', true); return; }
+
+  const missed = (p.missed || []).map(m =>
+    `<li class="text-gray-400">${esc(m.date)} — ${m.unlogged_blocks} unlogged${m.debrief_missed ? ', debrief missed' : ''}</li>`
+  ).join('') || '<li class="text-gray-500">Nothing on record to rewrite.</li>';
+
+  const doNot = (p.do_not || []).map(d => `<li>${esc(d)}</li>`).join('');
+  const diag = (p.diagnostic || []).map((q, i) => `<li>${i + 1}. ${esc(q)}</li>`).join('');
+  const k = p.keystone || {};
+
+  const el = document.createElement('div');
+  el.id = 'catchup-overlay';
+  el.className = 'fixed inset-0 z-[300] bg-ink/95 overflow-y-auto p-4';
+  el.innerHTML =
+    '<div class="max-w-lg mx-auto py-4">' +
+      '<div class="flex items-center justify-between mb-3">' +
+        '<h2 class="font-engraved gold-text text-lg font-bold">⚔ RE-ENTRY</h2>' +
+        '<button class="text-gray-500 text-xl" onclick="document.getElementById(\'catchup-overlay\').remove()">✕</button>' +
+      '</div>' +
+      '<p class="text-[10px] text-gray-500 mb-3">' + (p.days_absent || 0) + ' day(s) dark · trigger: ' + esc(p.trigger || 'manual') + '</p>' +
+      '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-sky-400 mb-1">1 · WHAT WAS MISSED</h3><ul class="text-xs space-y-0.5">' + missed + '</ul></div>' +
+      '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1">2 · LIKELY MECHANISM</h3><p class="text-xs text-gray-300">' + esc(p.mechanism || '') + ' — a structural cause, not a character failure.</p></div>' +
+      '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-red-400 mb-1">3 · WHAT NOT TO DO NOW</h3><ul class="text-xs text-gray-300 space-y-0.5 list-disc pl-4">' + doNot + '</ul></div>' +
+      '<div class="card p-3 mb-2 border-gold/30"><h3 class="text-[10px] font-bold tracking-widest text-gold mb-1">4 · MINIMUM VIABLE RECOVERY</h3><p class="text-xs text-gray-300 mb-2">' + esc(p.minimum_viable_recovery || '') + '</p>' +
+        '<button class="btn w-full p-2.5 bg-jade/15 border border-jade/50 text-jade font-bold text-xs" onclick="logRecovery()"><i class="fas fa-check mr-1"></i>LOG MY ONE ACTION</button></div>' +
+      '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-indigo-300 mb-1">5 · ONE STRUCTURAL PATCH</h3><p class="text-xs text-gray-300"><b>' + esc((p.structural_patch || {}).dimension || '') + ':</b> ' + esc((p.structural_patch || {}).suggestion || '') + '</p></div>' +
+      '<div class="card p-3 mb-2 border-gold/30"><h3 class="text-[10px] font-bold tracking-widest text-gold mb-1">6 · TOMORROW’S KEYSTONE</h3>' +
+        '<p class="text-xs text-white font-semibold">' + esc(k.action || '') + ' · ' + esc(k.start_time || '') + '</p>' +
+        '<p class="text-[11px] text-gray-400 mt-1">' + esc(k.environment || '') + '</p>' +
+        '<p class="text-[11px] text-gray-400 mt-0.5">First move: ' + esc(k.first_physical_action || '') + '</p></div>' +
+      (diag ? '<div class="card p-3 mb-2 border-amber-700/50"><h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1">RE-ENTRY DIAGNOSTIC (14+ days)</h3><ul class="text-xs text-gray-300 space-y-1">' + diag + '</ul><p class="text-[10px] text-gray-500 mt-2">The ladder re-seats at its base: three anchors only.</p></div>' : '') +
+    '</div>';
+  document.body.appendChild(el);
+}
+window.runCatchup = runCatchup;
+
+async function logRecovery() {
+  const action = prompt('MINIMUM VIABLE RECOVERY\n\nThe single action you just took that restores agency. One line. This makes today a non-broken day — it is survival, not a victory.');
+  if (!action || !action.trim()) return;
+  try {
+    await axios.post('/api/recovery', { action: action.trim() });
+    FX.success && FX.success();
+    toast('Recovery logged. The line held.');
+    const ov = document.getElementById('catchup-overlay'); if (ov) ov.remove();
+    await loadState(); render();
+  } catch (e) {
+    toast(e?.response?.data?.error || 'Could not log recovery.', true);
+  }
+}
+window.logRecovery = logRecovery;
+
 /* live countdown inside the NOW hero (updates every second, no re-render) */
 setInterval(()=>{
   const el = document.getElementById('block-countdown');
@@ -412,8 +495,95 @@ setInterval(()=>{
   }
   catch(e){ app().innerHTML = `<div class="p-6 text-center text-red-400 text-sm">Failed to load the war room. Pull to refresh.<br>${esc(e.message||'')}</div>`; }
   finally { FX.killSplash(); }
-  setInterval(async ()=>{ if(STATE && (TAB==='now'||TAB==='today')){ try{ await loadState(); render(); }catch(_){} } }, 60000);
+  startFreshnessWatch();
 })();
+
+/* ============ FRESHNESS WITHOUT POLLING (Book 6) ============
+   The old 60s poll cost ~1,440 /api/state builds per day whether or not
+   anything changed. Instead: refresh when the window regains focus, after a
+   user action, and as a block boundary approaches — and check with the cheap
+   ETag /api/version probe so an unchanged server answers 304 with no body.
+   Countdowns are already local (see the 1s ticker above), so the clock stays
+   live with no network at all. */
+let LAST_VERSION = null;
+let VERSION_IN_FLIGHT = false;
+let BOUNDARY_TIMER = null;
+
+async function checkVersion({ force = false } = {}) {
+  if (VERSION_IN_FLIGHT) return false;
+  VERSION_IN_FLIGHT = true;
+  try {
+    const headers = {};
+    if (LAST_VERSION && !force) headers['If-None-Match'] = `W/"${LAST_VERSION}"`;
+    const res = await axios.get('/api/version', {
+      headers,
+      // 304 is a valid, expected answer — not an error.
+      validateStatus: (s) => s === 200 || s === 304,
+    });
+    if (res.status === 304) return false;
+    const next = res.data && res.data.version;
+    const changed = next !== LAST_VERSION;
+    LAST_VERSION = next || LAST_VERSION;
+    return changed;
+  } catch (_) {
+    return false;                 // offline: keep showing the last good state
+  } finally {
+    VERSION_IN_FLIGHT = false;
+  }
+}
+
+async function refreshIfStale(opts) {
+  if (!STATE) return;
+  if (await checkVersion(opts)) {
+    try { await loadState(); render(); } catch (_) {}
+  }
+  scheduleBoundaryCheck();
+}
+window.refreshIfStale = refreshIfStale;
+
+/* Wake exactly once per upcoming block boundary (start or end + grace), not on
+   a fixed interval. If nothing is near, sleep until the next minute rollover
+   so the day can turn over cleanly. */
+function scheduleBoundaryCheck() {
+  if (BOUNDARY_TIMER) { clearTimeout(BOUNDARY_TIMER); BOUNDARY_TIMER = null; }
+  const now = new Date();
+  const minsNow = now.getHours() * 60 + now.getMinutes();
+  let nextMins = null;
+  for (const b of (STATE && STATE.blocks) || []) {
+    for (const hhmm of [b.start_time, b.end_time]) {
+      if (!hhmm) continue;
+      const [h, m] = String(hhmm).split(':').map(Number);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) continue;
+      const t = h * 60 + m;
+      if (t > minsNow && (nextMins === null || t < nextMins)) nextMins = t;
+    }
+  }
+  // Cap the wait so midnight rollover and grace-period cancels are still seen.
+  const minutesAway = nextMins === null ? 10 : Math.min(nextMins - minsNow, 10);
+  const ms = Math.max(20000, minutesAway * 60000 - now.getSeconds() * 1000 + 2000);
+  BOUNDARY_TIMER = setTimeout(() => { refreshIfStale(); }, ms);
+}
+
+function startFreshnessWatch() {
+  checkVersion({ force: true });                 // seed the version
+  scheduleBoundaryCheck();
+  // Coming back to the app is the strongest signal that state may have moved.
+  window.addEventListener('focus', () => refreshIfStale());
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshIfStale();
+  });
+  window.addEventListener('online', () => refreshIfStale({ force: true }));
+}
+
+/* Any successful mutation refreshes immediately — the user's own action is a
+   known change, so skip the version probe and reload state directly. */
+axios.interceptors.response.use((res) => {
+  const method = String(res.config && res.config.method || 'get').toLowerCase();
+  if (!['get','head','options'].includes(method) && res.status >= 200 && res.status < 300) {
+    LAST_VERSION = null;          // force the next probe to report a change
+  }
+  return res;
+});
 
 /* ============ NEVER LOSE A WORD — textarea/input persistence ============ */
 /* Every textarea and text input with an id is mirrored to localStorage on input,

@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
+import { setSecurityHeaders } from './security-headers'
+import { addDays, dowOf, isoWeekKey } from './time'
 
 type Bindings = {
   DB: D1Database
@@ -38,25 +40,7 @@ function allowedOrigins(c: any): Set<string> {
   return new Set([new URL(c.req.url).origin, ...configured])
 }
 
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-  "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net",
-  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
-  "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com",
-  "img-src 'self' data:",
-  "connect-src 'self'",
-].join('; ')
-
-function setSecurityHeaders(c: any): void {
-  c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
-  c.header('X-Content-Type-Options', 'nosniff')
-  c.header('Referrer-Policy', 'no-referrer')
-  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-}
+// Security headers + CSP extracted to ./security-headers (Book 7).
 
 // Private responses never enter caches. Browser requests carrying an Origin must
 // match this deployment or an explicit allowlist; non-browser bridge requests do
@@ -82,14 +66,16 @@ app.use('*', async (c, next) => {
       .split(',')
       .map((header: string) => header.trim().toLowerCase())
       .filter(Boolean)
-    const allowedHeaders = new Set(['content-type', 'x-csrf-token'])
+    const allowedHeaders = new Set([
+      'content-type', 'x-csrf-token', 'x-request-id',
+    ])
     if (requestedHeaders.some((header: string) => !allowedHeaders.has(header))) {
       return c.json({ error: 'CORS PREFLIGHT NOT ALLOWED' }, 403)
     }
     c.header('Access-Control-Allow-Origin', origin || new URL(c.req.url).origin)
     c.header('Access-Control-Allow-Credentials', 'true')
     c.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
-    c.header('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token')
+    c.header('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Request-Id')
     c.header('Access-Control-Max-Age', '600')
     c.header('Vary', 'Origin', { append: true })
     c.header('Vary', 'Access-Control-Request-Headers', { append: true })
@@ -176,6 +162,164 @@ app.onError((error, c) => {
   return c.json({ error: 'INTERNAL SERVER ERROR' }, 500)
 })
 
+// ============ BOOK 13.2 — ALTERNATIVE-EXPLANATION GATE ============
+
+// "None plausible" (in any of its plain spellings) is legal but is the paranoia
+// tell — a rising count is what the operator must be able to watch.
+function isNonePlausible(text: string): boolean {
+  return /^\s*none(\s+plausible)?\.?\s*$/i.test(text)
+}
+
+// The brake, in application form (the DB trigger is the backstop). A capture
+// whose heat is anything other than calm requires a non-empty
+// alternative_explanation. Returns an error Response to send, or null to pass.
+function altGate(c: any, heat: string | undefined, alt: string | undefined): Response | null {
+  if (heat && heat !== 'calm' && !(alt && alt.trim())) {
+    return c.json({ error: 'ALTERNATIVE EXPLANATION REQUIRED' }, 400)
+  }
+  return null
+}
+
+// Record one brake row, counting the "none plausible" tell. Best-effort; the
+// consequence has already been written.
+async function recordAltExplanation(
+  DB: D1Database,
+  entry: { userId: number; entityType: string; entityId?: string | number | null; heat?: string | null; text: string },
+): Promise<void> {
+  try {
+    await DB.prepare(
+      `INSERT INTO alternative_explanations (user_id, entity_type, entity_id, heat, text, none_plausible)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(
+      entry.userId, entry.entityType,
+      entry.entityId === undefined || entry.entityId === null ? null : String(entry.entityId),
+      entry.heat ?? null, entry.text.trim(), isNonePlausible(entry.text) ? 1 : 0,
+    ).run()
+  } catch (_) { /* never break the write path on a ledger failure */ }
+}
+
+// ============ BOOK 5.7 — AUDIT AND IDEMPOTENCY ============
+
+// Caller-supplied identity of one user intent. The frontend and the Termux
+// bridge generate this per action and REUSE it on retry, which is what makes
+// a redelivery recognisable as the same request rather than a new one.
+const requestIdSchema = z.string().regex(/^[A-Za-z0-9_-]{8,200}$/)
+
+function requestId(c: any): string | null {
+  const raw = c.req.header('x-request-id')
+  if (!raw) return null
+  const parsed = requestIdSchema.safeParse(raw.trim())
+  return parsed.success ? parsed.data : null
+}
+
+type ActorType = 'user' | 'agent' | 'cron' | 'system'
+
+// Metadata-only audit append. Callers pass already-safe values; nothing here
+// records credentials, prompts, or model output. Failure to audit never breaks
+// the user's action — the consequence has already been applied.
+async function auditEvent(
+  DB: D1Database,
+  entry: {
+    userId: number
+    actorType: ActorType
+    actorId?: string | null
+    requestId: string
+    action: string
+    entityType: string
+    entityId?: string | number | null
+    before?: unknown
+    after?: unknown
+    metadata?: Record<string, unknown> | null
+  },
+): Promise<void> {
+  const json = (value: unknown) =>
+    value === undefined || value === null ? null : JSON.stringify(value)
+  try {
+    await DB.prepare(
+      `INSERT INTO audit_events
+         (user_id, actor_type, actor_id, request_id, action, entity_type,
+          entity_id, before_json, after_json, metadata_json, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+    ).bind(
+      entry.userId,
+      entry.actorType,
+      entry.actorId ?? null,
+      entry.requestId,
+      entry.action,
+      entry.entityType,
+      entry.entityId === undefined || entry.entityId === null
+        ? null
+        : String(entry.entityId),
+      json(entry.before),
+      json(entry.after),
+      json(entry.metadata),
+    ).run()
+  } catch (_) {
+    // Append-only evidence is best-effort at the edge; never mask the action.
+  }
+}
+
+// Delivery idempotency arbiter.
+//
+// The INSERT is the lock: it either lands (this is the first delivery — run
+// the handler) or reports zero changes (a redelivery — replay the stored
+// response). There is no read-then-write window for a concurrent retry to
+// slip through.
+//
+// A caller that sends no X-Request-Id gets normal non-idempotent behaviour,
+// because without it "the same request" cannot be identified. The frontend
+// and the bridge always send one.
+async function withIdempotency(
+  c: any,
+  scope: string,
+  handler: () => Promise<Response>,
+): Promise<Response> {
+  const DB = c.env.DB as D1Database
+  const userId = c.get('userId') as number
+  const rid = requestId(c)
+  if (!rid) return handler()
+
+  const claim = await DB.prepare(
+    `INSERT OR IGNORE INTO idempotency_keys (user_id, scope, request_id)
+     VALUES (?,?,?)`,
+  ).bind(userId, scope, rid).run()
+
+  if ((claim.meta as any).changes === 0) {
+    const prior = await DB.prepare(
+      `SELECT status, response_status, response_json FROM idempotency_keys
+       WHERE user_id=? AND scope=? AND request_id=?`,
+    ).bind(userId, scope, rid).first<any>()
+    if (prior?.status === 'complete' && prior.response_json) {
+      // Replay the original answer verbatim: same body, same status.
+      return c.json(JSON.parse(prior.response_json), prior.response_status || 200)
+    }
+    // A first delivery is still in flight. Report contention rather than
+    // duplicating the consequence.
+    return c.json({ error: 'REQUEST IN PROGRESS' }, 409)
+  }
+
+  let response: Response
+  try {
+    response = await handler()
+  } catch (error) {
+    // The work failed, so the claim must not block an honest retry.
+    await DB.prepare(
+      `DELETE FROM idempotency_keys
+       WHERE user_id=? AND scope=? AND request_id=? AND status='in_progress'`,
+    ).bind(userId, scope, rid).run()
+    throw error
+  }
+
+  const body = await response.clone().text()
+  await DB.prepare(
+    `UPDATE idempotency_keys
+     SET status='complete', response_status=?, response_json=?,
+         completed_at=datetime('now')
+     WHERE user_id=? AND scope=? AND request_id=?`,
+  ).bind(response.status, body, userId, scope, rid).run()
+  return response
+}
+
 const emptyBodySchema = z.strictObject({})
 const positiveIdSchema = z.string().regex(/^[1-9]\d*$/)
   .transform(Number).refine(Number.isSafeInteger)
@@ -224,6 +368,16 @@ const passwordBodySchema = z.strictObject({
 })
 const tickBodySchema = z.strictObject({
   tz: z.string().trim().min(1).max(100).optional(),
+})
+
+// Book 8.2 / 8.6 — recovery and re-entry.
+const recoveryBodySchema = z.strictObject({
+  date: dateSchema.optional(),
+  action: z.string().trim().min(1).max(500),
+})
+const catchupBodySchema = z.strictObject({
+  // Optional operator hint when the log is too sparse to infer absence length.
+  days_absent_override: z.number().int().min(0).max(3650).optional(),
 })
 const blockLogBodySchema = z.strictObject({
   status: blockStatusSchema,
@@ -304,6 +458,7 @@ const lawCheckBodySchema = z.strictObject({
   kept: z.boolean(),
   note: optionalText(4000),
 })
+const captureHeatSchema = z.enum(['calm', 'baited', 'proud', 'afraid'])
 const intelBodySchema = z.strictObject({
   log_date: optionalDate,
   domain: intelDomainSchema,
@@ -315,6 +470,9 @@ const intelBodySchema = z.strictObject({
   principle_used: optionalText(10000),
   lesson: optionalText(20000),
   people: optionalText(4000),
+  // Book 13.2 — capture heat and its required brake.
+  heat: captureHeatSchema.optional(),
+  alternative_explanation: optionalText(2000),
 })
 const agentIntelBodySchema = intelBodySchema.extend({
   analysis: optionalText(20000),
@@ -827,16 +985,8 @@ app.use('/api/*', async (c, next) => {
   return next()
 })
 
-const DOWS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+// DOWS/dowOf/addDays/isoWeekKey extracted to ./time (Book 7).
 
-function dowOf(dateStr: string): string {
-  return DOWS[new Date(dateStr + 'T12:00:00Z').getUTCDay()]
-}
-function addDays(dateStr: string, n: number): string {
-  const d = new Date(dateStr + 'T12:00:00Z')
-  d.setUTCDate(d.getUTCDate() + n)
-  return d.toISOString().slice(0, 10)
-}
 
 async function blocksForDate(DB: D1Database, userId: number, date: string) {
   const dow = dowOf(date)
@@ -933,24 +1083,31 @@ async function writeDaySummary(DB: D1Database, userId: number, date: string, fin
   // Victory = 80%+ weighted adherence with debrief. MVD held alone keeps the
   // streak ALIVE (survival), it does not count as a victory day.
   const victory = blocks.length > 0 && adh.pct >= 80 && !!deb
-  const survives = victory || adh.mvdHeld
+  // Minimum Viable Recovery (Book 8.2): a single restoring action logged on a
+  // breach day lets the day SURVIVE, exactly like MVD. Derived from the
+  // recovery_actions record so re-materialising a day never loses it.
+  const rec = await DB.prepare(
+    `SELECT 1 AS r FROM recovery_actions WHERE user_id=? AND action_date=?`,
+  ).bind(userId, date).first<{ r: number }>()
+  const mvrHeld = !!rec
+  const survives = victory || adh.mvdHeld || mvrHeld
   const existing = await DB.prepare(`SELECT summary_date FROM day_summary WHERE user_id=? AND summary_date=?`)
     .bind(userId, date).first()
   if (existing) {
     await DB.prepare(
       `UPDATE day_summary SET adherence_pct=?, weighted_score=?, weighted_total=?, blocks_done=?, blocks_total=?,
-       mvd_held=?, debrief_filed=?, victory=?, points=?, finalized=MAX(finalized, ?), updated_at=datetime('now')
+       mvd_held=?, mvr_held=?, debrief_filed=?, victory=?, points=?, finalized=MAX(finalized, ?), updated_at=datetime('now')
        WHERE user_id=? AND summary_date=?`,
     ).bind(adh.pct, adh.wScore, adh.wTotal, Math.round(adh.done), adh.total,
-      adh.mvdHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0,
+      adh.mvdHeld ? 1 : 0, mvrHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0,
       userId, date).run()
   } else {
     await DB.prepare(
       `INSERT INTO day_summary (user_id, summary_date, adherence_pct, weighted_score, weighted_total, blocks_done, blocks_total,
-       mvd_held, debrief_filed, victory, points, finalized, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+       mvd_held, mvr_held, debrief_filed, victory, points, finalized, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
     ).bind(userId, date, adh.pct, adh.wScore, adh.wTotal, Math.round(adh.done), adh.total,
-      adh.mvdHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0).run()
+      adh.mvdHeld ? 1 : 0, mvrHeld ? 1 : 0, deb ? 1 : 0, victory ? 1 : 0, pts?.t ?? 0, finalize ? 1 : 0).run()
   }
   return { adh, deb: !!deb, victory, survives }
 }
@@ -1034,28 +1191,29 @@ async function runHonestyEngine(DB: D1Database, userId: number, today: string) {
 
     // 4.5 MVD HELD on a hard day — the line held. Small positive, streak survives.
     if (yBlocks.length > 0 && adh.mvdHeld && adh.pct < 80) {
-      const already = await DB.prepare(
-        `SELECT id FROM points_ledger WHERE user_id=? AND log_date=? AND ref_type='mvd'`,
-      ).bind(userId, y1).first()
-      if (!already) {
-        await DB.prepare(
-          `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
-           VALUES (?,?,?,?,?)`,
-        ).bind(userId, y1, 10, `HELD THE LINE: all ${adh.mvdTotal} core blocks hit on a hard day (${y1}). The streak lives. +10 pts.`, 'mvd').run()
-      }
+      // ATOMIC: the INSERT's own WHERE NOT EXISTS is the arbiter, so two
+      // concurrent enforcement passes (tick + cron) cannot both award.
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+         SELECT ?,?,?,?,'mvd'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM points_ledger
+           WHERE user_id=? AND log_date=? AND ref_type='mvd'
+         )`,
+      ).bind(userId, y1, 10, `HELD THE LINE: all ${adh.mvdTotal} core blocks hit on a hard day (${y1}). The streak lives. +10 pts.`, userId, y1).run()
     }
 
     // 5. Victory: 80%+ weighted day with debrief
     if (yBlocks.length > 0 && adh.pct >= 80 && deb) {
-      const already = await DB.prepare(
-        `SELECT id FROM points_ledger WHERE user_id=? AND log_date=? AND ref_type='streak'`,
-      ).bind(userId, y1).first()
-      if (!already) {
-        await DB.prepare(
-          `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
-           VALUES (?,?,?,?,?)`,
-        ).bind(userId, y1, 30, `VICTORY DAY: ${adh.pct}% adherence + debrief filed (${y1}). +30 pts.`, 'streak').run()
-      }
+      // ATOMIC: same conditional-INSERT guard as the MVD bonus above.
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
+         SELECT ?,?,?,?,'streak'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM points_ledger
+           WHERE user_id=? AND log_date=? AND ref_type='streak'
+         )`,
+      ).bind(userId, y1, 30, `VICTORY DAY: ${adh.pct}% adherence + debrief filed (${y1}). +30 pts.`, userId, y1).run()
     }
   }
 
@@ -1068,7 +1226,7 @@ async function runHonestyEngine(DB: D1Database, userId: number, today: string) {
 async function computeStreak(DB: D1Database, userId: number, today: string): Promise<number> {
   const startDate = (await getSetting(DB, 'start_date', userId)) || today
   const { results } = await DB.prepare(
-    `SELECT summary_date, victory, mvd_held FROM day_summary
+    `SELECT summary_date, victory, mvd_held, mvr_held FROM day_summary
      WHERE user_id=? AND summary_date < ? AND summary_date >= ?
      ORDER BY summary_date DESC LIMIT 180`
   ).bind(userId, today, startDate).all()
@@ -1079,7 +1237,7 @@ async function computeStreak(DB: D1Database, userId: number, today: string): Pro
     if (d < startDate) break
     const r = byDate.get(d)
     if (r?.victory) streak++
-    else if (r?.mvd_held) { /* survives, contributes nothing */ }
+    else if (r?.mvd_held || r?.mvr_held) { /* survives, contributes nothing */ }
     else break
     d = addDays(d, -1)
   }
@@ -1198,6 +1356,16 @@ async function buildState(DB: D1Database, userId: number, date: string, time: st
      WHERE user_id=? AND outcome='unresolved' AND resolve_by <= ?`
   ).bind(userId, date).first<any>().catch(() => ({ n: 0 }))
 
+  // Re-entry signal (Book 8.6): auto-offer /catchup after three consecutive
+  // zero days. One bounded query so it does not inflate the /api/state budget.
+  const recent = await DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date > ? AND log_date <= ? AND status IN ('done','partial')) AS blocks,
+       (SELECT COUNT(*) FROM debriefs WHERE user_id=? AND log_date > ? AND log_date <= ?) AS debriefs`,
+  ).bind(userId, addDays(date, -3), addDays(date, -1), userId, addDays(date, -3), addDays(date, -1))
+    .first<{ blocks: number; debriefs: number }>().catch(() => ({ blocks: 1, debriefs: 0 }))
+  const needsCatchup = ((recent as any)?.blocks ?? 0) === 0 && ((recent as any)?.debriefs ?? 0) === 0
+
   return {
     date, time, blocks, current, next, adherence: adh, streak,
     points: pts?.total ?? 0, todayPoints: todayPts?.total ?? 0,
@@ -1206,25 +1374,60 @@ async function buildState(DB: D1Database, userId: number, date: string, time: st
     dueCards: dueCards?.n ?? 0, dueTongue: (dueTongue as any)?.n ?? 0, activeUnits,
     median, delta: median === null ? null : adh.pct - median,
     appealAvailable: !appealUsed, loadReductions,
-    duePredictions: (openPredictions as any)?.n ?? 0
+    duePredictions: (openPredictions as any)?.n ?? 0,
+    needsCatchup
   }
 }
 
-function isoWeekKey(dateStr: string): string {
-  const d = new Date(dateStr + 'T12:00:00Z')
-  const day = (d.getUTCDay() + 6) % 7
-  d.setUTCDate(d.getUTCDate() - day + 3) // Thursday of this week
-  const y = d.getUTCFullYear()
-  const jan4 = new Date(Date.UTC(y, 0, 4))
-  const week = 1 + Math.round(((d.getTime() - jan4.getTime()) / 86400000 - 3 + ((jan4.getUTCDay() + 6) % 7)) / 7)
-  return `${y}-W${String(week).padStart(2, '0')}`
-}
 
 // READ — no side effects, ever. Server clock, client clock ignored.
 app.get('/api/state', async (c) => {
   const userId = c.get('userId')
   const { date, time } = await userNow(c.env.DB, userId)
   return c.json(await buildState(c.env.DB, userId, date, time))
+})
+
+// VERSION — the cheap "has anything changed?" probe that replaces polling.
+// Book 6: the client refreshes on focus, after an action, and near a block
+// boundary. When it does need to check, this costs a few indexed MAX() reads
+// instead of a full /api/state build, and answers 304 when nothing moved.
+app.get('/api/version', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
+  const { date, time } = await userNow(DB, userId)
+  // Highest rowid + newest key per consequence-bearing table. Any write the UI
+  // cares about moves at least one of these. day_summary is keyed by date, not
+  // by an autoincrement id, so its marker is the newest summary_date plus a
+  // row count (a re-finalised day updates in place without adding a row).
+  const marks = await DB.batch([
+    DB.prepare(
+      `SELECT COALESCE(MAX(id),0) AS m FROM block_logs WHERE user_id=?`,
+    ).bind(userId),
+    DB.prepare(
+      `SELECT COALESCE(MAX(id),0) AS m FROM points_ledger WHERE user_id=?`,
+    ).bind(userId),
+    DB.prepare(
+      `SELECT COALESCE(MAX(id),0) AS m FROM honesty_flags WHERE user_id=?`,
+    ).bind(userId),
+    DB.prepare(
+      `SELECT COALESCE(MAX(summary_date),'-') || ':' || COUNT(*) AS m
+       FROM day_summary WHERE user_id=?`,
+    ).bind(userId),
+  ])
+  const stamp = (marks as any[])
+    .map((r) => String(r.results?.[0]?.m ?? 0))
+    .join('.')
+  // The civil date and the current minute are part of the version so a block
+  // boundary or midnight rollover invalidates it even with no new writes.
+  const version = `${date}T${time}-${stamp}`
+  const etag = `W/"${version}"`
+
+  if (c.req.header('if-none-match') === etag) {
+    c.header('ETag', etag)
+    return c.body(null, 304)
+  }
+  c.header('ETag', etag)
+  return c.json({ version, date, time })
 })
 
 // CRANK — the ONLY place engines run. Server-derived date/time; future dates impossible.
@@ -1273,9 +1476,341 @@ app.post('/internal/jobs/enforcement', async (c) => {
   return c.json({ ok: true, runs })
 })
 
+// ============ RECOVERY & RE-ENTRY (Book 8.2 / 8.6) ============
+
+// The 8.4 miss-diagnosis taxonomy, reused as the /catchup mechanism vocabulary.
+const MISS_TAXONOMY = [
+  'unrealistic duration', 'overpacked schedule', 'low energy', 'interruption',
+  'unclear next action', 'avoidance', 'insufficient preparation', 'wrong priority',
+  'forgotten log', 'emergency', 'technology failure',
+] as const
+
+// Consecutive days ending yesterday with no logged activity (a block
+// done/partial, or a debrief). Bounded walk; the server owns the clock.
+async function computeDaysAbsent(DB: D1Database, userId: number, today: string): Promise<number> {
+  let absent = 0
+  for (let i = 1; i <= 60; i++) {
+    const d = addDays(today, -i)
+    const act = await DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date=? AND status IN ('done','partial')) AS blocks,
+         (SELECT COUNT(*) FROM debriefs WHERE user_id=? AND log_date=?) AS debriefs`,
+    ).bind(userId, d, userId, d).first<{ blocks: number; debriefs: number }>()
+    if ((act?.blocks ?? 0) > 0 || (act?.debriefs ?? 0) > 0) break
+    absent++
+  }
+  return absent
+}
+
+// A likely cause from the taxonomy — named as a structural hypothesis, never a
+// character verdict (Book R2 register). For this operator a multi-day stop is
+// the documented overpacking failure (R14), not a moral one.
+async function inferMechanism(
+  DB: D1Database, userId: number, today: string, daysAbsent: number,
+): Promise<typeof MISS_TAXONOMY[number]> {
+  if (daysAbsent >= 3) return 'overpacked schedule'
+  const y = addDays(today, -1)
+  const blocks = await blocksForDate(DB, userId, y)
+  if (blocks.length >= 6) return 'overpacked schedule'
+  const coreMissed = blocks.some((b: any) =>
+    (b.is_non_negotiable || (b.weight ?? 1) >= 3) &&
+    b.log_status !== 'done' && b.log_status !== 'partial')
+  if (coreMissed) return 'unclear next action'
+  return 'low energy'
+}
+
+// What was actually missed, reported as fact and never rewritten. One entry per
+// recent absent day, capped so the briefing stays short.
+async function buildMissed(
+  DB: D1Database, userId: number, today: string, daysAbsent: number,
+): Promise<Array<{ date: string; unlogged_blocks: number; debrief_missed: boolean }>> {
+  const out: Array<{ date: string; unlogged_blocks: number; debrief_missed: boolean }> = []
+  const span = Math.min(Math.max(daysAbsent, 1), 7)
+  for (let i = 1; i <= span; i++) {
+    const d = addDays(today, -i)
+    const blocks = await blocksForDate(DB, userId, d)
+    const scored = blocks.filter((b: any) => (b.weight ?? 1) > 0)
+    const unlogged = scored.filter((b: any) =>
+      b.log_status !== 'done' && b.log_status !== 'partial').length
+    const deb = await DB.prepare(
+      `SELECT 1 AS d FROM debriefs WHERE user_id=? AND log_date=?`,
+    ).bind(userId, d).first<{ d: number }>()
+    out.push({ date: d, unlogged_blocks: unlogged, debrief_missed: !deb })
+  }
+  return out
+}
+
+// The single protected keystone for tomorrow, drawn from the operator's own
+// CORE anchors so it is real, not invented.
+async function buildKeystone(DB: D1Database, userId: number, today: string) {
+  const t = addDays(today, 1)
+  const blocks = await blocksForDate(DB, userId, t)
+  const core = blocks
+    .filter((b: any) => b.is_mvd || b.is_non_negotiable || (b.weight ?? 1) >= 3)
+    .sort((a: any, b: any) => String(a.start_time).localeCompare(String(b.start_time)))
+  const anchor = core[0] || blocks[0]
+  return {
+    action: anchor ? String(anchor.title) : 'One deep block',
+    start_time: anchor && /^\d{2}:\d{2}$/.test(String(anchor.start_time)) ? String(anchor.start_time) : '06:00',
+    environment: 'The room where you do focused work. Phone in another room.',
+    first_physical_action: 'Sit down and open the material. Nothing more is required to begin.',
+  }
+}
+
+// POST /api/recovery — log the single restoring action for a breach day; the
+// day then survives the streak (Book 8.2). One per day, idempotent.
+app.post('/api/recovery', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
+  const body = await parseJson(c, recoveryBodySchema)
+  const date = await safeDate(DB, body.date, userId)
+  const claim = await DB.prepare(
+    `INSERT OR IGNORE INTO recovery_actions (user_id, action_date, action_text)
+     VALUES (?,?,?)`,
+  ).bind(userId, date, body.action.trim()).run()
+  // Re-materialise the day so mvr_held reflects the action (survival, not victory).
+  await writeDaySummary(DB, userId, date, false)
+  const streak = await computeStreak(DB, userId, (await userNow(DB, userId)).date)
+  const rid = requestId(c)
+  if (rid && (claim.meta as any).changes > 0) {
+    await auditEvent(DB, {
+      userId, actorType: 'user', requestId: rid,
+      action: 'recovery.log', entityType: 'recovery_action', entityId: date,
+      metadata: { date },
+    })
+  }
+  return c.json({ ok: true, date, streak, already: (claim.meta as any).changes === 0 })
+})
+
+// POST /api/catchup — the re-entry protocol (Book 8.6), in fixed output order.
+// Deterministic and offline-safe: it reads the record, it does not call a model.
+app.post('/api/catchup', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
+  const body = await parseJson(c, catchupBodySchema)
+  const { date } = await userNow(DB, userId)
+  const daysAbsent = body.days_absent_override ?? await computeDaysAbsent(DB, userId, date)
+  const trigger: 'manual' | 'auto_zero_streak' = daysAbsent >= 3 ? 'auto_zero_streak' : 'manual'
+
+  const missed = await buildMissed(DB, userId, date, daysAbsent)
+  const mechanism = await inferMechanism(DB, userId, date, daysAbsent)
+  const keystone = await buildKeystone(DB, userId, date)
+
+  // What NOT to do — the recovery path never generates these (Book 8.6).
+  const do_not = [
+    'Do not reschedule the days you missed. Backlog is forgiven, not carried.',
+    'Do not add extra load to compensate. There is no make-up debt.',
+    'Do not write a self-critical entry. Record what happened, not a verdict on yourself.',
+  ]
+
+  const minimum_viable_recovery =
+    'One action, right now, small enough to finish in ten minutes and close enough to a CORE anchor to count. Do it, then log it — that single act makes today a non-broken day.'
+
+  // One structural change, matched to the mechanism (time/environment/cue/scope/support).
+  const patchByMechanism: Record<string, { dimension: string; suggestion: string }> = {
+    'overpacked schedule': { dimension: 'scope', suggestion: 'Cut the mandatory set to a single keystone until you hold it cleanly for seven days. The deck waits.' },
+    'unclear next action': { dimension: 'cue', suggestion: 'Define the first physical action for the keystone the night before, written down, so starting needs no decision.' },
+    'low energy': { dimension: 'time', suggestion: 'Move the keystone to your highest-energy hour and protect the hour before it.' },
+  }
+  const structural_patch = patchByMechanism[mechanism] ||
+    { dimension: 'environment', suggestion: 'Remove the one friction that most reliably stops you starting.' }
+
+  // Absence over fourteen days re-opens the five-question diagnostic and
+  // re-seats the ratchet at whatever level it supports (Book 8.6).
+  let diagnostic: string[] | null = null
+  let reseat_level: number | null = null
+  if (daysAbsent > 14) {
+    diagnostic = [
+      'Separate one fact from one interpretation in a recent situation.',
+      'Map a choice you face by timing, terrain, options, and downside.',
+      'Improve a flat sentence without overstating it.',
+      'Write a calm, concise refusal to a request you should decline.',
+      "Retrieve yesterday's concept from memory, without notes.",
+    ]
+    reseat_level = 1 // re-seat at the base ratchet: three anchors only
+  }
+
+  const protocol = {
+    days_absent: daysAbsent,
+    trigger,
+    missed,
+    mechanism,
+    do_not,
+    minimum_viable_recovery,
+    structural_patch,
+    keystone,
+    diagnostic,
+    reseat_level,
+  }
+
+  await DB.prepare(
+    `INSERT INTO catchup_sessions
+       (user_id, trigger_type, days_absent, missed_json, mechanism, mvr_prompt,
+        structural_patch, keystone_json, diagnostic_json, reseat_level)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(
+    userId, trigger, daysAbsent, JSON.stringify(missed), mechanism,
+    minimum_viable_recovery, JSON.stringify(structural_patch),
+    JSON.stringify(keystone), diagnostic ? JSON.stringify(diagnostic) : null,
+    reseat_level,
+  ).run()
+
+  const rid = requestId(c)
+  if (rid) {
+    await auditEvent(DB, {
+      userId, actorType: 'user', requestId: rid,
+      action: 'catchup.run', entityType: 'catchup_session', entityId: date,
+      metadata: { days_absent: daysAbsent, trigger, mechanism },
+    })
+  }
+  return c.json(protocol)
+})
+
+// ============ BOOK 16 / R9 — THE CHAPTER CURSOR ============
+
+const cursorBodySchema = z.strictObject({
+  book: z.string().trim().min(1).max(200).optional(),
+  part: z.string().trim().min(1).max(200).optional(),
+  chapter: z.number().int().min(1).max(999).optional(),
+  figure: z.string().trim().min(1).max(200).optional(),
+  cycle_day: z.number().int().min(1).max(7).optional(),
+})
+
+type ChapterCursor = {
+  book: string; part: string; chapter: number; figure: string; cycle_day: number
+}
+
+// The cursor is a database value, never a code constant. On first read it is
+// seeded to the documented current value (Chapter 2 — Anaphora, R9); thereafter
+// every figure/drill/card selection reads whatever the operator has advanced to.
+async function getChapterCursor(DB: D1Database, userId: number): Promise<ChapterCursor> {
+  let row = await DB.prepare(
+    `SELECT book, part, chapter, figure, cycle_day FROM chapter_cursor WHERE user_id=?`,
+  ).bind(userId).first<ChapterCursor>()
+  if (!row) {
+    await DB.prepare(
+      `INSERT OR IGNORE INTO chapter_cursor (user_id) VALUES (?)`,
+    ).bind(userId).run()
+    row = await DB.prepare(
+      `SELECT book, part, chapter, figure, cycle_day FROM chapter_cursor WHERE user_id=?`,
+    ).bind(userId).first<ChapterCursor>()
+  }
+  return row as ChapterCursor
+}
+
+app.get('/api/cursor', async (c) => {
+  const cur = await getChapterCursor(c.env.DB, c.get('userId'))
+  return c.json(cur)
+})
+
+app.post('/api/cursor', async (c) => {
+  const DB = c.env.DB
+  const userId = c.get('userId')
+  const b = await parseJson(c, cursorBodySchema)
+  const cur = await getChapterCursor(DB, userId)  // ensure a row exists
+  const next: ChapterCursor = {
+    book: b.book ?? cur.book,
+    part: b.part ?? cur.part,
+    chapter: b.chapter ?? cur.chapter,
+    figure: b.figure ?? cur.figure,
+    cycle_day: b.cycle_day ?? cur.cycle_day,
+  }
+  await DB.prepare(
+    `UPDATE chapter_cursor SET book=?, part=?, chapter=?, figure=?, cycle_day=?, updated_at=datetime('now')
+     WHERE user_id=?`,
+  ).bind(next.book, next.part, next.chapter, next.figure, next.cycle_day, userId).run()
+  const rid = requestId(c)
+  if (rid) {
+    await auditEvent(DB, {
+      userId, actorType: 'user', requestId: rid,
+      action: 'cursor.set', entityType: 'chapter_cursor', entityId: userId,
+      before: cur, after: next,
+    })
+  }
+  return c.json(next)
+})
+
+// ============ BOOK 14 — THE CONTINUITY BRIEF ============
+
+// Plain-text session-continuity brief in the format the operator already keeps
+// by hand. Second output mode of the Commander's File serialiser: it survives
+// conversation compaction in any external tool. Read-only.
+async function continuityBrief(DB: D1Database, userId: number, date: string): Promise<string> {
+  const cur = await getChapterCursor(DB, userId)
+  const streak = await computeStreak(DB, userId, date)
+  const pts = await DB.prepare(
+    `SELECT COALESCE(SUM(points),0) AS t FROM points_ledger WHERE user_id=?`,
+  ).bind(userId).first<{ t: number }>()
+  const startDate = (await getSetting(DB, 'start_date', userId)) || date
+  const msDay = 86400000
+  const programmeDay = Math.max(1,
+    Math.round((new Date(date + 'T12:00:00Z').getTime() - new Date(startDate + 'T12:00:00Z').getTime()) / msDay) + 1)
+
+  // Completed works: books whose chapters are all done.
+  const doneBooks = (await DB.prepare(
+    `SELECT book_id, COUNT(*) c FROM book_progress
+     WHERE user_id=? AND status='done' GROUP BY book_id HAVING c >= 12`,
+  ).bind(userId).all()).results as any[]
+  const unitsWon = (await DB.prepare(
+    `SELECT COUNT(*) AS n FROM unit_progress WHERE user_id=? AND status='complete'`,
+  ).bind(userId).first<{ n: number }>())?.n ?? 0
+
+  // Due reviews as counts by kind (never content).
+  const dueCards = (await DB.prepare(
+    `SELECT COUNT(*) AS n FROM flashcards WHERE user_id=? AND due_date <= ?`,
+  ).bind(userId, date).first<{ n: number }>())?.n ?? 0
+  const dueTongue = (await DB.prepare(
+    `SELECT COUNT(*) AS n FROM response_srs s JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
+     WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`,
+  ).bind(userId, date).first<{ n: number }>().catch(() => ({ n: 0 })))?.n ?? 0
+
+  const lastDebrief = await DB.prepare(
+    `SELECT log_date, tomorrow_targets FROM debriefs WHERE user_id=? ORDER BY log_date DESC LIMIT 1`,
+  ).bind(userId).first<any>()
+
+  return [
+    '=== SESSION CONTINUITY BRIEF ===',
+    `Generated: ${date} (server clock) · Programme day ${programmeDay}`,
+    '',
+    'ACTIVE FRONT',
+    `  Book: ${cur.book}`,
+    `  Part: ${cur.part}`,
+    `  Chapter cursor: Chapter ${cur.chapter} — ${cur.figure}`,
+    `  Cycle day: ${cur.cycle_day} of 7`,
+    '',
+    'PROGRESS',
+    `  Streak: ${streak} victory day(s) · Points: ${pts?.t ?? 0}`,
+    `  Campaign units conquered: ${unitsWon}`,
+    `  Completed works (all chapters): ${doneBooks.length ? doneBooks.map((b) => b.book_id).join(', ') : 'none yet'}`,
+    '',
+    'REVIEW CADENCE (FSRS general queue; Farnsworth ladder 1·3·7·16·35)',
+    `  Due flashcards: ${dueCards} · Due tongue drills: ${dueTongue}`,
+    '',
+    'PHASE POSITION',
+    '  Phase 0 calibration complete; Phase 1 under way (per programme).',
+    '',
+    'LAST DEBRIEF',
+    `  ${lastDebrief ? `[${lastDebrief.log_date}] targets: ${String(lastDebrief.tomorrow_targets || '—').slice(0, 200)}` : '(none filed yet)'}`,
+    '',
+    'DELIVERY FORMAT',
+    '  Calm and exact. One figure, used once, never announced (read the cursor).',
+    '',
+    'NEXT MOVE',
+    `  Hold the keystone and drill ${cur.figure} for cycle day ${cur.cycle_day}. Do not advance the chapter until the standing sheets are real.`,
+    '=== END BRIEF ===',
+  ].join('\n')
+}
+
+app.get('/api/continuity-brief', async (c) => {
+  const { date } = await userNow(c.env.DB, c.get('userId'))
+  const text = await continuityBrief(c.env.DB, c.get('userId'), date)
+  return c.body(text, 200, { 'Content-Type': 'text/plain; charset=utf-8' })
+})
+
+
 // ============ BLOCK LOGGING ============
 // Date is SERVER-derived. You log the block you are living, not the day you wish.
-app.post('/api/blocks/:id/log', async (c) => {
+app.post('/api/blocks/:id/log', async (c) => withIdempotency(c, 'block:log', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -1323,7 +1858,7 @@ app.post('/api/blocks/:id/log', async (c) => {
   await DB.batch(stmts)
   await writeDaySummary(DB, userId, date, false)
   return c.json({ ok: true, date })
-})
+}))
 
 // ============ APPEALS — one token per week, permanent reason ============
 app.post('/api/appeals', async (c) => {
@@ -1478,7 +2013,7 @@ app.get('/api/predictions/calibration', async (c) => {
 })
 
 // ============ DEBRIEF ============
-app.post('/api/debrief', async (c) => {
+app.post('/api/debrief', async (c) => withIdempotency(c, 'debrief:file', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const b = await parseJson(c, debriefBodySchema)
@@ -1517,7 +2052,7 @@ app.post('/api/debrief', async (c) => {
   }
   await writeDaySummary(DB, userId, date, false)
   return c.json({ ok: true })
-})
+}))
 
 app.get('/api/debriefs', async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -1578,7 +2113,7 @@ app.get('/api/campaign', async (c) => {
   return c.json(out)
 })
 
-app.post('/api/units/:id/step', async (c) => {
+app.post('/api/units/:id/step', async (c) => withIdempotency(c, 'unit:step', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -1667,7 +2202,7 @@ app.post('/api/units/:id/step', async (c) => {
     await ensureUnlocks(DB, userId)
   }
   return c.json({ ok: true })
-})
+}))
 
 // ============ MAXIMS + FLASHCARDS ============
 app.get('/api/maxims', async (c) => {
@@ -1744,13 +2279,17 @@ app.post('/api/cards/:maximId/review', async (c) => {
     else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
   }
   const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
-  await DB.prepare(
-    `UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?
-     WHERE maxim_id=? AND user_id=?`,
-  ).bind(interval_days, ease, reps, lapses, due, mid, userId).run()
-  await DB.prepare(
-    `INSERT INTO card_reviews (user_id, maxim_id, grade) VALUES (?,?,?)`,
-  ).bind(userId, mid, grade).run()
+  // Atomic (Book 6): the schedule advance and the review log land together or
+  // not at all, so a mid-write failure can never desync them.
+  await DB.batch([
+    DB.prepare(
+      `UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?
+       WHERE maxim_id=? AND user_id=?`,
+    ).bind(interval_days, ease, reps, lapses, due, mid, userId),
+    DB.prepare(
+      `INSERT INTO card_reviews (user_id, maxim_id, grade) VALUES (?,?,?)`,
+    ).bind(userId, mid, grade),
+  ])
   return c.json({ ok: true, next_due: due })
 })
 
@@ -1784,7 +2323,7 @@ function tongueMastery(s: any): string {
 }
 
 // Capture a wise response (the daily field-recording ritual)
-app.post('/api/tongue', async (c) => {
+app.post('/api/tongue', async (c) => withIdempotency(c, 'tongue:capture', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const { situation, trigger_q, response, why_works, source, category } =
@@ -1796,15 +2335,19 @@ app.post('/api/tongue', async (c) => {
      VALUES (?,?,?,?,?,?,?)`
   ).bind(userId, situation.trim(), trigger_q.trim(), response.trim(), (why_works || '').trim() || null, (source || '').trim() || null, category || 'wit').run()
   const rid = r.meta.last_row_id
-  await DB.prepare(
-    `INSERT INTO response_srs (user_id, response_id, due_date) VALUES (?,?,?)`,
-  ).bind(userId, rid, today).run()
-  await DB.prepare(
-    `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
-     VALUES (?,?,?,?,?,?)`,
-  ).bind(userId, today, 3, `INTEL CAPTURED: recorded a wise response ("${String(trigger_q).slice(0, 50)}…"). +3 pts. Now memorize it.`, 'tongue', rid).run()
+  // Atomic (Book 6): the SRS seeding and the capture reward both hang off the
+  // new response id and must commit together.
+  await DB.batch([
+    DB.prepare(
+      `INSERT INTO response_srs (user_id, response_id, due_date) VALUES (?,?,?)`,
+    ).bind(userId, rid, today),
+    DB.prepare(
+      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+       VALUES (?,?,?,?,?,?)`,
+    ).bind(userId, today, 3, `INTEL CAPTURED: recorded a wise response ("${String(trigger_q).slice(0, 50)}…"). +3 pts. Now memorize it.`, 'tongue', rid),
+  ])
   return c.json({ ok: true, id: rid })
-})
+}))
 
 // List / filter the armory
 app.get('/api/tongue', async (c) => {
@@ -1873,7 +2416,7 @@ app.get('/api/tongue/due', async (c) => {
 })
 
 // Grade a drill (0 blank | 1 shaky | 2 solid | 3 fluent) — SM-2 with mastery ladder
-app.post('/api/tongue/:id/review', async (c) => {
+app.post('/api/tongue/:id/review', async (c) => withIdempotency(c, 'tongue:review', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -1928,7 +2471,7 @@ app.post('/api/tongue/:id/review', async (c) => {
     }
   }
   return c.json({ ok: true, next_due: due, mastery, promoted })
-})
+}))
 
 // Weekly exam — strict. 10 random armed responses (or all if fewer). Pass ≥ 80%.
 app.get('/api/tongue/exam', async (c) => {
@@ -1941,7 +2484,7 @@ app.get('/api/tongue/exam', async (c) => {
   ).bind(userId).all()
   return c.json(results)
 })
-app.post('/api/tongue/exam/submit', async (c) => {
+app.post('/api/tongue/exam/submit', async (c) => withIdempotency(c, 'tongue:exam', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const { total, correct, date } = await parseJson(c, tongueExamBodySchema)
@@ -1962,7 +2505,7 @@ app.post('/api/tongue/exam/submit', async (c) => {
       `TONGUE EXAM FAILED: ${correct}/${total} (${pct}%). You recorded wisdom you cannot recall — that is decoration, not armament. −10 pts. Drill and retake.`, -10)
   }
   return c.json({ ok: true, score_pct: pct, passed: !!passed })
-})
+}))
 
 // Tongue stats — the real-progress dashboard
 app.get('/api/tongue/stats', async (c) => {
@@ -2017,7 +2560,7 @@ app.get('/api/laws', async (c) => {
   ).bind(date, userId).all()
   return c.json(results)
 })
-app.post('/api/laws/:id/check', async (c) => {
+app.post('/api/laws/:id/check', async (c) => withIdempotency(c, 'law:check', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const lawId = parseValue(positiveIdSchema, c.req.param('id'))
@@ -2035,14 +2578,14 @@ app.post('/api/laws/:id/check', async (c) => {
     ).bind(userId, lawId, date, kept ? 1 : 0, note || null).run()
   }
   return c.json({ ok: true })
-})
+}))
 
 // ============ REWARDS ============
 app.get('/api/rewards', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT * FROM rewards ORDER BY cost`).all()
   return c.json(results)
 })
-app.post('/api/rewards/:id/redeem', async (c) => {
+app.post('/api/rewards/:id/redeem', async (c) => withIdempotency(c, 'reward:redeem', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -2068,8 +2611,16 @@ app.post('/api/rewards/:id/redeem', async (c) => {
       `INSERT INTO reward_redemptions (user_id, reward_id) VALUES (?,?)`,
     ).bind(userId, id),
   ])
+  const rid = requestId(c)
+  if (rid) {
+    await auditEvent(DB, {
+      userId, actorType: 'user', requestId: rid,
+      action: 'reward.redeem', entityType: 'reward', entityId: id,
+      after: { cost: reward.cost, log_date: date },
+    })
+  }
   return c.json({ ok: true })
-})
+}))
 
 // ============ STATS ============
 app.get('/api/stats', async (c) => {
@@ -2171,7 +2722,22 @@ app.get('/api/stats', async (c) => {
     { id: 'sovereign',     icon: 'fa-dragon',          title: 'SOVEREIGN',         desc: 'Reach 10,000 points',                  earned: (pts?.total ?? 0) >= 10000, prog: Math.min(Math.max(pts?.total ?? 0, 0), 10000), goal: 10000 },
   ]
 
-  return c.json({ days, categories: catRows, ledger, unitStats, cardStats, flagCounts, streak, points: pts?.total ?? 0, medals })
+  // Book 13.2 — the brake counts. A rising nonePlausible is the paranoia tell,
+  // surfaced here so the operator can actually see it.
+  const altCounts = await DB.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(none_plausible),0) AS none_plausible
+     FROM alternative_explanations WHERE user_id=?`,
+  ).bind(userId).first<{ total: number; none_plausible: number }>()
+
+  return c.json({
+    days, categories: catRows, ledger, unitStats, cardStats, flagCounts,
+    streak, points: pts?.total ?? 0, medals,
+    alternativeExplanations: {
+      total: altCounts?.total ?? 0,
+      nonePlausible: altCounts?.none_plausible ?? 0,
+    },
+  })
 })
 
 // ============ LIFE INTEL (The Council) ============
@@ -2191,25 +2757,43 @@ app.get('/api/intel', async (c) => {
   return c.json((await q.all()).results)
 })
 
-app.post('/api/intel', async (c) => {
+app.post('/api/intel', async (c) => withIdempotency(c, 'intel:file', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const b = await parseJson(c, intelBodySchema)
+  // Book 13.2 brake: a heated capture cannot be filed without an alternative.
+  const gated = altGate(c, b.heat, b.alternative_explanation)
+  if (gated) return gated
   const logDate = b.log_date || (await userNow(DB, userId)).date
   const r = await DB.prepare(
     `INSERT INTO intel_entries
        (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
-        principle_used, lesson, people)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+        principle_used, lesson, people, heat, alternative_explanation)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(userId, logDate, b.domain, b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
-    b.lesson || null, b.people || null).run()
+    b.lesson || null, b.people || null, b.heat || null, b.alternative_explanation || null).run()
   await DB.prepare(
     `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
      VALUES (?,?,?,?,?,?)`,
   ).bind(userId, logDate, 15, `Intel filed: [${b.domain}] ${b.title} (+15)`, 'intel', r.meta.last_row_id).run()
+  // Count the brake (and the "none plausible" tell) when heat is non-calm.
+  if (b.heat && b.heat !== 'calm' && b.alternative_explanation) {
+    await recordAltExplanation(DB, {
+      userId, entityType: 'capture', entityId: r.meta.last_row_id,
+      heat: b.heat, text: b.alternative_explanation,
+    })
+  }
+  const rid = requestId(c)
+  if (rid) {
+    await auditEvent(DB, {
+      userId, actorType: 'user', requestId: rid,
+      action: 'intel.file', entityType: 'intel_entry', entityId: r.meta.last_row_id,
+      after: { domain: b.domain, log_date: logDate, points: 15, heat: b.heat || 'calm' },
+    })
+  }
   return c.json({ ok: true, id: r.meta.last_row_id })
-})
+}))
 
 app.post('/api/intel/:id/verdict', async (c) => {
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -2257,7 +2841,7 @@ app.get('/api/library', async (c) => {
   }))
 })
 
-app.post('/api/library/:bookId/chapter/:idx', async (c) => {
+app.post('/api/library/:bookId/chapter/:idx', async (c) => withIdempotency(c, 'library:chapter', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const bookId = c.req.param('bookId')
@@ -2305,7 +2889,7 @@ app.post('/api/library/:bookId/chapter/:idx', async (c) => {
     ).bind(userId, date || (await userNow(DB, userId)).date, 20, `Real chapter finished: ${bookId} ch.${idx + 1} (+20)`, 'book').run()
   }
   return c.json({ ok: true })
-})
+}))
 
 // ============ CALENDAR EXPORT (.ics — device-native alarms) ============
 app.use('/calendar.ics', async (c, next) => {
@@ -2364,8 +2948,10 @@ async function hermesBriefing(DB: D1Database, userId: number, date: string): Pro
      WHERE lc.user_id=? AND lc.kept=0 GROUP BY l.id ORDER BY n DESC LIMIT 3`
   ).bind(userId).all()).results as any[]
 
+  const cursor = await getChapterCursor(DB, userId)
   return `=== COMMANDER'S FILE (auto-generated live from the War Room database) ===
 DATE: ${date} | STREAK: ${streak} victory days | POINTS: ${pts?.t} | TODAY'S ADHERENCE SO FAR: ${adh.pct}% (${adh.done}/${adh.total})
+CHAPTER CURSOR: Chapter ${cursor.chapter} — ${cursor.figure} (${cursor.book} / ${cursor.part}) · cycle day ${cursor.cycle_day} of 7
 
 LAST 7 DEBRIEFS (his own words — wins / breaks / targets / insights / sleep):
 ${debriefs.map(d => `[${d.log_date}] WINS: ${d.wins || '—'} | BREAKS: ${d.breaks || '—'} | TARGETS: ${d.tomorrow_targets || '—'} | INSIGHT: ${d.strategy_insight || '—'} | sleep ${d.sleep_hours ?? '?'}h mood ${d.mood ?? '?'}/5`).join('\n') || '(no debriefs yet)'}
@@ -2669,7 +3255,7 @@ async function callModel(
   return { response: c.json({ error: 'MODEL SERVICE UNAVAILABLE' }, 502) }
 }
 
-app.post('/api/hermes', async (c) => {
+app.post('/api/hermes', async (c) => withIdempotency(c, 'hermes:chat', async () => {
   const DB = c.env.DB
   const { message, date } = await parseJson(c, hermesBodySchema)
   const userId = c.get('userId')
@@ -2736,7 +3322,7 @@ app.post('/api/hermes', async (c) => {
     ).bind(userId, result.answer, today),
   ])
   return c.json({ answer: result.answer })
-})
+}))
 
 app.get('/api/hermes/history', async (c) => {
   const { results } = await c.env.DB.prepare(
@@ -2746,7 +3332,7 @@ app.get('/api/hermes/history', async (c) => {
 })
 
 // Morning war council: Hermes proactively reviews the file and issues the day's orders
-app.post('/api/hermes/council', async (c) => {
+app.post('/api/hermes/council', async (c) => withIdempotency(c, 'hermes:council', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const { date } = await parseJson(c, councilBodySchema)
@@ -2781,10 +3367,10 @@ app.post('/api/hermes/council', async (c) => {
     today,
   ).run()
   return c.json({ answer: result.answer })
-})
+}))
 
 // Hermes analysis of a specific intel entry
-app.post('/api/intel/:id/analyze', async (c) => {
+app.post('/api/intel/:id/analyze', async (c) => withIdempotency(c, 'intel:analyze', async () => {
   const DB = c.env.DB
   const userId = c.get('userId')
   const id = parseValue(positiveIdSchema, c.req.param('id'))
@@ -2828,7 +3414,7 @@ app.post('/api/intel/:id/analyze', async (c) => {
     `UPDATE intel_entries SET hermes_analysis=? WHERE id=? AND user_id=?`,
   ).bind(result.answer, id, userId).run()
   return c.json({ analysis: result.answer })
-})
+}))
 
 // ============ HERMES BRIDGE — scoped external agent API ============
 function genAgentToken(): string {
@@ -2982,7 +3568,7 @@ app.post('/api/agent/v1/intel/read', async (c) => {
 })
 
 // Agent auto-journals anything it observes: intel, debrief updates, block check-offs
-app.post('/api/agent/v1/intel', async (c) => {
+app.post('/api/agent/v1/intel', async (c) => withIdempotency(c, 'agent:intel', async () => {
   const userId = c.get('userId')
   const b = await parseJson(c, agentIntelBodySchema)
   const r = await c.env.DB.prepare(
@@ -2995,9 +3581,9 @@ app.post('/api/agent/v1/intel', async (c) => {
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
     b.lesson || null, b.people || null, b.analysis || null).run()
   return c.json({ ok: true, id: r.meta.last_row_id })
-})
+}))
 
-app.post('/api/agent/v1/debrief', async (c) => {
+app.post('/api/agent/v1/debrief', async (c) => withIdempotency(c, 'agent:debrief', async () => {
   const userId = c.get('userId')
   const DB = c.env.DB
   const b = await parseJson(c, agentDebriefBodySchema)
@@ -3033,9 +3619,9 @@ app.post('/api/agent/v1/debrief', async (c) => {
     ).bind(userId, date, ...values).run()
   }
   return c.json({ ok: true })
-})
+}))
 
-app.post('/api/agent/v1/block-log', async (c) => {
+app.post('/api/agent/v1/block-log', async (c) => withIdempotency(c, 'agent:block-log', async () => {
   const userId = c.get('userId')
   const DB = c.env.DB
   const { block_id, date, status, note } =
@@ -3068,10 +3654,10 @@ app.post('/api/agent/v1/block-log', async (c) => {
     ).bind(userId, block_id, logDate, status, note ? '[HERMES] ' + note : null).run()
   }
   return c.json({ ok: true })
-})
+}))
 
 // Agent posts its counsel into the app's Council log (visible in the COUNCIL tab)
-app.post('/api/agent/v1/message', async (c) => {
+app.post('/api/agent/v1/message', async (c) => withIdempotency(c, 'agent:message', async () => {
   const userId = c.get('userId')
   const { content, role } = await parseJson(c, agentMessageBodySchema)
   await c.env.DB.prepare(
@@ -3081,7 +3667,7 @@ app.post('/api/agent/v1/message', async (c) => {
     EXTERNAL_MESSAGE_PREFIX + content,
     (await userNow(c.env.DB, userId)).date).run()
   return c.json({ ok: true })
-})
+}))
 
 // Everything endpoint: full DB export for the credential owner only.
 app.post('/api/agent/v1/export', async (c) => {
@@ -3155,6 +3741,7 @@ app.get('/', (c) => c.html(`<!DOCTYPE html>
 <canvas id="fx-canvas"></canvas>
 <div id="app"></div>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+<script src="/static/morph.js"></script>
 <script src="/static/fx.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/app2.js"></script>

@@ -37,6 +37,21 @@ async function passwordHash(
     .join('')
 }
 
+// The server owns the calendar: routes derive the date from settings.timezone
+// via userNow(), NOT from SQLite's UTC date('now'). Fixtures must use the same
+// clock or they land on a different day whenever UTC and the owner's timezone
+// disagree (between 21:00 and 24:00 UTC for Africa/Nairobi), which silently
+// stops a same-day guard from seeing the row it is meant to guard.
+async function ownerToday(): Promise<string> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM settings WHERE key='timezone' LIMIT 1`,
+  ).first<{ value: string }>()
+  const tz = row?.value || 'Africa/Nairobi'
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date())
+}
+
 async function authenticatedContext(): Promise<{
   headers: Record<string, string>
   userId: number
@@ -297,11 +312,12 @@ describe('Book 5.4 legal state transitions', () => {
                'mon,tue,wed,thu,fri,sat,sun')`,
     ).bind(userId).run()
     const blockId = Number(block.meta.last_row_id)
+    const today = await ownerToday()
     const log = await env.DB.prepare(
       `INSERT INTO block_logs
          (user_id, block_id, log_date, status, note, completed_at)
-       VALUES (?,?,date('now'),'missed','AUTO-CANCELED: transition fixture',datetime('now'))`,
-    ).bind(userId, blockId).run()
+       VALUES (?,?,?,'missed','AUTO-CANCELED: transition fixture',datetime('now'))`,
+    ).bind(userId, blockId, today).run()
 
     const rewrite = await post(
       `/api/blocks/${blockId}/log`,
