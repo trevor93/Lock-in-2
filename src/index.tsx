@@ -4,23 +4,12 @@ import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
 import { setSecurityHeaders } from './security-headers'
 import { addDays, dowOf, isoWeekKey } from './time'
+import { dayAdherence } from './scoring'
+import type { Bindings, Variables } from './env'
+import { bufToHex, randHex, sha256, csrfToken, pbkdf2, timingSafeEq } from './crypto'
 import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
-type Bindings = {
-  DB: D1Database
-  OPENAI_API_KEY: string
-  OPENAI_BASE_URL: string
-  OPENAI_ALLOWED_BASE_URLS?: string
-  ENFORCEMENT_JOB_SECRET?: string
-  ALLOWED_ORIGINS?: string
-}
-
-type Variables = {
-  userId: number
-  agentCredentialId: number
-  agentScopes: string[]
-  agentRoute: string
-}
+// Bindings/Variables extracted to ./env (Book 7).
 
 type SessionRecord = {
   id: number
@@ -286,190 +275,57 @@ async function withIdempotency(
   return response
 }
 
-const positiveIdSchema = z.string().regex(/^[1-9]\d*$/)
-  .transform(Number).refine(Number.isSafeInteger)
-const chapterIndexSchema = z.string().regex(/^(0|[1-9]\d*)$/)
-  .transform(Number).refine(Number.isSafeInteger)
-const dateSchema = z.string().refine((value) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
-  const [year, month, day] = value.split('-').map(Number)
-  const date = new Date(Date.UTC(year, month - 1, day))
-  return date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-})
-const timeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
-const optionalText = (max: number) =>
-  z.string().max(max).optional().nullable()
-const optionalTrimmedText = (max: number) =>
-  z.string().trim().max(max).optional().nullable()
-const requiredTrimmedText = (min: number, max: number) =>
-  z.string().trim().min(min).max(max)
-const optionalDate = dateSchema.optional().nullable()
-const gradeSchema = z.number().int().min(0).max(3)
-const blockStatusSchema = z.enum(['pending', 'done', 'partial', 'skipped'])
-const loadReductionReasonSchema = z.enum([
-  'wrong_time', 'too_long', 'wrong_prereq', 'dont_want_it',
-])
-const predictionOutcomeSchema = z.enum(['right', 'wrong', 'void'])
-const responseCategorySchema = z.enum([
-  'deflection', 'wit', 'power', 'mystery', 'boundaries', 'praise',
-  'conflict', 'small_talk', 'negotiation', 'silence',
-])
-const tongueModeSchema = z.enum([
-  'recall', 'cloze', 'first_letters', 'reverse', 'delivery',
-])
-const intelDomainSchema = z.enum([
-  'loyalty', 'family', 'friends', 'network', 'community', 'neighbours',
-  'classmates', 'women_relationships', 'money', 'hustle', 'society',
-  'manipulation_spotted', 'clever_move', 'dumb_move', 'workaround',
-  'wisdom', 'other',
-])
-const intelVerdictSchema = z.enum(['smart', 'dumb', 'neutral', 'pending'])
-const bookStatusSchema = z.enum(['unread', 'reading', 'done'])
-const hermesRoleSchema = z.enum(['user', 'assistant'])
-
-const passwordBodySchema = z.strictObject({
-  password: z.string().min(1).max(1024),
-})
-const tickBodySchema = z.strictObject({
-  tz: z.string().trim().min(1).max(100).optional(),
-})
-
-// Book 8.2 / 8.6 — recovery and re-entry.
-const recoveryBodySchema = z.strictObject({
-  date: dateSchema.optional(),
-  action: z.string().trim().min(1).max(500),
-})
-const catchupBodySchema = z.strictObject({
-  // Optional operator hint when the log is too sparse to infer absence length.
-  days_absent_override: z.number().int().min(0).max(3650).optional(),
-})
-const blockLogBodySchema = z.strictObject({
-  status: blockStatusSchema,
-  note: optionalText(4000),
-})
-const appealBodySchema = z.strictObject({
-  block_id: z.number().int().positive(),
-  block_date: dateSchema,
-  reason: requiredTrimmedText(100, 10000),
-})
-const loadReductionBodySchema = z.strictObject({
-  reason: loadReductionReasonSchema,
-})
-const predictionBodySchema = z.strictObject({
-  claim: requiredTrimmedText(10, 2000),
-  confidence: z.number().int().min(50).max(99),
-  resolve_by: dateSchema,
-  domain: z.string().trim().max(100).optional().nullable(),
-})
-const predictionResolutionBodySchema = z.strictObject({
-  outcome: predictionOutcomeSchema,
-  note: optionalText(4000),
-})
-const debriefBodySchema = z.strictObject({
-  date: optionalDate,
-  wins: optionalText(10000),
-  breaks: optionalText(10000),
-  tomorrow_targets: optionalText(10000),
-  strategy_insight: optionalText(10000),
-  mood: z.number().int().min(1).max(5).optional().nullable(),
-  energy: z.number().int().min(1).max(5).optional().nullable(),
-  sleep_time: timeSchema.optional().nullable(),
-  wake_time: timeSchema.optional().nullable(),
-  sleep_hours: z.number().min(0).max(24).optional().nullable(),
-})
-const unitStepBodySchema = z.strictObject({
-  step: z.enum(['reading', 'drill', 'complete']),
-  drill_report: optionalText(20000),
-  debrief_answer: optionalText(20000),
-  exam_answers: z.array(z.string().max(20000)).max(200).optional(),
-  exam_self_score: z.number().int().min(0).max(100).optional(),
-  date: optionalDate,
-})
-const maximBodySchema = z.strictObject({
-  source: requiredTrimmedText(1, 500),
-  principle: requiredTrimmedText(1, 4000),
-  naive_reading: optionalText(10000),
-  master_reading: optionalText(10000),
-  my_words: optionalText(10000),
-})
-const myWordsBodySchema = z.strictObject({
-  my_words: optionalText(10000),
-})
-const cardReviewBodySchema = z.strictObject({
-  grade: gradeSchema,
-  date: optionalDate,
-})
-const tongueBodySchema = z.strictObject({
-  situation: requiredTrimmedText(1, 10000),
-  trigger_q: requiredTrimmedText(1, 10000),
-  response: requiredTrimmedText(1, 10000),
-  why_works: optionalTrimmedText(10000),
-  source: optionalTrimmedText(1000),
-  category: responseCategorySchema.optional(),
-})
-const tongueReviewBodySchema = z.strictObject({
-  grade: gradeSchema,
-  mode: tongueModeSchema,
-  date: optionalDate,
-})
-const tongueExamBodySchema = z.strictObject({
-  total: z.number().int().nonnegative(),
-  correct: z.number().int().nonnegative(),
-  date: optionalDate,
-}).refine((body) => body.correct <= body.total)
-const lawCheckBodySchema = z.strictObject({
-  date: dateSchema,
-  kept: z.boolean(),
-  note: optionalText(4000),
-})
-const captureHeatSchema = z.enum(['calm', 'baited', 'proud', 'afraid'])
-const intelBodySchema = z.strictObject({
-  log_date: optionalDate,
-  domain: intelDomainSchema,
-  title: requiredTrimmedText(1, 1000),
-  situation: optionalText(20000),
-  my_move: optionalText(20000),
-  outcome: optionalText(20000),
-  verdict: intelVerdictSchema.optional(),
-  principle_used: optionalText(10000),
-  lesson: optionalText(20000),
-  people: optionalText(4000),
-  // Book 13.2 — capture heat and its required brake.
-  heat: captureHeatSchema.optional(),
-  alternative_explanation: optionalText(2000),
-})
-const agentIntelBodySchema = intelBodySchema.extend({
-  analysis: optionalText(20000),
-}).strict()
-const intelVerdictBodySchema = z.strictObject({
-  verdict: z.enum(['smart', 'dumb', 'neutral']),
-  lesson: optionalText(20000),
-})
-const bookProgressBodySchema = z.strictObject({
-  status: bookStatusSchema.optional(),
-  last_para: z.number().int().nonnegative().optional(),
-  notes: optionalText(20000),
-  date: optionalDate,
-})
-const MODEL_USER_INPUT_CHARS = 16000
-const MODEL_TOTAL_INPUT_CHARS = 48000
-const hermesBodySchema = z.strictObject({
-  message: requiredTrimmedText(1, 20000),
-  date: optionalDate,
-})
-const councilBodySchema = z.strictObject({ date: optionalDate })
-const agentDebriefBodySchema = debriefBodySchema
-const agentBlockLogBodySchema = z.strictObject({
-  block_id: z.number().int().positive(),
-  date: optionalDate,
-  status: blockStatusSchema,
-  note: optionalText(4000),
-})
-const agentMessageBodySchema = z.strictObject({
-  content: requiredTrimmedText(1, 20000),
-  role: hermesRoleSchema.optional(),
-})
+// Schemas extracted to ./schemas (Book 7).
+import {
+  positiveIdSchema,
+  chapterIndexSchema,
+  dateSchema,
+  timeSchema,
+  optionalText,
+  optionalTrimmedText,
+  requiredTrimmedText,
+  optionalDate,
+  gradeSchema,
+  blockStatusSchema,
+  loadReductionReasonSchema,
+  predictionOutcomeSchema,
+  responseCategorySchema,
+  tongueModeSchema,
+  intelDomainSchema,
+  intelVerdictSchema,
+  bookStatusSchema,
+  hermesRoleSchema,
+  passwordBodySchema,
+  tickBodySchema,
+  recoveryBodySchema,
+  catchupBodySchema,
+  blockLogBodySchema,
+  appealBodySchema,
+  loadReductionBodySchema,
+  predictionBodySchema,
+  predictionResolutionBodySchema,
+  debriefBodySchema,
+  unitStepBodySchema,
+  maximBodySchema,
+  myWordsBodySchema,
+  cardReviewBodySchema,
+  tongueBodySchema,
+  tongueReviewBodySchema,
+  tongueExamBodySchema,
+  lawCheckBodySchema,
+  captureHeatSchema,
+  intelBodySchema,
+  agentIntelBodySchema,
+  intelVerdictBodySchema,
+  bookProgressBodySchema,
+  MODEL_USER_INPUT_CHARS,
+  MODEL_TOTAL_INPUT_CHARS,
+  hermesBodySchema,
+  councilBodySchema,
+  agentDebriefBodySchema,
+  agentBlockLogBodySchema,
+  agentMessageBodySchema,
+} from './schemas'
 
 const AGENT_SCOPES = [
   'briefing:read',
@@ -538,34 +394,9 @@ async function safeDate(DB: D1Database, q?: string | null, userId?: number): Pro
 }
 
 // ============ AUTH (durable users + hashed, revocable sessions) ============
-const enc = new TextEncoder()
 const SESSION_DAYS = 30
 
-function bufToHex(buf: ArrayBuffer): string {
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-function randHex(n = 32): string {
-  const a = new Uint8Array(n); crypto.getRandomValues(a)
-  return [...a].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-async function sha256(value: string): Promise<string> {
-  return bufToHex(await crypto.subtle.digest('SHA-256', enc.encode(value)))
-}
-async function csrfToken(rawSessionToken: string): Promise<string> {
-  return sha256(`csrf:${rawSessionToken}`)
-}
-async function pbkdf2(password: string, saltHex: string): Promise<string> {
-  const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map(h => parseInt(h, 16)))
-  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits'])
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256)
-  return bufToHex(bits)
-}
-function timingSafeEq(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let r = 0
-  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return r === 0
-}
+// Crypto primitives extracted to ./crypto (Book 7).
 function sessionCookie(c: any, token: string, maxAge = SESSION_DAYS * 24 * 3600): void {
   setCookie(c, 'wr_session', token, {
     httpOnly: true,
@@ -969,25 +800,7 @@ async function blocksForDate(DB: D1Database, userId: number, date: string) {
 // adherence = Σ(weight × credit) / Σ(weight) over non-zero-weight blocks.
 // Missing a meal no longer equals missing deep work. Context blocks are
 // visible but unscored and unpenalized.
-function dayAdherence(blocks: any[]) {
-  const scored = blocks.filter((b: any) => (b.weight ?? 1) > 0)
-  if (!scored.length) return { pct: 100, done: 0, total: 0, wScore: 0, wTotal: 0, mvdHeld: false, mvdTotal: 0, mvdDone: 0 }
-  let wScore = 0, wTotal = 0, done = 0
-  for (const b of scored) {
-    const w = b.weight ?? 1
-    wTotal += w
-    if (b.log_status === 'done') { wScore += w; done += 1 }
-    else if (b.log_status === 'partial') { wScore += w * 0.5; done += 0.5 }
-  }
-  // MINIMUM VIABLE DAY: nominated CORE blocks — all hit ⇒ HELD THE LINE
-  const mvd = blocks.filter((b: any) => b.is_mvd)
-  const mvdDone = mvd.filter((b: any) => b.log_status === 'done' || b.log_status === 'partial').length
-  const mvdHeld = mvd.length > 0 && mvdDone === mvd.length
-  return {
-    pct: Math.round((wScore / wTotal) * 100), done, total: scored.length,
-    wScore, wTotal, mvdHeld, mvdTotal: mvd.length, mvdDone
-  }
-}
+// dayAdherence extracted to ./scoring (Book 7).
 
 // Structured flag identity — no more message-LIKE matching.
 async function flagExists(
