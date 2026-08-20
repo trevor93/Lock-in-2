@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
 import { setSecurityHeaders } from './security-headers'
 import { addDays, dowOf, isoWeekKey } from './time'
+import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
 type Bindings = {
   DB: D1Database
@@ -119,42 +120,7 @@ app.use(
   }),
 )
 
-class RequestValidationError extends Error {}
-
-function validationFailed(c: any): Response {
-  return c.json({ error: 'VALIDATION FAILED' }, 400)
-}
-
-async function parseJson<T>(c: any, schema: z.ZodType<T>): Promise<T> {
-  let body: unknown
-  try {
-    body = await c.req.json()
-  } catch (_) {
-    throw new RequestValidationError()
-  }
-  const parsed = schema.safeParse(body)
-  if (!parsed.success) throw new RequestValidationError()
-  return parsed.data
-}
-
-async function parseEmptyBody(c: any): Promise<void> {
-  let body: unknown = {}
-  try {
-    const text = await c.req.text()
-    if (text.trim()) body = JSON.parse(text)
-  } catch (_) {
-    throw new RequestValidationError()
-  }
-  if (!emptyBodySchema.safeParse(body).success) {
-    throw new RequestValidationError()
-  }
-}
-
-function parseValue<T>(schema: z.ZodType<T>, value: unknown): T {
-  const parsed = schema.safeParse(value)
-  if (!parsed.success) throw new RequestValidationError()
-  return parsed.data
-}
+// Request validation extracted to ./validation (Book 7).
 
 app.onError((error, c) => {
   if (error instanceof RequestValidationError) return validationFailed(c)
@@ -320,7 +286,6 @@ async function withIdempotency(
   return response
 }
 
-const emptyBodySchema = z.strictObject({})
 const positiveIdSchema = z.string().regex(/^[1-9]\d*$/)
   .transform(Number).refine(Number.isSafeInteger)
 const chapterIndexSchema = z.string().regex(/^(0|[1-9]\d*)$/)
