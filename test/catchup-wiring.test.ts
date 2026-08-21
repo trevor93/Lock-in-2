@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test'
 import { beforeEach, describe, expect, it } from 'vitest'
 import app from '../src/index'
-import clientSource from '../public/static/app.js?raw'
+import clientSource from '../public/static/app/core/shell.js?raw'
 
 const baseEnv = {
   DB: env.DB,
@@ -70,9 +70,16 @@ describe('Book 8.6 — frontend re-entry wiring', () => {
     expect(clientSource).toMatch(/s\.needsCatchup\?/)
     expect(clientSource).toMatch(/runCatchup\(\)/)
   })
-  it('exposes runCatchup and logRecovery', () => {
-    expect(clientSource).toMatch(/window\.runCatchup = runCatchup/)
-    expect(clientSource).toMatch(/window\.logRecovery = logRecovery/)
+  it('wires runCatchup and logRecovery as delegated actions', () => {
+    // Book 7: handlers are no longer window.* globals. They are module exports
+    // reachable through the delegated data-act registry, so the buttons that
+    // trigger re-entry must carry the action names and the registry must map them.
+    expect(clientSource).toMatch(/data-act="runCatchup"/)
+    expect(clientSource).toMatch(/data-act="logRecovery"/)
+    expect(clientSource).toMatch(/runCatchup:\s*\(\)\s*=>\s*runCatchup\(\)/)
+    expect(clientSource).toMatch(/logRecovery:\s*\(\)\s*=>\s*logRecovery\(\)/)
+    expect(clientSource).toMatch(/export (async )?function runCatchup/)
+    expect(clientSource).toMatch(/export (async )?function logRecovery/)
   })
   it('logs recovery through POST /api/recovery', () => {
     expect(clientSource).toMatch(/axios\.post\('\/api\/recovery'/)

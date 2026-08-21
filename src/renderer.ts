@@ -59,15 +59,7 @@ export const SHELL_HTML = `<!DOCTYPE html>
 <canvas id="fx-canvas"></canvas>
 <div id="app"></div>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-<script src="/static/morph.js"></script>
-<script src="/static/fx.js"></script>
-<script src="/static/app.js"></script>
-<script src="/static/app2.js"></script>
-<script src="/static/app3.js"></script>
-<script src="/static/app4.js"></script>
-<script src="/static/app5.js"></script>
-<script src="/static/app6.js"></script>
-<script src="/static/app7.js"></script>
+<script src="/static/bundle.js"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js');}</script>
 </body>
 </html>`

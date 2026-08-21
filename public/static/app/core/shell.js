@@ -1,9 +1,16 @@
+import { S } from './store.js'
+import { morphInto } from './morph.js'
+import { esc, nl2br } from './sanitize.js'
+import { ACTIONS, registerActions, actArgs } from './events.js'
+import { FX } from './fx.js'
+import { renderExtra } from '../features/campaign.js'
+
 /* WAR ROOM — frontend */
 const $ = (s) => document.querySelector(s);
-const app = () => $('#app');
-let TAB = 'now';
-let STATE = null;
-let CSRF_TOKEN = null;
+export const app = () => $('#app');
+// state moved to core/store.js: TAB
+// state moved to core/store.js: STATE
+// state moved to core/store.js: CSRF_TOKEN
 
 // Delivery idempotency (Book 5.7). Each mutating submission is stamped with a
 // request id so the server can recognise a redelivery of the SAME request. The
@@ -13,7 +20,7 @@ let CSRF_TOKEN = null;
 // interceptor only stamps when absent); otherwise each deliberate submission is
 // a distinct request and gets its own id. Same-request write races that are not
 // transport retries stay guarded by their own UNIQUE/conditional-INSERT rules.
-const newRequestId = () => {
+export const newRequestId = () => {
   if (crypto && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().replace(/-/g, '');
   }
@@ -26,9 +33,9 @@ axios.interceptors.request.use((config) => {
   const method = String(config.method || 'get').toLowerCase();
   const url = new URL(config.url || '/', location.origin);
   const mutating = !['get','head','options'].includes(method);
-  if (CSRF_TOKEN && url.origin === location.origin && mutating) {
+  if (S.CSRF_TOKEN && url.origin === location.origin && mutating) {
     config.headers = config.headers || {};
-    config.headers['X-CSRF-Token'] = CSRF_TOKEN;
+    config.headers['X-CSRF-Token'] = S.CSRF_TOKEN;
   }
   if (url.origin === location.origin && mutating) {
     config.headers = config.headers || {};
@@ -40,23 +47,21 @@ axios.interceptors.request.use((config) => {
   return config;
 });
 
-const todayStr = () => {
+export const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
-const nowTime = () => {
+export const nowTime = () => {
   const d = new Date();
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 };
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const nl2br = (s) => esc(s).replace(/\n/g,'<br>');
 
-const CAT_ICON = { morning:'fa-sun', workout:'fa-dumbbell', deepwork:'fa-crosshairs', study:'fa-graduation-cap',
+export const CAT_ICON = { morning:'fa-sun', workout:'fa-dumbbell', deepwork:'fa-crosshairs', study:'fa-graduation-cap',
   meal:'fa-utensils', strategy:'fa-chess-knight', philosophy:'fa-book-open', entertainment:'fa-gamepad',
   skincare:'fa-droplet', admin:'fa-list-check', social:'fa-people-group', review:'fa-pen-nib',
   sleep:'fa-moon', flex:'fa-wind', rest:'fa-leaf' };
 
-async function api(method, url, data) {
+export async function api(method, url, data) {
   try {
     const r = await axios({ method, url, data });
     return r.data;
@@ -68,35 +73,6 @@ async function api(method, url, data) {
   }
 }
 
-/* ============ EVENT DELEGATION (Book 7) ============
-   Inline onclick in generated HTML forces script-src 'unsafe-inline'. Instead one
-   delegated listener maps data-act -> a registered handler, invoked as
-   (event, el, ...args) with args carried as JSON in data-args. Each module
-   registers its own handlers, so no handler needs to be a window.* global. */
-const ACTIONS = {};
-function registerActions(map) { Object.assign(ACTIONS, map); }
-const actArgs = (arr) => esc(JSON.stringify(arr));   // JSON stays valid inside a "double-quoted" attr
-function _dispatchAct(e, attr, el) {
-  const fn = ACTIONS[el.getAttribute(attr)];
-  if (!fn) return;
-  let args = [];
-  const raw = el.getAttribute('data-args');
-  if (raw) { try { args = JSON.parse(raw); } catch (_) { args = []; } }
-  fn(e, el, ...args);
-}
-document.addEventListener('click', (e) => {
-  const el = e.target && e.target.closest && e.target.closest('[data-act]');
-  if (el) _dispatchAct(e, 'data-act', el);
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  const el = e.target && e.target.closest && e.target.closest('[data-act-enter]');
-  if (el) _dispatchAct(e, 'data-act-enter', el);
-});
-document.addEventListener('change', (e) => {
-  const el = e.target && e.target.closest && e.target.closest('[data-act-change]');
-  if (el) _dispatchAct(e, 'data-act-change', el);
-});
 registerActions({
   doLogin:     (e, el, isSetup) => doLogin(isSetup),
   ackFlag:     (e, el, id) => ackFlag(id),
@@ -107,12 +83,12 @@ registerActions({
   loadLaws:    () => loadLaws(),
   checkLaw:    (e, el, id, kept) => checkLaw(id, kept),
   logRecovery: () => logRecovery(),
-  setTab:      (e, el, tab) => { TAB = tab; render(); },
+  setTab:      (e, el, tab) => { S.TAB = tab; render(); },
   dismissId:   (e, el, id) => { const t = document.getElementById(id); if (t) t.remove(); },
 });
 
 /* ============ AUTH GATE ============ */
-function renderLogin(isSetup) {
+export function renderLogin(isSetup) {
   FX.killSplash && FX.killSplash();
   app().innerHTML = `
   <main class="max-w-lg mx-auto px-4 min-h-screen flex flex-col justify-center" id="login-screen">
@@ -132,39 +108,38 @@ function renderLogin(isSetup) {
   </main>`;
   setTimeout(()=>{ const el=$('#login-pass'); if(el) el.focus(); }, 50);
 }
-async function doLogin(isSetup) {
+export async function doLogin(isSetup) {
   const pass = $('#login-pass').value;
   try {
     const auth = await axios.post(isSetup?'/api/auth/setup':'/api/auth/login', { password: pass });
-    CSRF_TOKEN = auth.data.csrfToken;
+    S.CSRF_TOKEN = auth.data.csrfToken;
     FX.success && FX.success();
     await loadState(); render();
   } catch (e) {
     toast(e?.response?.data?.error || 'Login failed', true);
   }
 }
-window.doLogin = doLogin;
 
-function toast(msg, bad=false) { FX.toast(msg, bad?'bad':'ok'); }
+export function toast(msg, bad=false) { FX.toast(msg, bad?'bad':'ok'); }
 
 // POST /api/tick = the ONLY engine crank. Server derives date/time from the
 // stored timezone — the client clock is advisory (sent once to set the tz).
-let TZ_SENT = false;
-async function loadState() {
-  const body = TZ_SENT ? {} : { tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || null) };
-  STATE = (await axios.post('/api/tick', body)).data;
-  TZ_SENT = true;
+// state moved to core/store.js: TZ_SENT
+export async function loadState() {
+  const body = S.TZ_SENT ? {} : { tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || null) };
+  S.STATE = (await axios.post('/api/tick', body)).data;
+  S.TZ_SENT = true;
 }
 
-function tabBadge(id) {
-  const s = STATE; if (!s) return 0;
+export function tabBadge(id) {
+  const s = S.STATE; if (!s) return 0;
   if (id==='now')  return s.flags.length;
   if (id==='mind') return s.dueCards||0;
   if (id==='tongue') return s.dueTongue||0;
   if (id==='debrief') return s.debriefDoneToday ? 0 : (new Date().getHours()>=20 ? 1 : 0);
   return 0;
 }
-function shell(content) {
+export function shell(content) {
   const tabs = [
     ['now','fa-crosshairs','NOW'],
     ['today','fa-calendar-day','DAY'],
@@ -182,18 +157,18 @@ function shell(content) {
       ${tabs.map(([id,ic,label])=>{
         const badge = tabBadge(id);
         return `
-        <button class="tab-btn ${TAB===id?'active':''}" data-tab="${id}">
+        <button class="tab-btn ${S.TAB===id?'active':''}" data-tab="${id}">
           ${badge?`<span class="tab-badge">${badge>9?'9+':badge}</span>`:''}
           <i class="fas ${ic}"></i>${label}
         </button>`;}).join('')}
     </nav>`;
-  if (window.morphInto) window.morphInto(app(), markup); else app().innerHTML = markup;
-  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ FX.tap(); TAB=b.dataset.tab; render(); window.scrollTo({top:0}); });
+  morphInto(app(), markup);
+  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ FX.tap(); S.TAB=b.dataset.tab; render(); window.scrollTo({top:0}); });
   FX.countUpAll();
 }
 
-function header() {
-  const s = STATE;
+export function header() {
+  const s = S.STATE;
   const flagCount = s.flags.length;
   const rank = FX.rank(s.points);
   return `
@@ -225,12 +200,12 @@ function header() {
   </header>`;
 }
 
-function flagsPanel() {
-  if (!STATE.flags.length) return '';
+export function flagsPanel() {
+  if (!S.STATE.flags.length) return '';
   return `
   <section id="honesty-flags" class="mb-3 fade-in">
     <h2 class="font-disp font-bold text-sm tracking-widest text-red-400 mb-1.5"><i class="fas fa-triangle-exclamation"></i> HONESTY ENGINE — UNRESOLVED</h2>
-    ${STATE.flags.map(f=>`
+    ${S.STATE.flags.map(f=>`
       <article class="card sev-${f.severity} p-3 mb-2">
         <p class="text-xs leading-relaxed text-gray-300">${esc(f.message)}</p>
         <button class="btn mt-2 text-[11px] px-3 py-1.5 bg-gray-800 text-gray-300 border border-line" data-act="ackFlag" data-args="${actArgs([f.id])}">
@@ -239,17 +214,17 @@ function flagsPanel() {
       </article>`).join('')}
   </section>`;
 }
-async function ackFlag(id){ await api('post',`/api/flags/${id}/ack`); await loadState(); render(); }
+export async function ackFlag(id){ await api('post',`/api/flags/${id}/ack`); await loadState(); render(); }
 
 /* ================= NOW TAB ================= */
-function statusBtns(b, compact=false) {
+export function statusBtns(b, compact=false) {
   const st = b.log_status;
   if (st === 'missed') {
-    const canAppeal = STATE && STATE.appealAvailable;
+    const canAppeal = S.STATE && S.STATE.appealAvailable;
     return `<span class="pill" style="background:rgba(153,27,27,.25);color:#f87171;border:1px solid rgba(220,38,38,.45);letter-spacing:.12em">
       <i class="fas fa-ban text-[9px]"></i>CANCELED</span>${canAppeal?`
     <button class="btn px-2 py-1 text-[9px] bg-gray-800/60 border border-gold/40 text-gold ml-1" title="Use this week's appeal token"
-      data-act="appealBlock" data-args="${actArgs([b.id, STATE.date, b.title])}"><i class="fas fa-gavel"></i></button>`:''}`;
+      data-act="appealBlock" data-args="${actArgs([b.id, S.STATE.date, b.title])}"><i class="fas fa-gavel"></i></button>`:''}`;
   }
   const mk = (val, ic, cls, active) => `
     <button class="btn ${compact?'px-2.5 py-1.5 text-[11px]':'px-3 py-2 text-xs'} ${active?cls:'bg-gray-800/60 text-gray-500 border border-line'}"
@@ -260,9 +235,9 @@ function statusBtns(b, compact=false) {
     ${mk('skipped','fa-xmark','bg-red-800 text-white', st==='skipped')}
   </div>`;
 }
-async function logBlock(id, status, ev){
+export async function logBlock(id, status, ev){
   const el = ev && ev.target ? ev.target.closest('button') : null;
-  const b = (STATE.blocks||[]).find(x=>x.id===id);
+  const b = (S.STATE.blocks||[]).find(x=>x.id===id);
   try {
     await api('post',`/api/blocks/${id}/log`,{status}); // date is server-derived
   } catch(e) {
@@ -271,13 +246,13 @@ async function logBlock(id, status, ev){
   if (status==='done') { FX.success(); if (b) FX.floatDelta(b.points, el); }
   else if (status==='skipped') FX.fail();
   await loadState(); render();
-  if (status==='done' && STATE.adherence && STATE.adherence.pct>=100) {
+  if (status==='done' && S.STATE.adherence && S.STATE.adherence.pct>=100) {
     FX.confetti({count:130}); FX.toast('FULL DAY CONQUERED — 100% ADHERENCE','gold');
   }
 }
 
-function viewNow() {
-  const s = STATE, c = s.current, n = s.next;
+export function viewNow() {
+  const s = S.STATE, c = s.current, n = s.next;
   const adh = s.adherence;
   const adhColor = adh.pct>=80?'#22c55e':adh.pct>=50?'#f59e0b':'#dc2626';
   return `${header()}${flagsPanel()}
@@ -377,16 +352,16 @@ function viewNow() {
 }
 
 /* ================= TODAY TAB ================= */
-let LAWS_CACHE = null;
-function viewToday() {
+// state moved to core/store.js: LAWS_CACHE
+export function viewToday() {
   const nowMin = (() => { const [h,m]=nowTime().split(':').map(Number); return h*60+m; })();
   return `${header()}
   <section id="today-schedule" class="fade-in">
     <div class="sect">FULL DAY PLAN — ${dowLabel()}</div>
     <div class="relative" style="padding-left:14px">
     <div class="absolute top-2 bottom-2" style="left:4px;width:2px;background:linear-gradient(180deg,rgba(212,175,55,.4),rgba(29,41,66,.6))"></div>
-    ${STATE.blocks.map(b=>{
-      const isNow = STATE.current && STATE.current.id===b.id;
+    ${S.STATE.blocks.map(b=>{
+      const isNow = S.STATE.current && S.STATE.current.id===b.id;
       const done = b.log_status==='done', part = b.log_status==='partial', skip = b.log_status==='skipped', missed = b.log_status==='missed';
       const [sh,sm] = b.start_time.split(':').map(Number);
       const past = (sh*60+sm) < nowMin && !isNow;
@@ -412,15 +387,15 @@ function viewToday() {
       </article>`;
     }).join('')}
     </div>
-    <div id="laws-panel" class="mt-4">${LAWS_CACHE?renderLaws():'<button class="btn w-full p-3 bg-panel border border-line text-sm" data-act="loadLaws"><i class="fas fa-scale-balanced mr-1 text-gold"></i> CHECK THE 7 LAWS (tonight)</button>'}</div>
+    <div id="laws-panel" class="mt-4">${S.LAWS_CACHE?renderLaws():'<button class="btn w-full p-3 bg-panel border border-line text-sm" data-act="loadLaws"><i class="fas fa-scale-balanced mr-1 text-gold"></i> CHECK THE 7 LAWS (tonight)</button>'}</div>
   </section>`;
 }
-function dowLabel(){ return ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'][new Date().getDay()]; }
-async function loadLaws(){ LAWS_CACHE = (await axios.get(`/api/laws?date=${todayStr()}`)).data; render(); }
-function renderLaws() {
+export function dowLabel(){ return ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'][new Date().getDay()]; }
+export async function loadLaws(){ S.LAWS_CACHE = (await axios.get(`/api/laws?date=${todayStr()}`)).data; render(); }
+export function renderLaws() {
   return `
   <h2 class="font-disp font-bold text-sm tracking-widest text-gray-400 mb-2"><i class="fas fa-scale-balanced text-gold"></i> THE 7 LAWS — DID THEY HOLD TODAY?</h2>
-  ${LAWS_CACHE.map(l=>`
+  ${S.LAWS_CACHE.map(l=>`
     <article class="card p-3 mb-2">
       <div class="flex items-start gap-2">
         <span class="font-disp font-bold text-gold text-lg leading-none">${l.sort_order}</span>
@@ -435,17 +410,17 @@ function renderLaws() {
       </div>
     </article>`).join('')}`;
 }
-async function checkLaw(id, kept){
+export async function checkLaw(id, kept){
   await api('post',`/api/laws/${id}/check`,{date:todayStr(),kept});
   await loadLaws();
 }
 
-async function answerLR(id, reason){
+export async function answerLR(id, reason){
   const r = await api('post',`/api/load-reductions/${id}/answer`,{reason});
   if (r.advice) FX.toast(r.advice, 'gold');
   await loadState(); render();
 }
-async function appealBlock(blockId, blockDate, title){
+export async function appealBlock(blockId, blockDate, title){
   const reason = prompt('APPEAL — “'+title+'” ('+blockDate+')\n\nOne token per week. The reason goes on the PERMANENT record and must be at least 100 characters. What actually happened?');
   if (reason===null) return;
   try {
@@ -454,19 +429,16 @@ async function appealBlock(blockId, blockDate, title){
     await loadState(); render();
   } catch(_){}
 }
-window.ackFlag=ackFlag; window.logBlock=logBlock; window.loadLaws=loadLaws; window.checkLaw=checkLaw;
-window.answerLR=answerLR; window.appealBlock=appealBlock;
 
 /* render dispatcher — extended by app2.js */
-function render() {
-  if (TAB==='now') shell(viewNow());
-  else if (TAB==='today') shell(viewToday());
-  else if (window.renderExtra) window.renderExtra(TAB);
+export function render() {
+  if (S.TAB==='now') shell(viewNow());
+  else if (S.TAB==='today') shell(viewToday());
+  else renderExtra(S.TAB);
 }
-window.render = render;
 
 /* ============ /catchup — the re-entry door (Book 8.6) ============ */
-async function runCatchup() {
+export async function runCatchup() {
   let p;
   try { p = (await axios.post('/api/catchup', {})).data; }
   catch (e) { toast('Could not reach the re-entry protocol.', true); return; }
@@ -503,9 +475,8 @@ async function runCatchup() {
     '</div>';
   document.body.appendChild(el);
 }
-window.runCatchup = runCatchup;
 
-async function logRecovery() {
+export async function logRecovery() {
   const action = prompt('MINIMUM VIABLE RECOVERY\n\nThe single action you just took that restores agency. One line. This makes today a non-broken day — it is survival, not a victory.');
   if (!action || !action.trim()) return;
   try {
@@ -518,13 +489,12 @@ async function logRecovery() {
     toast(e?.response?.data?.error || 'Could not log recovery.', true);
   }
 }
-window.logRecovery = logRecovery;
 
 /* live countdown inside the NOW hero (updates every second, no re-render) */
 setInterval(()=>{
   const el = document.getElementById('block-countdown');
-  if (!el || !STATE || !STATE.current) return;
-  const [eh,em] = STATE.current.end_time.split(':').map(Number);
+  if (!el || !S.STATE || !S.STATE.current) return;
+  const [eh,em] = S.STATE.current.end_time.split(':').map(Number);
   const end = new Date(); end.setHours(eh,em,0,0);
   let diff = Math.floor((end - new Date())/1000);
   if (diff < 0) { el.textContent = 'BLOCK ENDED — LOG IT'; return; }
@@ -537,7 +507,7 @@ setInterval(()=>{
     const st = (await axios.get('/api/auth/status')).data;
     if (!st.setup) { renderLogin(true); FX.killSplash(); return; }
     if (!st.authed) { renderLogin(false); FX.killSplash(); return; }
-    CSRF_TOKEN = st.csrfToken;
+    S.CSRF_TOKEN = st.csrfToken;
     await loadState(); render();
   }
   catch(e){ app().innerHTML = `<div class="p-6 text-center text-red-400 text-sm">Failed to load the war room. Pull to refresh.<br>${esc(e.message||'')}</div>`; }
@@ -552,16 +522,16 @@ setInterval(()=>{
    ETag /api/version probe so an unchanged server answers 304 with no body.
    Countdowns are already local (see the 1s ticker above), so the clock stays
    live with no network at all. */
-let LAST_VERSION = null;
-let VERSION_IN_FLIGHT = false;
-let BOUNDARY_TIMER = null;
+// state moved to core/store.js: LAST_VERSION
+// state moved to core/store.js: VERSION_IN_FLIGHT
+// state moved to core/store.js: BOUNDARY_TIMER
 
-async function checkVersion({ force = false } = {}) {
-  if (VERSION_IN_FLIGHT) return false;
-  VERSION_IN_FLIGHT = true;
+export async function checkVersion({ force = false } = {}) {
+  if (S.VERSION_IN_FLIGHT) return false;
+  S.VERSION_IN_FLIGHT = true;
   try {
     const headers = {};
-    if (LAST_VERSION && !force) headers['If-None-Match'] = `W/"${LAST_VERSION}"`;
+    if (S.LAST_VERSION && !force) headers['If-None-Match'] = `W/"${S.LAST_VERSION}"`;
     const res = await axios.get('/api/version', {
       headers,
       // 304 is a valid, expected answer — not an error.
@@ -569,34 +539,33 @@ async function checkVersion({ force = false } = {}) {
     });
     if (res.status === 304) return false;
     const next = res.data && res.data.version;
-    const changed = next !== LAST_VERSION;
-    LAST_VERSION = next || LAST_VERSION;
+    const changed = next !== S.LAST_VERSION;
+    S.LAST_VERSION = next || S.LAST_VERSION;
     return changed;
   } catch (_) {
     return false;                 // offline: keep showing the last good state
   } finally {
-    VERSION_IN_FLIGHT = false;
+    S.VERSION_IN_FLIGHT = false;
   }
 }
 
-async function refreshIfStale(opts) {
-  if (!STATE) return;
+export async function refreshIfStale(opts) {
+  if (!S.STATE) return;
   if (await checkVersion(opts)) {
     try { await loadState(); render(); } catch (_) {}
   }
   scheduleBoundaryCheck();
 }
-window.refreshIfStale = refreshIfStale;
 
 /* Wake exactly once per upcoming block boundary (start or end + grace), not on
    a fixed interval. If nothing is near, sleep until the next minute rollover
    so the day can turn over cleanly. */
-function scheduleBoundaryCheck() {
-  if (BOUNDARY_TIMER) { clearTimeout(BOUNDARY_TIMER); BOUNDARY_TIMER = null; }
+export function scheduleBoundaryCheck() {
+  if (S.BOUNDARY_TIMER) { clearTimeout(S.BOUNDARY_TIMER); S.BOUNDARY_TIMER = null; }
   const now = new Date();
   const minsNow = now.getHours() * 60 + now.getMinutes();
   let nextMins = null;
-  for (const b of (STATE && STATE.blocks) || []) {
+  for (const b of (S.STATE && S.STATE.blocks) || []) {
     for (const hhmm of [b.start_time, b.end_time]) {
       if (!hhmm) continue;
       const [h, m] = String(hhmm).split(':').map(Number);
@@ -608,10 +577,10 @@ function scheduleBoundaryCheck() {
   // Cap the wait so midnight rollover and grace-period cancels are still seen.
   const minutesAway = nextMins === null ? 10 : Math.min(nextMins - minsNow, 10);
   const ms = Math.max(20000, minutesAway * 60000 - now.getSeconds() * 1000 + 2000);
-  BOUNDARY_TIMER = setTimeout(() => { refreshIfStale(); }, ms);
+  S.BOUNDARY_TIMER = setTimeout(() => { refreshIfStale(); }, ms);
 }
 
-function startFreshnessWatch() {
+export function startFreshnessWatch() {
   checkVersion({ force: true });                 // seed the version
   scheduleBoundaryCheck();
   // Coming back to the app is the strongest signal that state may have moved.
@@ -627,7 +596,7 @@ function startFreshnessWatch() {
 axios.interceptors.response.use((res) => {
   const method = String(res.config && res.config.method || 'get').toLowerCase();
   if (!['get','head','options'].includes(method) && res.status >= 200 && res.status < 300) {
-    LAST_VERSION = null;          // force the next probe to report a change
+    S.LAST_VERSION = null;          // force the next probe to report a change
   }
   return res;
 });
@@ -642,15 +611,14 @@ document.addEventListener('input', (e) => {
     try { localStorage.setItem('wr_draft_' + t.id, t.value); } catch(_) {}
   }
 });
-function restoreDrafts(root) {
+export function restoreDrafts(root) {
   (root || document).querySelectorAll('textarea[id], input[id]').forEach(el => {
     if (el.value) return; // server-filled value wins
     const v = localStorage.getItem('wr_draft_' + el.id);
     if (v !== null && v !== '') el.value = v;
   });
 }
-function clearDrafts(ids) { ids.forEach(id => localStorage.removeItem('wr_draft_' + id)); }
-window.restoreDrafts = restoreDrafts; window.clearDrafts = clearDrafts;
+export function clearDrafts(ids) { ids.forEach(id => localStorage.removeItem('wr_draft_' + id)); }
 /* auto-restore after each render */
 const _origShell = shell;
 shell = function(content) { _origShell(content); setTimeout(()=>restoreDrafts(), 0); };

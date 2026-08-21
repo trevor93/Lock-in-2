@@ -1,5 +1,6 @@
+
 /* WAR ROOM — FX ENGINE: confetti, haptics, count-up, rings, ranks, sounds */
-const FX = {
+export const FX = {
   // ── Haptics (Android Chrome) ──
   tap()      { try { navigator.vibrate && navigator.vibrate(12); } catch(e){} },
   success()  { try { navigator.vibrate && navigator.vibrate([18, 40, 30]); } catch(e){} },
@@ -150,4 +151,4 @@ const FX = {
     if (s) setTimeout(()=>{ s.classList.add('gone'); setTimeout(()=>s.remove(), 700); }, 650);
   },
 };
-window.FX = FX;
+

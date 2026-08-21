@@ -1,7 +1,13 @@
-/* WAR ROOM — THE COUNCIL: Life Intel + Hermes autonomous counsel */
-let INTEL = null, HERMES_HIST = null, COUNCIL_MODE = 'hermes', INTEL_OPEN = false;
+import { S } from '../core/store.js'
+import { FX } from '../core/fx.js'
+import { api, header, loadState, render, toast, todayStr } from '../core/shell.js'
+import { registerActions } from '../core/events.js'
+import { esc, nl2br } from '../core/sanitize.js'
 
-const DOMAINS = [
+/* WAR ROOM — THE COUNCIL: Life Intel + Hermes autonomous counsel */
+// state moved to core/store.js: INTEL, HERMES_HIST, COUNCIL_MODE, INTEL_OPEN
+
+export const DOMAINS = [
   ['loyalty', 'Loyalty', 'fa-handshake'], ['family', 'Family', 'fa-house-chimney'],
   ['friends', 'Friends', 'fa-user-group'], ['network', 'Network', 'fa-diagram-project'],
   ['community', 'Community/Society', 'fa-city'], ['neighbours', 'Neighbours', 'fa-door-open'],
@@ -11,29 +17,29 @@ const DOMAINS = [
   ['dumb_move', 'Dumb Move (owned)', 'fa-face-flushed'], ['workaround', 'Smart Workaround', 'fa-screwdriver-wrench'],
   ['wisdom', 'Wisdom / Saying', 'fa-scroll'], ['other', 'Other', 'fa-ellipsis']
 ];
-const domainMeta = (d) => DOMAINS.find(x => x[0] === d) || DOMAINS[DOMAINS.length - 1];
+export const domainMeta = (d) => DOMAINS.find(x => x[0] === d) || DOMAINS[DOMAINS.length - 1];
 
-function viewCouncil() {
+export function viewCouncil() {
   return header() +
   '<section id="council-section" class="fade-in">' +
     '<button class="btn w-full p-2 mb-3 text-xs font-bold bg-panel border border-line text-gray-300" data-act="copyBrief"><i class="fas fa-clipboard-list mr-1"></i>COPY SESSION CONTINUITY BRIEF</button>' +
     '<div class="flex gap-2 mb-3">' +
-      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'hermes' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;hermes&quot;]"><i class="fas fa-user-secret mr-1"></i>HERMES</button>' +
-      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'intel' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;intel&quot;]"><i class="fas fa-folder-open mr-1"></i>LIFE INTEL (' + (INTEL ? INTEL.length : 0) + ')</button>' +
+      '<button class="btn flex-1 p-2 text-xs font-bold ' + (S.COUNCIL_MODE === 'hermes' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;hermes&quot;]"><i class="fas fa-user-secret mr-1"></i>HERMES</button>' +
+      '<button class="btn flex-1 p-2 text-xs font-bold ' + (S.COUNCIL_MODE === 'intel' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;intel&quot;]"><i class="fas fa-folder-open mr-1"></i>LIFE INTEL (' + (S.INTEL ? S.INTEL.length : 0) + ')</button>' +
     '</div>' +
-    (COUNCIL_MODE === 'hermes' ? viewHermes() : viewIntel()) +
+    (S.COUNCIL_MODE === 'hermes' ? viewHermes() : viewIntel()) +
   '</section>';
 }
 
 /* ============ HERMES CHAT ============ */
-let BRIDGE_CREDENTIAL = null, BRIDGE_CREDENTIALS = [];
-const DEFAULT_BRIDGE_SCOPES = [
+// state moved to core/store.js: BRIDGE_CREDENTIAL, BRIDGE_CREDENTIALS
+export const DEFAULT_BRIDGE_SCOPES = [
   'briefing:read', 'blocks:read', 'blocks:write', 'debriefs:read',
   'debriefs:write', 'intel:read', 'intel:write', 'hermes:write'
 ];
-async function showBridge() {
+export async function showBridge() {
   const url = location.origin;
-  BRIDGE_CREDENTIALS = await api('get', '/api/agent/credentials');
+  S.BRIDGE_CREDENTIALS = await api('get', '/api/agent/credentials');
   const el = document.createElement('div');
   el.className = 'fixed inset-0 z-[300] bg-black/80 flex items-center justify-center p-4';
   el.innerHTML = '<div class="card p-4 max-w-md w-full max-h-[85vh] overflow-y-auto border-gold/40">' +
@@ -42,13 +48,13 @@ async function showBridge() {
     '<label class="text-[10px] font-bold text-gray-400">DEVICE LABEL</label>' +
     '<input id="bridge-device-label" maxlength="100" placeholder="Termux phone" class="w-full mb-2">' +
     '<button class="btn w-full p-2 mb-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" data-act="issueBridge">ISSUE DEFAULT BRIDGE CREDENTIAL</button>' +
-    (BRIDGE_CREDENTIAL
+    (S.BRIDGE_CREDENTIAL
       ? '<p class="text-[10px] font-bold text-gray-400">RAW CREDENTIAL — COPY NOW:</p>' +
-        '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" data-act="copyCred">' + esc(BRIDGE_CREDENTIAL.token) + '</div>' +
+        '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" data-act="copyCred">' + esc(S.BRIDGE_CREDENTIAL.token) + '</div>' +
         '<p class="text-[10px] text-amber-300 mb-2">Shown once. The server stores only its hash.</p>'
       : '<div class="card p-2 mb-2 text-[10px] text-gray-400">No raw credential is retrievable. Issue one and copy it before closing.</div>') +
     '<p class="text-[10px] font-bold text-gray-400">ACTIVE / REVOKED DEVICES:</p>' +
-    '<div class="mb-2">' + (BRIDGE_CREDENTIALS.length ? BRIDGE_CREDENTIALS.map(function(c) {
+    '<div class="mb-2">' + (S.BRIDGE_CREDENTIALS.length ? S.BRIDGE_CREDENTIALS.map(function(c) {
       return '<div class="card p-2 mb-1 text-[10px]"><div class="flex justify-between gap-2"><span><b>' + esc(c.deviceLabel) + '</b><br><span class="font-mono text-gray-500">' + esc(c.tokenPrefix) + '…</span><br><span class="text-gray-500">' + esc(c.scopes.join(', ')) + '</span></span>' +
         (c.revokedAt ? '<span class="text-red-400">REVOKED</span>' : '<button class="btn px-2 border border-red-700 text-red-300" data-act="revokeBridge" data-args="[' + c.id + ']">REVOKE</button>') + '</div></div>';
     }).join('') : '<p class="text-[10px] text-gray-500">No credentials issued.</p>') + '</div>' +
@@ -59,32 +65,31 @@ async function showBridge() {
     '</div>';
   document.body.appendChild(el);
 }
-async function issueBridgeCredential(btn) {
+export async function issueBridgeCredential(btn) {
   const label = ($('#bridge-device-label').value || '').trim();
   if (!label) return toast('Give this device a label.', true);
-  BRIDGE_CREDENTIAL = await api('post', '/api/agent/credentials', {
+  S.BRIDGE_CREDENTIAL = await api('post', '/api/agent/credentials', {
     deviceLabel: label, scopes: DEFAULT_BRIDGE_SCOPES, expiresInDays: 90
   });
   toast('Credential issued. Copy it now.');
   btn.closest('.fixed').remove(); await showBridge();
 }
-async function revokeBridgeCredential(id, btn) {
+export async function revokeBridgeCredential(id, btn) {
   await api('post', '/api/agent/credentials/' + id + '/revoke');
   toast('Credential revoked.');
   btn.closest('.fixed').remove(); await showBridge();
 }
-window.showBridge = showBridge;
-window.issueBridgeCredential = issueBridgeCredential;
-window.revokeBridgeCredential = revokeBridgeCredential;
 
-function viewHermes() {
+
+
+export function viewHermes() {
   return '<div class="card p-3 mb-3 border-gold/30">' +
     '<p class="text-[10px] text-gray-500 leading-relaxed"><span class="text-gold font-bold">HERMES</span> reads your ENTIRE file live: every debrief, honesty flag, drill report, and life-intel move. He answers with named principles, calls out your patterns, and never flatters. Ask him anything — loyalty, money moves, classmates, reading manipulations, your next play.</p>' +
     '<button class="btn w-full p-2.5 mt-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" data-act="convene"><i class="fas fa-chess-king mr-1"></i> CONVENE MORNING WAR COUNCIL (auto-review of my file)</button>' +
     '<button class="btn w-full p-2.5 mt-2 bg-indigo-900/50 border border-indigo-700 text-indigo-200 text-xs font-bold" data-act="showBridge"><i class="fas fa-terminal mr-1"></i> HERMES BRIDGE — connect Termux / Telegram / CLI agent</button>' +
   '</div>' +
   '<div id="hermes-log" class="mb-3 flex flex-col gap-2">' +
-    (HERMES_HIST && HERMES_HIST.length ? HERMES_HIST.map(m => {
+    (S.HERMES_HIST && S.HERMES_HIST.length ? S.HERMES_HIST.map(m => {
       const isH = m.role === 'assistant';
       const typing = isH && !m.created_at;
       return '<div class="bubble ' + (isH ? 'bubble-hermes' : 'bubble-me') + ' fade-in">' +
@@ -101,7 +106,7 @@ function viewHermes() {
   '</div>';
 }
 
-function mdLite(s) {
+export function mdLite(s) {
   return esc(s)
     .replace(/\*\*(.+?)\*\*/g, '<strong class="text-gold">$1</strong>')
     .replace(/^### (.+)$/gm, '<p class="font-bold text-gold mt-1">$1</p>')
@@ -113,41 +118,41 @@ function mdLite(s) {
     .replace(/\n/g, '<br>');
 }
 
-async function askHermes() {
+export async function askHermes() {
   const el = $('#hermes-input');
   const msg = el.value.trim();
   if (!msg) { toast('Say something, Commander.', true); return; }
   el.value = '';
-  HERMES_HIST = HERMES_HIST || [];
-  HERMES_HIST.push({ role: 'user', content: msg, created_at: new Date().toISOString() });
-  HERMES_HIST.push({ role: 'assistant', content: '', created_at: '' });
+  S.HERMES_HIST = S.HERMES_HIST || [];
+  S.HERMES_HIST.push({ role: 'user', content: msg, created_at: new Date().toISOString() });
+  S.HERMES_HIST.push({ role: 'assistant', content: '', created_at: '' });
   render();
   try {
     const r = await api('post', '/api/hermes', { message: msg, date: todayStr() });
-    HERMES_HIST[HERMES_HIST.length - 1] = { role: 'assistant', content: r.answer, created_at: new Date().toISOString() };
+    S.HERMES_HIST[S.HERMES_HIST.length - 1] = { role: 'assistant', content: r.answer, created_at: new Date().toISOString() };
   } catch (e) {
-    HERMES_HIST.pop();
+    S.HERMES_HIST.pop();
   }
   render();
   window.scrollTo(0, document.body.scrollHeight);
 }
 
-async function convene() {
+export async function convene() {
   toast('Hermes is reviewing your complete file…');
-  HERMES_HIST = HERMES_HIST || [];
-  HERMES_HIST.push({ role: 'assistant', content: '…convening the war council, reading every debrief, flag, and intel entry…', created_at: '' });
+  S.HERMES_HIST = S.HERMES_HIST || [];
+  S.HERMES_HIST.push({ role: 'assistant', content: '…convening the war council, reading every debrief, flag, and intel entry…', created_at: '' });
   render();
   try {
     const r = await api('post', '/api/hermes/council', { date: todayStr() });
-    HERMES_HIST[HERMES_HIST.length - 1] = { role: 'assistant', content: '[MORNING WAR COUNCIL]\n' + r.answer, created_at: new Date().toISOString() };
-  } catch (e) { HERMES_HIST.pop(); }
+    S.HERMES_HIST[S.HERMES_HIST.length - 1] = { role: 'assistant', content: '[MORNING WAR COUNCIL]\n' + r.answer, created_at: new Date().toISOString() };
+  } catch (e) { S.HERMES_HIST.pop(); }
   render();
 }
 
 /* ============ LIFE INTEL ============ */
-function viewIntel() {
+export function viewIntel() {
   let h = '<button class="btn w-full p-2.5 mb-3 bg-emerald-900/50 border border-emerald-700 text-emerald-200 text-xs font-bold" data-act="toggleIntel"><i class="fas fa-plus mr-1"></i> FILE NEW INTEL — a move, a read, a lesson (+15)</button>';
-  if (INTEL_OPEN) {
+  if (S.INTEL_OPEN) {
     h += '<div class="card p-3 mb-3 fade-in">' +
       '<label class="text-[10px] font-bold text-gray-400">DOMAIN</label>' +
       '<select id="in-domain" class="mb-1.5">' + DOMAINS.map(d => '<option value="' + d[0] + '">' + d[1] + '</option>').join('') + '</select>' +
@@ -165,8 +170,8 @@ function viewIntel() {
       '<button class="btn w-full p-2.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" data-act="fileIntel">FILE INTO THE RECORD</button>' +
     '</div>';
   }
-  if (!INTEL || !INTEL.length) return h + '<div class="card p-4 text-center text-xs text-gray-500">The record is empty. Every real-world move you file becomes ammunition: Hermes cross-references all of it, and patterns emerge that you cannot see alone.</div>';
-  h += INTEL.map(e => {
+  if (!S.INTEL || !S.INTEL.length) return h + '<div class="card p-4 text-center text-xs text-gray-500">The record is empty. Every real-world move you file becomes ammunition: Hermes cross-references all of it, and patterns emerge that you cannot see alone.</div>';
+  h += S.INTEL.map(e => {
     const dm = domainMeta(e.domain);
     const vcls = e.verdict === 'smart' ? 'bg-emerald-950 text-emerald-300' : e.verdict === 'dumb' ? 'bg-red-950 text-red-300' : 'bg-gray-800 text-gray-400';
     return '<details class="card p-3 mb-2">' +
@@ -191,7 +196,7 @@ function viewIntel() {
   return h;
 }
 
-async function fileIntel() {
+export async function fileIntel() {
   const heatEl = $('#in-heat'); const altEl = $('#in-alt');
   const heat = heatEl ? heatEl.value : 'calm';
   const alt = altEl ? altEl.value.trim() : '';
@@ -208,20 +213,19 @@ async function fileIntel() {
   if (heat && heat !== 'calm') b.alternative_explanation = alt;
   await api('post', '/api/intel', b);
   FX.success(); FX.toast('INTEL FILED INTO THE RECORD  +15 — Hermes now knows','gold');
-  INTEL_OPEN = false;
-  INTEL = (await axios.get('/api/intel')).data;
+  S.INTEL_OPEN = false;
+  S.INTEL = (await axios.get('/api/intel')).data;
   await loadState(); render();
 }
 
-async function analyzeIntel(id) {
+export async function analyzeIntel(id) {
   toast('Hermes is analyzing the move…');
   await api('post', '/api/intel/' + id + '/analyze', {});
-  INTEL = (await axios.get('/api/intel')).data;
+  S.INTEL = (await axios.get('/api/intel')).data;
   render();
 }
 
-window.viewCouncil = viewCouncil; window.askHermes = askHermes; window.convene = convene;
-async function copyContinuityBrief() {
+export async function copyContinuityBrief() {
   try {
     const res = await axios.get('/api/continuity-brief', { responseType: 'text' });
     const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
@@ -233,20 +237,19 @@ async function copyContinuityBrief() {
     }
   } catch (e) { toast('Could not generate the continuity brief.', true); }
 }
-window.copyContinuityBrief = copyContinuityBrief;
-window.fileIntel = fileIntel; window.analyzeIntel = analyzeIntel;
+
 
 registerActions({
   copyBrief:      () => copyContinuityBrief(),
-  setCouncilMode: (e, el, mode) => { COUNCIL_MODE = mode; render(); },
+  setCouncilMode: (e, el, mode) => { S.COUNCIL_MODE = mode; render(); },
   issueBridge:    (e, el) => issueBridgeCredential(el),
   copyCred:       (e, el) => { if (navigator.clipboard) navigator.clipboard.writeText(el.textContent).then(() => toast('Credential copied.')); },
   revokeBridge:   (e, el, id) => revokeBridgeCredential(id, el),
-  closeBridge:    (e, el) => { BRIDGE_CREDENTIAL = null; const d = el.closest('.fixed'); if (d) d.remove(); },
+  closeBridge:    (e, el) => { S.BRIDGE_CREDENTIAL = null; const d = el.closest('.fixed'); if (d) d.remove(); },
   convene:        () => convene(),
   showBridge:     () => showBridge(),
   askHermes:      () => askHermes(),
-  toggleIntel:    () => { INTEL_OPEN = !INTEL_OPEN; render(); },
+  toggleIntel:    () => { S.INTEL_OPEN = !S.INTEL_OPEN; render(); },
   fileIntel:      () => fileIntel(),
   analyzeIntel:   (e, el, id) => analyzeIntel(id),
 });

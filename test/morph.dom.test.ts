@@ -2,11 +2,13 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// Load the vendored morph exactly as the browser would — evaluate the file so
-// window.morphInto is defined against the happy-dom window.
+// Book 7: morph is an ES module (app/core/morph.js) bundled into the client. Run
+// its real source here by evaluating the module body as a script — the trailing
+// `export { morphInto }` is replaced with an explicit hand-off so the function
+// under test is the one that actually ships.
 const morphSource = readFileSync(
-  resolve(__dirname, '../public/static/morph.js'), 'utf8',
-)
+  resolve(__dirname, '../public/static/app/core/morph.js'), 'utf8',
+).replace(/export\s*\{\s*morphInto\s*\}/, 'globalThis.morphInto = morphInto')
 // eslint-disable-next-line no-new-func
 new Function(morphSource)()
 const morphInto: (el: Element, html: string) => void = (globalThis as any).morphInto
@@ -19,7 +21,7 @@ function root(): HTMLElement {
 describe('morph.js — Book 6 rendering', () => {
   beforeEach(() => { document.body.innerHTML = '' })
 
-  it('exposes morphInto on window', () => {
+  it('exports a usable morphInto', () => {
     expect(typeof morphInto).toBe('function')
   })
 

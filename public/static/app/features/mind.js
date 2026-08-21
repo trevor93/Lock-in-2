@@ -1,24 +1,30 @@
+import { S } from '../core/store.js'
+import { FX } from '../core/fx.js'
+import { api, header, render, toast, todayStr } from '../core/shell.js'
+import { registerActions } from '../core/events.js'
+import { esc } from '../core/sanitize.js'
+
 /* WAR ROOM — Mind (flashcards + maxim bank) */
-function viewMind(){
+export function viewMind(){
   return header()+
   '<section id="mind-section" class="fade-in">'+
     '<div class="flex gap-2 mb-3">'+
-      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='cards'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;cards&quot;]"><i class="fas fa-layer-group mr-1"></i>DRILL ('+DUE.length+' due)</button>'+
-      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='bank'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;bank&quot;]"><i class="fas fa-book-skull mr-1"></i>MAXIM BANK</button>'+
+      '<button class="btn flex-1 p-2 text-xs font-bold '+(S.MIND_MODE==='cards'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;cards&quot;]"><i class="fas fa-layer-group mr-1"></i>DRILL ('+S.DUE.length+' due)</button>'+
+      '<button class="btn flex-1 p-2 text-xs font-bold '+(S.MIND_MODE==='bank'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;bank&quot;]"><i class="fas fa-book-skull mr-1"></i>MAXIM BANK</button>'+
     '</div>'+
-    (MIND_MODE==='cards'?viewCards():viewBank())+
+    (S.MIND_MODE==='cards'?viewCards():viewBank())+
   '</section>';
 }
 
-function viewCards(){
-  if(!DUE.length) return '<div class="card-lux p-6 text-center"><i class="fas fa-check-double text-3xl text-jade mb-2" style="filter:drop-shadow(0 0 12px rgba(34,197,94,.5))"></i><p class="font-disp font-bold text-lg text-white">ALL PRINCIPLES DRILLED</p><p class="text-[11px] text-gray-500 mt-1">Spaced repetition is scheduling the next ambush. Come back tomorrow — this is how at-your-fingertips is built, rep by rep.</p></div>';
-  if(CARD_IDX>=DUE.length) CARD_IDX=0;
-  const c=DUE[CARD_IDX];
-  const pct=Math.round(((CARD_IDX)/DUE.length)*100);
-  let h='<div class="flex items-center gap-2 mb-2"><div class="prog flex-1"><div style="width:'+pct+'%"></div></div><span class="text-[10px] text-gray-500 font-bold">'+(CARD_IDX+1)+'/'+DUE.length+'</span></div>'+
+export function viewCards(){
+  if(!S.DUE.length) return '<div class="card-lux p-6 text-center"><i class="fas fa-check-double text-3xl text-jade mb-2" style="filter:drop-shadow(0 0 12px rgba(34,197,94,.5))"></i><p class="font-disp font-bold text-lg text-white">ALL PRINCIPLES DRILLED</p><p class="text-[11px] text-gray-500 mt-1">Spaced repetition is scheduling the next ambush. Come back tomorrow — this is how at-your-fingertips is built, rep by rep.</p></div>';
+  if(S.CARD_IDX>=S.DUE.length) S.CARD_IDX=0;
+  const c=S.DUE[S.CARD_IDX];
+  const pct=Math.round(((S.CARD_IDX)/S.DUE.length)*100);
+  let h='<div class="flex items-center gap-2 mb-2"><div class="prog flex-1"><div style="width:'+pct+'%"></div></div><span class="text-[10px] text-gray-500 font-bold">'+(S.CARD_IDX+1)+'/'+S.DUE.length+'</span></div>'+
   '<p class="text-[10px] text-gray-500 text-center mb-2 tracking-wider">RECALL THE MASTER READING BEFORE FLIPPING</p>'+
   '<div class="flip-card mb-3" data-act="flipCard">'+
-    '<div class="flip-inner '+(CARD_FLIP?'flipped':'')+'" style="min-height:230px">'+
+    '<div class="flip-inner '+(S.CARD_FLIP?'flipped':'')+'" style="min-height:230px">'+
       '<div class="flip-face card-lux gold-glow p-5 flex flex-col justify-center text-center" style="min-height:230px">'+
         '<p class="pill pill-dim mx-auto mb-3">'+esc(c.source)+'</p>'+
         '<p class="font-engraved font-bold text-base leading-snug text-white">“'+esc(c.principle)+'”</p>'+
@@ -33,7 +39,7 @@ function viewCards(){
       '</div>'+
     '</div>'+
   '</div>';
-  if(CARD_FLIP) h+='<div class="grid grid-cols-4 gap-1.5">'+
+  if(S.CARD_FLIP) h+='<div class="grid grid-cols-4 gap-1.5">'+
     '<button class="btn p-2.5 bg-red-900/70 border border-red-700 text-red-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',0]">FAIL</button>'+
     '<button class="btn p-2.5 bg-orange-900/70 border border-orange-700 text-orange-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',1]">HARD</button>'+
     '<button class="btn p-2.5 bg-emerald-900/70 border border-emerald-700 text-emerald-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',2]">GOOD</button>'+
@@ -42,18 +48,18 @@ function viewCards(){
   return h;
 }
 
-async function gradeCard(mid,g){
+export async function gradeCard(mid,g){
   await api('post','/api/cards/'+mid+'/review',{grade:g,date:todayStr()});
   if(g===0){ FX.fail(); toast('Failed card returns soon. Sun Tzu: know yourself — including what you do not know yet.',true); }
   else FX.tap();
-  DUE.splice(CARD_IDX,1); CARD_FLIP=false;
-  if(!DUE.length){ FX.confetti({count:70}); FX.toast('DRILL SESSION COMPLETE — all principles rehearsed','gold'); }
+  S.DUE.splice(S.CARD_IDX,1); S.CARD_FLIP=false;
+  if(!S.DUE.length){ FX.confetti({count:70}); FX.toast('DRILL SESSION COMPLETE — all principles rehearsed','gold'); }
   render();
 }
 
-function viewBank(){
+export function viewBank(){
   const groups={};
-  MAXIMS.forEach(m=>{ (groups[m.source]=groups[m.source]||[]).push(m); });
+  S.MAXIMS.forEach(m=>{ (groups[m.source]=groups[m.source]||[]).push(m); });
   let h='<div class="card p-3 mb-3">'+
     '<h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-plus text-gold"></i> ADD YOUR OWN MAXIM (from your reading)</h3>'+
     '<input id="nm-src" placeholder="Source (e.g. Sun Tzu Ch.4)" class="mb-1.5">'+
@@ -79,26 +85,25 @@ function viewBank(){
   return h;
 }
 
-async function addMaxim(){
+export async function addMaxim(){
   const b={source:$('#nm-src').value,principle:$('#nm-p').value,naive_reading:$('#nm-naive').value,master_reading:$('#nm-master').value,my_words:$('#nm-mine').value};
   if(!b.source||!b.principle){ toast('Source and principle required.',true); return; }
   await api('post','/api/maxims',b);
-  MAXIMS=(await axios.get('/api/maxims')).data;
-  DUE=(await axios.get('/api/cards/due?date='+todayStr())).data;
+  S.MAXIMS=(await axios.get('/api/maxims')).data;
+  S.DUE=(await axios.get('/api/cards/due?date='+todayStr())).data;
   toast('Maxim deposited. Flashcard forged.'); render();
 }
 
-async function ownWords(id){
+export async function ownWords(id){
   const w=prompt('Rewrite this principle in YOUR OWN words (own words = ownership):');
   if(!w) return;
   await api('post','/api/maxims/'+id+'/my-words',{my_words:w});
-  MAXIMS=(await axios.get('/api/maxims')).data; render();
+  S.MAXIMS=(await axios.get('/api/maxims')).data; render();
 }
 
-window.gradeCard=gradeCard; window.addMaxim=addMaxim; window.ownWords=ownWords;
 registerActions({
-  setMindMode: (e, el, mode) => { MIND_MODE = mode; render(); },
-  flipCard:    (e, el) => { FX.tap(); CARD_FLIP = !CARD_FLIP; render(); },
+  setMindMode: (e, el, mode) => { S.MIND_MODE = mode; render(); },
+  flipCard:    (e, el) => { FX.tap(); S.CARD_FLIP = !S.CARD_FLIP; render(); },
   gradeCard:   (e, el, mid, g) => gradeCard(mid, g),
   addMaxim:    () => addMaxim(),
   ownWords:    (e, el, id) => ownWords(id),

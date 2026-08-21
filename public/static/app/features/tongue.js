@@ -1,10 +1,16 @@
+import { S } from '../core/store.js'
+import { FX } from '../core/fx.js'
+import { api, header, loadState, render, todayStr } from '../core/shell.js'
+import { actArgs, registerActions } from '../core/events.js'
+import { esc } from '../core/sanitize.js'
+
 /* WAR ROOM — THE TONGUE: wise-response armory + supreme memorization engine
    Capture → Drill (5 attack modes) → Weekly Exam → Mastery Ladder → Reflex.
    "The rehearsed one is never surprised. The fresh one is a fool." */
 
-let TG = { view: 'today', list: null, due: null, stats: null, drill: null, drillIdx: 0, drillReveal: false, drillSession: {done:0, fluent:0}, exam: null, examIdx: 0, examReveal: false, examCorrect: 0, filter: 'all', search: '' };
+// state moved to core/store.js: TG
 
-const TG_CATS = [
+export const TG_CATS = [
   ['deflection','fa-shield-halved','Deflection','Dodge probes without lying'],
   ['wit','fa-bolt','Wit','Sharp, memorable comebacks'],
   ['power','fa-chess-king','Power','Frame control & authority'],
@@ -16,16 +22,16 @@ const TG_CATS = [
   ['negotiation','fa-scale-balanced','Negotiation','Positioning & leverage'],
   ['silence','fa-volume-xmark','Silence','When NOT to speak'],
 ];
-const TG_CAT = Object.fromEntries(TG_CATS.map(c=>[c[0],c]));
+export const TG_CAT = Object.fromEntries(TG_CATS.map(c=>[c[0],c]));
 
-const TG_MASTERY = {
+export const TG_MASTERY = {
   new:       ['NEW','#8b98ab','fa-seedling','Just captured — not yet in your head'],
   learning:  ['LEARNING','#60a5fa','fa-book-open','Forming — 3+ solid recalls'],
   memorized: ['MEMORIZED','#f59e0b','fa-brain','In memory — survives a week'],
   ingrained: ['INGRAINED','#d4af37','fa-anchor','Long-term — survives 3 weeks'],
   reflex:    ['REFLEX','#22c55e','fa-bolt-lightning','Yours forever — fires without thinking'],
 };
-const TG_MODES = {
+export const TG_MODES = {
   recall:        ['fa-comments','SITUATION DRILL','You are IN the situation. The question comes at you. Speak your line OUT LOUD, then reveal.'],
   cloze:         ['fa-puzzle-piece','FILL THE GAPS','Key words are redacted. Reconstruct the exact line, then reveal.'],
   first_letters: ['fa-font','FIRST LETTERS','Only first letters remain. Rebuild the full response word-for-word.'],
@@ -33,20 +39,19 @@ const TG_MODES = {
   delivery:      ['fa-masks-theater','DELIVERY REP','Say it out loud 3× — vary tone: calm, amused, cold. Rate your fluency honestly.'],
 };
 
-async function loadTongue(){
+export async function loadTongue(){
   const [stats, due] = await Promise.all([
     axios.get('/api/tongue/stats?date='+todayStr()).then(r=>r.data),
     axios.get('/api/tongue/due?date='+todayStr()).then(r=>r.data),
   ]);
-  TG.stats = stats; TG.due = due;
-  if (TG.view==='armory' || TG.list===null){
-    TG.list = (await axios.get('/api/tongue?category='+TG.filter+(TG.search?'&q='+encodeURIComponent(TG.search):''))).data;
+  S.TG.stats = stats; S.TG.due = due;
+  if (S.TG.view==='armory' || S.TG.list===null){
+    S.TG.list = (await axios.get('/api/tongue?category='+S.TG.filter+(S.TG.search?'&q='+encodeURIComponent(S.TG.search):''))).data;
   }
 }
-window.loadTongue = loadTongue;
 
 /* ---------- helpers ---------- */
-function tgCloze(text){
+export function tgCloze(text){
   const words = text.split(/\s+/);
   return words.map((w,i)=>{
     const core = w.replace(/[^A-Za-z']/g,'');
@@ -55,24 +60,24 @@ function tgCloze(text){
     return esc(w);
   }).join(' ');
 }
-function tgFirstLetters(text){
+export function tgFirstLetters(text){
   return text.split(/\s+/).map(w=>{
     const m = w.match(/^([A-Za-z])(.*)$/);
     return m ? `<b class="text-gold">${m[1]}</b><span class="text-gray-600">${'·'.repeat(Math.max(1,Math.min(m[2].replace(/[^A-Za-z']/g,'').length,8)))}</span>` : esc(w);
   }).join(' ');
 }
-function tgMasteryPill(m){
+export function tgMasteryPill(m){
   const [label,color,ic] = TG_MASTERY[m]||TG_MASTERY.new;
   return `<span class="pill" style="background:${color}18;color:${color};border:1px solid ${color}55"><i class="fas ${ic} text-[8px]"></i>${label}</span>`;
 }
-function tgCatPill(cat){
+export function tgCatPill(cat){
   const c = TG_CAT[cat]||TG_CAT.wit;
   return `<span class="pill bg-gray-800/80 text-gray-300 border border-line"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</span>`;
 }
 
 /* ---------- MAIN VIEW ---------- */
-function viewTongue(){
-  const s = TG.stats||{};
+export function viewTongue(){
+  const s = S.TG.stats||{};
   const mastered = (s.byMastery||[]).filter(x=>['memorized','ingrained','reflex'].includes(x.mastery)).reduce((a,x)=>a+x.n,0);
   const reflex = ((s.byMastery||[]).find(x=>x.mastery==='reflex')||{}).n||0;
   const pct = s.total ? Math.round(mastered/s.total*100) : 0;
@@ -89,27 +94,25 @@ function viewTongue(){
 
     <div class="flex gap-1.5 mb-3">
       ${[['today','fa-crosshairs','TRAIN'],['capture','fa-plus','CAPTURE'],['armory','fa-box-archive','ARMORY'],['exam','fa-graduation-cap','EXAM']].map(([v,ic,l])=>`
-        <button class="btn flex-1 py-2 text-[10px] font-bold tracking-wider ${TG.view===v?'bg-gold/15 text-gold border border-gold/40':'bg-panel text-gray-400 border border-line'}"
+        <button class="btn flex-1 py-2 text-[10px] font-bold tracking-wider ${S.TG.view===v?'bg-gold/15 text-gold border border-gold/40':'bg-panel text-gray-400 border border-line'}"
           data-act="tgView" data-args="${actArgs([v])}"><i class="fas ${ic} mr-1"></i>${l}</button>`).join('')}
     </div>
 
-    ${TG.view==='today'?tgToday():TG.view==='capture'?tgCapture():TG.view==='armory'?tgArmory():tgExamView()}
+    ${S.TG.view==='today'?tgToday():S.TG.view==='capture'?tgCapture():S.TG.view==='armory'?tgArmory():tgExamView()}
   </section>`;
 }
-window.viewTongue = viewTongue;
 
-async function tgRefresh(){
+export async function tgRefresh(){
   try {
     await loadTongue(); // refreshes stats + due (and the armory list when view==='armory')
   } catch(_){}
   render();
 }
-window.tgRefresh = tgRefresh;
 
 /* ---------- TRAIN (today) ---------- */
-function tgToday(){
-  const s = TG.stats||{}, due = TG.due||[];
-  if (TG.drill) return tgDrillCard();
+export function tgToday(){
+  const s = S.TG.stats||{}, due = S.TG.due||[];
+  if (S.TG.drill) return tgDrillCard();
   const ladder = ['new','learning','memorized','ingrained','reflex'].map(m=>{
     const n = ((s.byMastery||[]).find(x=>x.mastery===m)||{}).n||0;
     const [label,color,ic] = TG_MASTERY[m];
@@ -163,7 +166,7 @@ function tgToday(){
 }
 
 /* ---------- CAPTURE ---------- */
-function tgCapture(){
+export function tgCapture(){
   return `
   <div class="card-lux p-4">
     <h3 class="font-engraved font-bold text-sm gold-text mb-3"><i class="fas fa-crosshairs mr-1"></i>CAPTURE THE LINE — EXACTLY AS HEARD</h3>
@@ -191,30 +194,28 @@ function tgCapture(){
     <p class="text-[9px] text-gray-600 mt-2 text-center">It enters the drill queue immediately — first drill today.</p>
   </div>`;
 }
-async function tgSave(){
+export async function tgSave(){
   const v = id => document.getElementById(id).value;
   try {
     await api('post','/api/tongue',{ situation:v('tg-sit'), trigger_q:v('tg-q'), response:v('tg-r'), why_works:v('tg-why'), source:v('tg-src'), category:v('tg-cat') });
     FX.success(); FX.toast('CAPTURED. The line is in the armory — now make it yours.','gold');
-    TG.list=null; await loadTongue(); TG.view='today'; render();
+    S.TG.list=null; await loadTongue(); S.TG.view='today'; render();
   } catch(e){ FX.fail(); }
 }
-window.tgSave = tgSave;
 
 /* ---------- DRILL ENGINE — 5 attack modes ---------- */
-function tgStartDrill(){
-  TG.drill = TG.due.slice();
-  TG.drillIdx = 0; TG.drillReveal = false; TG.drillSession = {done:0, fluent:0};
+export function tgStartDrill(){
+  S.TG.drill = S.TG.due.slice();
+  S.TG.drillIdx = 0; S.TG.drillReveal = false; S.TG.drillSession = {done:0, fluent:0};
   render();
 }
-window.tgStartDrill = tgStartDrill;
 
-function tgDrillCard(){
-  const list = TG.drill;
-  if (TG.drillIdx >= list.length){
-    const s = TG.drillSession;
+export function tgDrillCard(){
+  const list = S.TG.drill;
+  if (S.TG.drillIdx >= list.length){
+    const s = S.TG.drillSession;
     setTimeout(()=>{ if(s.done>0 && s.fluent/s.done>=.7) FX.confetti({count:90}); },200);
-    TG.drill = null;
+    S.TG.drill = null;
     return `<div class="card-lux p-6 text-center mb-3">
       <i class="fas fa-medal text-3xl gold-text mb-2"></i>
       <h3 class="font-engraved font-bold text-lg gold-text">DRILL SESSION COMPLETE</h3>
@@ -223,11 +224,11 @@ function tgDrillCard(){
       <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgRefresh">BACK TO TRAINING GROUND</button>
     </div>`;
   }
-  const r = list[TG.drillIdx];
+  const r = list[S.TG.drillIdx];
   const mode = r.drill_mode || 'recall';
   const [mIc, mLabel, mHint] = TG_MODES[mode];
   let challenge = '';
-  if (!TG.drillReveal){
+  if (!S.TG.drillReveal){
     if (mode==='recall') challenge = `
       <div class="p-3 rounded-lg bg-black/30 border border-line mb-2">
         <p class="text-[9px] font-bold tracking-widest text-gray-500 mb-1">SITUATION</p>
@@ -293,13 +294,13 @@ function tgDrillCard(){
   <div class="card-lux p-4 mb-3">
     <div class="flex items-center justify-between mb-2">
       <span class="pill bg-gold/10 text-gold border border-gold/40"><i class="fas ${mIc} text-[8px]"></i>${mLabel}</span>
-      <span class="text-[10px] text-gray-500 font-bold">${TG.drillIdx+1} / ${list.length}</span>
+      <span class="text-[10px] text-gray-500 font-bold">${S.TG.drillIdx+1} / ${list.length}</span>
     </div>
-    <div class="prog mb-3"><div style="width:${Math.round(TG.drillIdx/list.length*100)}%"></div></div>
+    <div class="prog mb-3"><div style="width:${Math.round(S.TG.drillIdx/list.length*100)}%"></div></div>
     <div class="flex gap-1.5 mb-3">${tgMasteryPill(r.mastery)}${tgCatPill(r.category)}${r.source?`<span class="pill bg-gray-900 text-gray-500 border border-line">${esc(r.source).slice(0,18)}</span>`:''}</div>
     <p class="text-[10px] text-gray-500 mb-3 leading-relaxed"><i class="fas fa-circle-info mr-1"></i>${mHint}</p>
     ${challenge}
-    ${!TG.drillReveal?`
+    ${!S.TG.drillReveal?`
     <button class="btn btn-gold w-full p-3 mt-2 text-sm font-bold" data-act="tgDrillReveal"><i class="fas fa-eye mr-1"></i> REVEAL THE LINE</button>`:`
     <p class="text-[10px] font-bold tracking-widest text-gray-400 text-center mt-3 mb-2">HONEST GRADE — HOW DID IT FIRE?</p>
     <div class="grid grid-cols-4 gap-1.5">
@@ -311,36 +312,35 @@ function tgDrillCard(){
   </div>`;
 }
 
-async function tgGrade(id, grade, mode){
+export async function tgGrade(id, grade, mode){
   try {
     const res = await api('post', `/api/tongue/${id}/review`, { grade, mode, date: todayStr() });
-    TG.drillSession.done++;
-    if (grade===3) TG.drillSession.fluent++;
+    S.TG.drillSession.done++;
+    if (grade===3) S.TG.drillSession.fluent++;
     if (grade===0) FX.fail(); else if (grade===3) FX.success(); else FX.tap();
     if (res.promoted){
       FX.confetti({count:70});
       FX.toast('⬆ PROMOTED TO '+res.promoted.toUpperCase()+' — this line is becoming part of you','gold');
     }
   } catch(e){}
-  TG.drillIdx++; TG.drillReveal=false;
+  S.TG.drillIdx++; S.TG.drillReveal=false;
   render();
 }
-window.tgGrade = tgGrade;
 
 /* ---------- ARMORY ---------- */
-function tgArmory(){
-  const list = TG.list||[];
+export function tgArmory(){
+  const list = S.TG.list||[];
   return `
   <div class="flex gap-1.5 mb-2">
-    <input id="tg-search" class="flex-1 bg-black/30 border border-line rounded-lg px-3 py-2 text-xs" placeholder="Search situations, questions, lines…" value="${esc(TG.search)}"
+    <input id="tg-search" class="flex-1 bg-black/30 border border-line rounded-lg px-3 py-2 text-xs" placeholder="Search situations, questions, lines…" value="${esc(S.TG.search)}"
       data-act-change="tgSearch">
     <button class="btn px-3 bg-panel border border-line text-gray-400 text-xs" data-act="tgSearchClear"><i class="fas fa-xmark"></i></button>
   </div>
   <div class="flex gap-1 mb-3 overflow-x-auto pb-1" style="scrollbar-width:none">
-    <button class="pill shrink-0 ${TG.filter==='all'?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs(['all'])}">ALL</button>
-    ${TG_CATS.map(c=>`<button class="pill shrink-0 ${TG.filter===c[0]?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs([c[0]])}"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join('')}
+    <button class="pill shrink-0 ${S.TG.filter==='all'?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs(['all'])}">ALL</button>
+    ${TG_CATS.map(c=>`<button class="pill shrink-0 ${S.TG.filter===c[0]?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs([c[0]])}"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join('')}
   </div>
-  ${list.length===0?`<div class="card p-5 text-center"><i class="fas fa-box-open text-2xl text-gray-600 mb-2"></i><p class="text-xs text-gray-500">Armory ${TG.search||TG.filter!=='all'?'has no match':'is empty'}. ${!TG.search&&TG.filter==='all'?'Capture your first wise line — the hunt starts today.':''}</p></div>`:''}
+  ${list.length===0?`<div class="card p-5 text-center"><i class="fas fa-box-open text-2xl text-gray-600 mb-2"></i><p class="text-xs text-gray-500">Armory ${S.TG.search||S.TG.filter!=='all'?'has no match':'is empty'}. ${!S.TG.search&&S.TG.filter==='all'?'Capture your first wise line — the hunt starts today.':''}</p></div>`:''}
   ${list.map(r=>`
   <article class="card p-3 mb-2">
     <div class="flex gap-1.5 mb-1.5 flex-wrap">${tgMasteryPill(r.mastery)}${tgCatPill(r.category)}
@@ -355,17 +355,16 @@ function tgArmory(){
     </div>
   </article>`).join('')}`;
 }
-async function tgDelete(id){
+export async function tgDelete(id){
   if (!confirm('Retire this line from the armory? Its training history is kept.')) return;
   await api('delete','/api/tongue/'+id);
-  FX.tap(); TG.list=null; await loadTongue(); render();
+  FX.tap(); S.TG.list=null; await loadTongue(); render();
 }
-window.tgDelete = tgDelete;
 
 /* ---------- WEEKLY EXAM ---------- */
-function tgExamView(){
-  const s = TG.stats||{};
-  if (!TG.exam){
+export function tgExamView(){
+  const s = S.TG.stats||{};
+  if (!S.TG.exam){
     return `
     <div class="card-lux p-4 mb-3">
       <h3 class="font-engraved font-bold text-sm gold-text mb-2"><i class="fas fa-graduation-cap mr-1"></i>THE WEEKLY TONGUE EXAM</h3>
@@ -386,26 +385,26 @@ function tgExamView(){
     </div>`:''}`;
   }
   // live exam
-  const list = TG.exam;
-  if (TG.examIdx >= list.length){
-    const pct = Math.round(TG.examCorrect/list.length*100);
+  const list = S.TG.exam;
+  if (S.TG.examIdx >= list.length){
+    const pct = Math.round(S.TG.examCorrect/list.length*100);
     return `<div class="card-lux p-6 text-center">
       <i class="fas ${pct>=80?'fa-trophy gold-text':'fa-skull text-red-400'} text-3xl mb-2"></i>
       <h3 class="font-engraved font-bold text-xl ${pct>=80?'gold-text':'text-red-400'}">${pct>=80?'EXAM PASSED':'EXAM FAILED'}</h3>
       <p class="font-disp font-bold text-3xl mt-1 ${pct>=80?'text-jade':'text-red-400'}">${pct}%</p>
-      <p class="text-xs text-gray-400 mt-1">${TG.examCorrect} / ${list.length} lines fired correctly</p>
+      <p class="text-xs text-gray-400 mt-1">${S.TG.examCorrect} / ${list.length} lines fired correctly</p>
       <p class="text-[10px] text-gray-500 mt-2">${pct>=80?'+25 pts. The armory is in your head.':'−10 pts + flag filed. Drill the failures and retake.'}</p>
       <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgFinishExam" data-args="${actArgs([list.length])}">SEAL THE RECORD</button>
     </div>`;
   }
-  const q = list[TG.examIdx];
+  const q = list[S.TG.examIdx];
   return `
   <div class="card-lux p-4">
     <div class="flex items-center justify-between mb-2">
       <span class="pill pill-blood"><i class="fas fa-graduation-cap text-[8px]"></i>EXAM</span>
-      <span class="text-[10px] text-gray-500 font-bold">${TG.examIdx+1} / ${list.length}</span>
+      <span class="text-[10px] text-gray-500 font-bold">${S.TG.examIdx+1} / ${list.length}</span>
     </div>
-    <div class="prog mb-3"><div style="width:${Math.round(TG.examIdx/list.length*100)}%"></div></div>
+    <div class="prog mb-3"><div style="width:${Math.round(S.TG.examIdx/list.length*100)}%"></div></div>
     <div class="p-3 rounded-lg bg-black/30 border border-line mb-2">
       <p class="text-[9px] font-bold tracking-widest text-gray-500 mb-1">SITUATION</p>
       <p class="text-xs text-gray-300">${esc(q.situation)}</p>
@@ -414,7 +413,7 @@ function tgExamView(){
       <p class="text-[9px] font-bold tracking-widest text-sky-500 mb-1">THEY ASK YOU</p>
       <p class="text-sm text-white font-semibold">“${esc(q.trigger_q)}”</p>
     </div>
-    ${!TG.examReveal?`
+    ${!S.TG.examReveal?`
     <p class="text-[10px] text-gold text-center font-bold tracking-wider my-3">⟡ SPEAK YOUR EXACT LINE OUT LOUD ⟡</p>
     <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgExamReveal"><i class="fas fa-eye mr-1"></i> REVEAL & JUDGE</button>`:`
     <div class="p-3 rounded-lg border mb-3" style="background:rgba(212,175,55,.07);border-color:rgba(212,175,55,.4)">
@@ -428,41 +427,40 @@ function tgExamView(){
     </div>`}
   </div>`;
 }
-async function tgStartExam(){
-  try { TG.exam = (await axios.get('/api/tongue/exam')).data; }
+export async function tgStartExam(){
+  try { S.TG.exam = (await axios.get('/api/tongue/exam')).data; }
   catch(_){ FX.toast('Could not load the exam — try again.','bad'); return; }
-  if (!TG.exam.length){ FX.toast('No trained lines yet — drill first.','bad'); TG.exam=null; return; }
-  TG.examIdx=0; TG.examReveal=false; TG.examCorrect=0;
+  if (!S.TG.exam.length){ FX.toast('No trained lines yet — drill first.','bad'); S.TG.exam=null; return; }
+  S.TG.examIdx=0; S.TG.examReveal=false; S.TG.examCorrect=0;
   render();
 }
-window.tgStartExam = tgStartExam;
-function tgExamAnswer(ok){
-  if (ok){ TG.examCorrect++; FX.success(); } else FX.fail();
-  TG.examIdx++; TG.examReveal=false; render();
+
+export function tgExamAnswer(ok){
+  if (ok){ S.TG.examCorrect++; FX.success(); } else FX.fail();
+  S.TG.examIdx++; S.TG.examReveal=false; render();
 }
-window.tgExamAnswer = tgExamAnswer;
-async function tgFinishExam(total){
-  const res = await api('post','/api/tongue/exam/submit',{ total, correct: TG.examCorrect, date: todayStr() });
+
+export async function tgFinishExam(total){
+  const res = await api('post','/api/tongue/exam/submit',{ total, correct: S.TG.examCorrect, date: todayStr() });
   if (res.passed){ FX.confetti({count:140}); FX.victory && FX.victory(); }
-  TG.exam=null;
+  S.TG.exam=null;
   await loadTongue(); await loadState(); render();
 }
-window.tgFinishExam = tgFinishExam;
 
 registerActions({
-  tgView:        (e, el, v) => { TG.view = v; tgRefresh(); },
-  tgExamView:    () => { TG.view = 'exam'; render(); },
+  tgView:        (e, el, v) => { S.TG.view = v; tgRefresh(); },
+  tgExamView:    () => { S.TG.view = 'exam'; render(); },
   tgStartDrill:  () => tgStartDrill(),
   tgSave:        () => tgSave(),
   tgRefresh:     () => tgRefresh(),
-  tgDrillReveal: () => { TG.drillReveal = true; FX.tap(); render(); },
+  tgDrillReveal: () => { S.TG.drillReveal = true; FX.tap(); render(); },
   tgGrade:       (e, el, id, grade, mode) => tgGrade(id, grade, mode),
-  tgSearch:      (e, el) => { TG.search = el.value; tgRefresh(); },
-  tgSearchClear: () => { TG.search = ''; tgRefresh(); },
-  tgFilter:      (e, el, f) => { TG.filter = f; tgRefresh(); },
+  tgSearch:      (e, el) => { S.TG.search = el.value; tgRefresh(); },
+  tgSearchClear: () => { S.TG.search = ''; tgRefresh(); },
+  tgFilter:      (e, el, f) => { S.TG.filter = f; tgRefresh(); },
   tgDelete:      (e, el, id) => tgDelete(id),
   tgStartExam:   () => tgStartExam(),
   tgFinishExam:  (e, el, total) => tgFinishExam(total),
-  tgExamReveal:  () => { TG.examReveal = true; FX.tap(); render(); },
+  tgExamReveal:  () => { S.TG.examReveal = true; FX.tap(); render(); },
   tgExamAnswer:  (e, el, ok) => tgExamAnswer(ok),
 });

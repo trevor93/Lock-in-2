@@ -3,11 +3,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:client && vite build",
     "test": "vitest run",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "build:client": "vite build --config vite.client.config.ts"
   },
   "dependencies": {
     "hono": "^4.12.26",

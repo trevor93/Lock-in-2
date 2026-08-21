@@ -1,0 +1,12 @@
+// Book 7 — client entry. Vite bundles this module graph; the shell loads one file.
+import './core/sanitize.js'
+import './core/events.js'
+import './core/morph.js'
+import './core/fx.js'
+import './core/shell.js'
+import './features/campaign.js'
+import './features/mind.js'
+import './features/debrief.js'
+import './features/library.js'
+import './features/council.js'
+import './features/tongue.js'

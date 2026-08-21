@@ -1,7 +1,13 @@
+import { S } from '../core/store.js'
+import { FX } from '../core/fx.js'
+import { api, header, nowTime, refreshIfStale, render, toast, todayStr } from '../core/shell.js'
+import { registerActions } from '../core/events.js'
+import { esc } from '../core/sanitize.js'
+
 /* WAR ROOM — ALARM ENGINE + LIBRARY (real books reader) */
 
 /* ================== ALARM ENGINE ================== */
-const Alarm = {
+export const Alarm = {
   ctx: null, enabled: JSON.parse(localStorage.getItem('wr_alarm') || 'true'),
   volume: Number(localStorage.getItem('wr_volume') || 0.9),
   fired: JSON.parse(sessionStorage.getItem('wr_fired') || '{}'),
@@ -96,10 +102,10 @@ const Alarm = {
   },
 
   tick() {
-    if (!this.enabled || !STATE) return;
+    if (!this.enabled || !S.STATE) return;
     const t = nowTime();
     const today = todayStr();
-    for (const b of (STATE.blocks || [])) {
+    for (const b of (S.STATE.blocks || [])) {
       const key = today + '-' + b.id;
       // fire at block start (60s tick — minute strings match exactly once)
       if (b.start_time === t && !this.fired[key]) {
@@ -111,21 +117,21 @@ const Alarm = {
       }
     }
     // refresh state so current-block view stays live — and detect fresh auto-cancellations
-    const prevMissed = new Set((STATE.blocks || []).filter(b => b.log_status === 'missed').map(b => b.id));
-    (window.refreshIfStale ? window.refreshIfStale() : loadState()).then(() => {
-      for (const b of (STATE.blocks || [])) {
+    const prevMissed = new Set((S.STATE.blocks || []).filter(b => b.log_status === 'missed').map(b => b.id));
+    refreshIfStale().then(() => {
+      for (const b of (S.STATE.blocks || [])) {
         if (b.log_status === 'missed' && !prevMissed.has(b.id)) {
           const mkey = today + '-missed-' + b.id;
           if (!this.fired[mkey]) {
             this.fired[mkey] = 1;
             sessionStorage.setItem('wr_fired', JSON.stringify(this.fired));
             this.notify('✖ CANCELED — ' + b.title, 'Window closed unlogged. The block is gone and the penalty is on your ledger. — Law 2: The plan is law.', 'warroom-missed');
-            if (window.FX) FX.toast('✖ “' + b.title + '” AUTO-CANCELED — PENALTY APPLIED', 'bad');
+            if (FX) FX.toast('✖ “' + b.title + '” AUTO-CANCELED — PENALTY APPLIED', 'bad');
             if (navigator.vibrate) navigator.vibrate([500, 120, 500]);
           }
         }
       }
-      if (TAB === 'now' || TAB === 'today') render();
+      if (S.TAB === 'now' || S.TAB === 'today') render();
     }).catch(() => {});
   },
 
@@ -150,15 +156,14 @@ const Alarm = {
   }
 };
 Alarm.init();
-window.Alarm = Alarm;
 
 /* ================== LIBRARY (real books) ================== */
-let LIBRARY = null, BOOK = null, BOOK_ID = null, CHAP_IDX = 0;
+// state moved to core/store.js: LIBRARY, BOOK, BOOK_ID, CHAP_IDX
 
-async function loadLibrary() { LIBRARY = (await axios.get('/api/library')).data; }
+export async function loadLibrary() { S.LIBRARY = (await axios.get('/api/library')).data; }
 
-function viewLibrary() {
-  if (BOOK) return viewReader();
+export function viewLibrary() {
+  if (S.BOOK) return viewReader();
   return header() +
   '<section id="library-section" class="stagger">' +
     '<p class="text-[10px] text-gray-500 mb-3">Official public-domain translations (Giles, Marriott, Long, Jowett, Common, Zimmern, Graham). The full actual books — every word, offline-cached after first read.</p>' +
@@ -174,8 +179,8 @@ function viewLibrary() {
       '<a class="btn px-3 py-1 text-[11px] font-bold bg-indigo-900/60 border border-indigo-700 text-indigo-200 shrink-0" href="/calendar.ics" download>EXPORT .ICS</a></div>' +
       '<p class="text-[9px] text-gray-600 mt-1">Import warroom.ics into Google Calendar / iPhone Calendar once — every block becomes a repeating native event with a 2-min-before alert. That is the bulletproof layer: your phone itself becomes the war horn.</p>' +
     '</div>' +
-    '<div class="sect">THE ARSENAL — ' + LIBRARY.length + ' COMPLETE TEXTS</div>' +
-    LIBRARY.map(b => {
+    '<div class="sect">THE ARSENAL — ' + S.LIBRARY.length + ' COMPLETE TEXTS</div>' +
+    S.LIBRARY.map(b => {
       const total = b.chapters || 0;
       const pct = total ? Math.round((b.chaptersDone / total) * 100) : 0;
       const finished = total > 0 && b.chaptersDone >= total;
@@ -197,31 +202,31 @@ function viewLibrary() {
   '</section>';
 }
 
-async function openBook(id) {
+export async function openBook(id) {
   toast('Opening the real text…');
-  BOOK = (await axios.get('/static/books/' + id + '.json')).data;
-  BOOK_ID = id;
-  const lib = LIBRARY.find(x => x.id === id);
-  CHAP_IDX = lib && lib.currentChapter != null ? lib.currentChapter : 0;
+  S.BOOK = (await axios.get('/static/books/' + id + '.json')).data;
+  S.BOOK_ID = id;
+  const lib = S.LIBRARY.find(x => x.id === id);
+  S.CHAP_IDX = lib && lib.currentChapter != null ? lib.currentChapter : 0;
   render();
   window.scrollTo(0, 0);
 }
 
-function viewReader() {
-  const ch = BOOK.chapters[CHAP_IDX];
-  const chPct = Math.round(((CHAP_IDX + 1) / BOOK.chapters.length) * 100);
+export function viewReader() {
+  const ch = S.BOOK.chapters[S.CHAP_IDX];
+  const chPct = Math.round(((S.CHAP_IDX + 1) / S.BOOK.chapters.length) * 100);
   return '<header class="flex items-center gap-2 mb-1 sticky top-0 py-2 z-40" style="background:linear-gradient(180deg,var(--ink-1) 75%,transparent)">' +
     '<button class="btn btn-ghost px-3 py-2 text-xs" data-act="closeBook"><i class="fas fa-arrow-left"></i></button>' +
-    '<div class="flex-1 min-w-0"><p class="text-xs font-bold truncate text-white">' + esc(BOOK.title) + '</p>' +
-    '<p class="text-[9px] text-gray-500">' + esc(BOOK.author) + ' · tr. ' + esc(BOOK.translator) + '</p></div>' +
+    '<div class="flex-1 min-w-0"><p class="text-xs font-bold truncate text-white">' + esc(S.BOOK.title) + '</p>' +
+    '<p class="text-[9px] text-gray-500">' + esc(S.BOOK.author) + ' · tr. ' + esc(S.BOOK.translator) + '</p></div>' +
     '<select class="!w-auto text-xs" data-act-change="chapSelect">' +
-      BOOK.chapters.map((c, i) => '<option value="' + i + '" ' + (i === CHAP_IDX ? 'selected' : '') + '>' + esc(c.title.slice(0, 40)) + '</option>').join('') +
+      S.BOOK.chapters.map((c, i) => '<option value="' + i + '" ' + (i === S.CHAP_IDX ? 'selected' : '') + '>' + esc(c.title.slice(0, 40)) + '</option>').join('') +
     '</select>' +
   '</header>' +
   '<div class="prog mb-4" style="height:4px"><div style="width:' + chPct + '%"></div></div>' +
   '<article id="reader" class="fade-in px-1">' +
     '<div class="text-center mb-5">' +
-      '<p class="text-[9px] text-gray-600 font-bold tracking-[.3em] mb-1">CHAPTER ' + (CHAP_IDX + 1) + ' OF ' + BOOK.chapters.length + '</p>' +
+      '<p class="text-[9px] text-gray-600 font-bold tracking-[.3em] mb-1">CHAPTER ' + (S.CHAP_IDX + 1) + ' OF ' + S.BOOK.chapters.length + '</p>' +
       '<h2 class="font-engraved font-bold text-lg gold-text">' + esc(ch.title) + '</h2>' +
       '<div class="mx-auto mt-2" style="width:80px;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent)"></div>' +
     '</div>' +
@@ -233,30 +238,28 @@ function viewReader() {
   '</article>';
 }
 
-async function finishChapter() {
-  await api('post', '/api/library/' + BOOK_ID + '/chapter/' + CHAP_IDX, { status: 'done', date: todayStr() });
+export async function finishChapter() {
+  await api('post', '/api/library/' + S.BOOK_ID + '/chapter/' + S.CHAP_IDX, { status: 'done', date: todayStr() });
   FX.confetti({count:60}); FX.toast('CHAPTER CONQUERED  +20','gold');
-  if (CHAP_IDX < BOOK.chapters.length - 1) {
-    CHAP_IDX++;
-    await api('post', '/api/library/' + BOOK_ID + '/chapter/' + CHAP_IDX, { status: 'reading' });
+  if (S.CHAP_IDX < S.BOOK.chapters.length - 1) {
+    S.CHAP_IDX++;
+    await api('post', '/api/library/' + S.BOOK_ID + '/chapter/' + S.CHAP_IDX, { status: 'reading' });
     render(); window.scrollTo(0, 0);
   } else {
-    FX.confetti({count:180}); FX.toast('📕 BOOK COMPLETE — ' + BOOK.title + ' is now inside you','gold');
-    BOOK = null; await loadLibrary(); render();
+    FX.confetti({count:180}); FX.toast('📕 BOOK COMPLETE — ' + S.BOOK.title + ' is now inside you','gold');
+    S.BOOK = null; await loadLibrary(); render();
   }
 }
 
-window.openBook = openBook; window.finishChapter = finishChapter;
-window.viewLibrary = viewLibrary; window.loadLibrary = loadLibrary;
 
 registerActions({
-  dismissHome:    (e, el) => { const d = el.closest('div.fixed'); if (d) d.remove(); TAB = 'now'; render(); },
+  dismissHome:    (e, el) => { const d = el.closest('div.fixed'); if (d) d.remove(); S.TAB = 'now'; render(); },
   dismissClosest: (e, el) => { const d = el.closest('div.fixed'); if (d) d.remove(); },
   alarmToggle:    () => Alarm.toggle(),
   alarmRing:      () => Alarm.ring(2),
   askNotify:      () => Notification.requestPermission().then((p) => toast(p === 'granted' ? 'Notifications armed.' : 'Denied — enable in browser settings.', p !== 'granted')),
   openBook:       (e, el, id) => openBook(id),
-  closeBook:      () => { FX.tap(); BOOK = null; loadLibrary().then(render); },
-  chapSelect:     (e, el) => { CHAP_IDX = Number(el.value); render(); window.scrollTo(0, 0); },
+  closeBook:      () => { FX.tap(); S.BOOK = null; loadLibrary().then(render); },
+  chapSelect:     (e, el) => { S.CHAP_IDX = Number(el.value); render(); window.scrollTo(0, 0); },
   finishChapter:  () => finishChapter(),
 });

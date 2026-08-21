@@ -1,18 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// Shared happy-dom harness for the Book 7 frontend restructure net. It boots the
-// REAL shipped frontend (fx.js + app.js..app7.js, concatenated as the browser
-// loads them) against a route-addressed axios stand-in that also RECORDS calls,
-// so tests can drive real user actions and assert the resulting endpoint traffic.
-// These are characterisation tests: they must stay green through the core/
-// components/features split, the onclick -> event-delegation conversion, and the
-// switch to a Vite bundle.
+// Shared happy-dom harness for the Book 7 frontend. It boots the REAL shipped
+// client — now the Vite-built ES-module bundle (public/static/bundle.js, generated
+// from public/static/app/: core/ + features/) — against a route-addressed axios
+// stand-in that also RECORDS calls, so tests can drive real user actions and assert
+// the resulting endpoint traffic. These are characterisation tests: they pinned the
+// behaviour of the old nine-globals frontend and must stay green for the bundle.
 
-const FILES = ['fx.js', 'app.js', 'app2.js', 'app3.js', 'app4.js', 'app5.js', 'app6.js', 'app7.js']
-export const SRC = FILES
-  .map((f) => readFileSync(resolve(__dirname, '../../public/static/', f), 'utf8'))
-  .join('\n;\n')
+export const SRC = readFileSync(resolve(__dirname, '../../public/static/bundle.js'), 'utf8')
 
 // Mirrors the shape src/state.ts buildState() returns, trimmed to a fresh day.
 export const MINIMAL_STATE = {
@@ -58,10 +54,90 @@ function installAudioStub(): void {
   ;(globalThis as any).webkitAudioContext = FakeAudioContext
 }
 
+// Each boot evaluates a FRESH copy of the bundle, which registers its own
+// document/window listeners and timers. happy-dom keeps one document per test
+// file, so without cleanup a previous boot's listeners would also answer the next
+// test's clicks (two rival app instances writing into the same #app). Track what
+// each boot installs and tear it down before the next one.
+let installedListeners: Array<[EventTarget, string, any]> = []
+let installedTimers: any[] = []
+let installedFrames: any[] = []
+
+function resetPreviousBoot(): void {
+  for (const [target, type, fn] of installedListeners) {
+    try { target.removeEventListener(type, fn) } catch { /* ignore */ }
+  }
+  installedListeners = []
+  for (const id of installedTimers) {
+    try { clearInterval(id); clearTimeout(id) } catch { /* ignore */ }
+  }
+  installedTimers = []
+  for (const id of installedFrames) {
+    try { (globalThis as any).cancelAnimationFrame?.(id) } catch { /* ignore */ }
+  }
+  installedFrames = []
+}
+
+function captureDuring(run: () => void): void {
+  const dAdd = document.addEventListener.bind(document)
+  const wAdd = globalThis.addEventListener?.bind(globalThis)
+  const origInterval = globalThis.setInterval
+  const origTimeout = globalThis.setTimeout
+  const origRaf = (globalThis as any).requestAnimationFrame
+  ;(document as any).addEventListener = (t: string, fn: any, o?: any) => {
+    installedListeners.push([document, t, fn]); return dAdd(t, fn, o)
+  }
+  if (wAdd) {
+    ;(globalThis as any).addEventListener = (t: string, fn: any, o?: any) => {
+      installedListeners.push([globalThis, t, fn]); return wAdd(t, fn, o)
+    }
+  }
+  ;(globalThis as any).setInterval = (...a: any[]) => {
+    const id = (origInterval as any)(...a); installedTimers.push(id); return id
+  }
+  ;(globalThis as any).setTimeout = (...a: any[]) => {
+    const id = (origTimeout as any)(...a); installedTimers.push(id); return id
+  }
+  if (origRaf) {
+    ;(globalThis as any).requestAnimationFrame = (cb: any) => {
+      const id = origRaf(cb); installedFrames.push(id); return id
+    }
+  }
+  try { run() } finally {
+    ;(document as any).addEventListener = dAdd
+    if (wAdd) (globalThis as any).addEventListener = wAdd
+    ;(globalThis as any).setInterval = origInterval
+    ;(globalThis as any).setTimeout = origTimeout
+    if (origRaf) (globalThis as any).requestAnimationFrame = origRaf
+  }
+}
+
+
+// happy-dom has no canvas raster backend: getContext('2d') returns null, so the FX
+// confetti/ring animation frames would throw inside a rAF callback (an unhandled
+// rejection that can fail an unrelated test). Hand out an inert 2D context so the
+// visual effects are no-ops under test while the code under test runs unchanged.
+function installCanvasStub(): void {
+  const ctx: any = new Proxy({}, {
+    get(_t, prop) {
+      if (prop === 'canvas') return null
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
+        return () => ({ addColorStop() {} })
+      }
+      return () => {}
+    },
+    set() { return true },
+  })
+  const proto = (globalThis as any).HTMLCanvasElement?.prototype
+  if (proto) proto.getContext = () => ctx
+}
+
 // Boots the frontend. `routes` maps "METHOD /path" (no query) to the response body;
 // unmapped routes answer 200 {} so freshness probes and lazy loaders never throw.
 export function bootFrontend(routes: Record<string, unknown>): { calls: RecordedCall[] } {
+  resetPreviousBoot()
   installAudioStub()
+  installCanvasStub()
   const calls: RecordedCall[] = []
   const answer = (method: string, url: string, data?: unknown) => {
     calls.push({ method: method.toUpperCase(), url: String(url), data })
@@ -82,13 +158,23 @@ export function bootFrontend(routes: Record<string, unknown>): { calls: Recorded
   // The real fx.js rides along; its canvas/rAF work is inside effect methods that
   // only fire on user actions, so FX.rank()/FX.flameClass() return true values.
   // eslint-disable-next-line no-new-func
-  new Function('axios', SRC)(axios)
+  captureDuring(() => { new Function('axios', SRC)(axios) })
   return { calls }
 }
 
 // Let the init IIFE and any awaited loads settle.
 export const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0))
+}
+
+// Wait until a condition holds. A fixed tick count is load-sensitive (these files
+// run in parallel workers), so anything asserted after a user action polls for the
+// state it expects instead of guessing how many ticks the chain needs.
+export async function waitFor(condition: () => boolean, ticks = 80): Promise<void> {
+  for (let i = 0; i < ticks; i++) {
+    if (condition()) return
+    await new Promise((r) => setTimeout(r, 0))
+  }
 }
 
 // Find a recorded call by method + exact path (query string ignored).

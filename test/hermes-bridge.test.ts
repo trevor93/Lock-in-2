@@ -1,4 +1,4 @@
-import bridgeUi from '../public/static/app6.js?raw'
+import bridgeUi from '../public/static/app/features/council.js?raw'
 import bridge from '../public/static/hermes_bridge.py?raw'
 import { describe, expect, it } from 'vitest'
 

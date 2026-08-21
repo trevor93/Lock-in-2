@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest'
-import { bootFrontend, flush, findCall, MINIMAL_STATE } from './helpers/frontend-harness'
+import { bootFrontend, flush, waitFor, findCall, MINIMAL_STATE } from './helpers/frontend-harness'
 
 // Book 7 frontend restructure — interaction net. These drive REAL user actions
 // (typing, clicking the shipped buttons) and assert the resulting endpoint traffic
@@ -28,7 +28,7 @@ describe('B7 frontend interaction integrity', () => {
     input.value = 'a-strong-new-password'
     const submit = document.querySelector('#login-screen button') as HTMLElement
     submit.click()
-    await flush()
+    await waitFor(() => !document.querySelector('#login-screen') && !!document.querySelector('#main-nav'))
 
     const setup = findCall(calls, 'POST', '/api/auth/setup')
     expect(setup, '/api/auth/setup was not called').toBeTruthy()
@@ -47,7 +47,7 @@ describe('B7 frontend interaction integrity', () => {
 
     ;(document.querySelector('#login-pass') as HTMLInputElement).value = 'my-password'
     ;(document.querySelector('#login-screen button') as HTMLElement).click()
-    await flush()
+    await waitFor(() => !!findCall(calls, 'POST', '/api/auth/login'))
 
     const login = findCall(calls, 'POST', '/api/auth/login')
     expect(login, '/api/auth/login was not called').toBeTruthy()
@@ -66,7 +66,7 @@ describe('B7 frontend interaction integrity', () => {
     // "now" is the initial tab; clicking MIND must re-render to that tab as active.
     expect((nav!.querySelector('[data-tab="now"]') as HTMLElement).className).toContain('active')
     mind.click()
-    await flush()
+    await waitFor(() => (document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement)?.className.includes('active'))
 
     const activeAfter = document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement
     expect(activeAfter.className, 'MIND did not become the active tab').toContain('active')
@@ -91,7 +91,7 @@ describe('B7 frontend interaction integrity', () => {
     const done = buttons.find((b) => (b.getAttribute('data-args') || '').includes('done'))
     expect(done, 'the done button did not render').toBeTruthy()
     done!.click()
-    await flush()
+    await waitFor(() => !!findCall(calls, 'POST', '/api/blocks/42/log'))
 
     const logged = findCall(calls, 'POST', '/api/blocks/42/log')
     expect(logged, '/api/blocks/42/log was not called').toBeTruthy()
@@ -126,7 +126,7 @@ describe('B7 frontend interaction integrity', () => {
       .find((b) => (b.getAttribute('data-args') || '').includes(',2]')) as HTMLElement
     expect(good, 'GOOD grade button not rendered after flip').toBeTruthy()
     good.click()
-    await flush()
+    await waitFor(() => !!findCall(calls, 'POST', '/api/cards/7/review'))
 
     const graded = findCall(calls, 'POST', '/api/cards/7/review')
     expect(graded, '/api/cards/7/review was not called').toBeTruthy()

@@ -8,10 +8,16 @@ import { resolve } from 'node:path'
 // every data-act used in the markup maps to a registered handler, so a typo or a
 // forgotten registration can't ship as a silently-dead button.
 
-const FILES = ['app.js', 'app2.js', 'app3.js', 'app4.js', 'app5.js', 'app6.js', 'app7.js']
+// Book 7: the frontend is an ES-module tree under public/static/app/ (core/ +
+// features/) bundled by Vite, so the guard scans every module.
+const FILES = [
+  'core/shell.js', 'core/events.js', 'core/sanitize.js',
+  'features/campaign.js', 'features/mind.js', 'features/debrief.js',
+  'features/library.js', 'features/council.js', 'features/tongue.js',
+]
 const SRC = FILES
-  .map((f) => readFileSync(resolve(__dirname, '../public/static/', f), 'utf8'))
-  .join('\n')
+  .map((f) => readFileSync(resolve(__dirname, '../public/static/app/', f), 'utf8'))
+  .join(String.fromCharCode(10))
 
 // Pull handler names out of each registerActions({...}) object via a brace-balanced
 // scan (arrow bodies contain their own braces, so a naive regex would stop short).

@@ -1,8 +1,8 @@
 import { env } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest'
 import app from '../src/index'
-import clientSource from '../public/static/app.js?raw'
-import alarmSource from '../public/static/app5.js?raw'
+import clientSource from '../public/static/app/core/shell.js?raw'
+import alarmSource from '../public/static/app/features/library.js?raw'
 
 const baseEnv = {
   DB: env.DB,

@@ -1,7 +1,13 @@
+import { S } from '../core/store.js'
+import { FX } from '../core/fx.js'
+import { api, clearDrafts, header, loadState, render, toast, todayStr } from '../core/shell.js'
+import { registerActions } from '../core/events.js'
+import { esc, nl2br } from '../core/sanitize.js'
+
 /* WAR ROOM — Debrief + Stats */
-function viewDebrief(){
-  const d=STATE.debrief||{};
-  const filed = !!STATE.debriefDoneToday;
+export function viewDebrief(){
+  const d=S.STATE.debrief||{};
+  const filed = !!S.STATE.debriefDoneToday;
   return header()+
   '<section id="debrief-section" class="stagger">'+
     '<div class="card-lux p-3.5 mb-3 flex items-center gap-3">'+
@@ -33,8 +39,8 @@ function viewDebrief(){
     '</div>'+
     predictionsPanel()+
     rewardsPanel()+
-    '<div class="sect">PAST REPORTS — '+DEBRIEFS.length+' FILED</div>'+
-    DEBRIEFS.slice(0,14).map(x=>
+    '<div class="sect">PAST REPORTS — '+S.DEBRIEFS.length+' FILED</div>'+
+    S.DEBRIEFS.slice(0,14).map(x=>
       '<details class="card p-3 mb-2">'+
         '<summary class="text-xs font-bold cursor-pointer">'+x.log_date+(x.sleep_hours?' · '+x.sleep_hours+'h sleep':'')+(x.mood?' · mood '+x.mood+'/5':'')+'</summary>'+
         '<div class="mt-2 text-[11px] text-gray-400 space-y-1">'+
@@ -47,50 +53,50 @@ function viewDebrief(){
   '</section>';
 }
 
-function rewardsPanel(){
-  if(!REWARDS){ axios.get('/api/rewards').then(r=>{REWARDS=r.data; if(TAB==='debrief')render();}); return ''; }
+export function rewardsPanel(){
+  if(!S.REWARDS){ axios.get('/api/rewards').then(r=>{S.REWARDS=r.data; if(S.TAB==='debrief')render();}); return ''; }
   return '<div class="card p-3">'+
-    '<h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-trophy text-gold"></i> REWARDS — EARNED, NEVER GIVEN (you have <span class="text-gold font-bold">'+STATE.points+'</span> pts)</h3>'+
-    REWARDS.map(r=>
+    '<h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-trophy text-gold"></i> REWARDS — EARNED, NEVER GIVEN (you have <span class="text-gold font-bold">'+S.STATE.points+'</span> pts)</h3>'+
+    S.REWARDS.map(r=>
       '<div class="flex items-center gap-2 py-1.5 border-b border-line/50 last:border-0">'+
         '<div class="flex-1"><p class="text-xs font-semibold">'+esc(r.title)+'</p><p class="text-[10px] text-gray-500">'+esc(r.description||'')+(r.redeemed_count?' · taken ×'+r.redeemed_count:'')+'</p></div>'+
-        '<button class="btn px-3 py-1.5 text-[11px] font-bold '+(STATE.points>=r.cost?'bg-gold/20 border border-gold/50 text-gold':'bg-gray-800 text-gray-600 border border-line')+'" data-act="redeem" data-args="['+r.id+']">'+r.cost+'</button>'+
+        '<button class="btn px-3 py-1.5 text-[11px] font-bold '+(S.STATE.points>=r.cost?'bg-gold/20 border border-gold/50 text-gold':'bg-gray-800 text-gray-600 border border-line')+'" data-act="redeem" data-args="['+r.id+']">'+r.cost+'</button>'+
       '</div>').join('')+
   '</div>';
 }
 
-async function redeem(id){
+export async function redeem(id){
   await api('post','/api/rewards/'+id+'/redeem',{}); // date is server-derived
   FX.confetti({count:80}); FX.toast('REWARD CLAIMED — paid in discipline, enjoy with zero guilt','gold');
-  REWARDS=(await axios.get('/api/rewards')).data; await loadState(); render();
+  S.REWARDS=(await axios.get('/api/rewards')).data; await loadState(); render();
 }
 
-async function saveDebrief(){
+export async function saveDebrief(){
   const b={date:todayStr(),wins:$('#db-wins').value,breaks:$('#db-breaks').value,tomorrow_targets:$('#db-targets').value,
     strategy_insight:$('#db-insight').value,mood:Number($('#db-mood').value)||null,energy:Number($('#db-energy').value)||null,
     wake_time:$('#db-wake').value||null,sleep_time:$('#db-sleep').value||null,sleep_hours:Number($('#db-hours').value)||null};
   if(!b.wins&&!b.breaks&&!b.tomorrow_targets){ toast('An empty report is a lie of omission. Write something true.',true); return; }
   if(!b.tomorrow_targets){ toast('Law 4: tomorrow\'s 3 targets are NOT optional. Decide tonight.',true); return; }
   await api('post','/api/debrief',b);
-  if (window.clearDrafts) clearDrafts(['db-wins','db-breaks','db-targets','db-insight','db-mood','db-energy','db-wake','db-sleep','db-hours']);
+  if (clearDrafts) clearDrafts(['db-wins','db-breaks','db-targets','db-insight','db-mood','db-energy','db-wake','db-sleep','db-hours']);
   FX.success(); FX.toast('INTELLIGENCE REPORT FILED — tomorrow already knows its orders  +25','gold');
-  DEBRIEFS=(await axios.get('/api/debriefs')).data; await loadState(); render();
+  S.DEBRIEFS=(await axios.get('/api/debriefs')).data; await loadState(); render();
 }
 
 /* ============ PREDICTION LOG — the calibration instrument ============ */
-let PREDICTIONS=null, CALIBRATION=null;
-async function loadPredictions(){
-  [PREDICTIONS, CALIBRATION] = await Promise.all([
+// state moved to core/store.js: PREDICTIONS, CALIBRATION
+export async function loadPredictions(){
+  [S.PREDICTIONS, S.CALIBRATION] = await Promise.all([
     axios.get('/api/predictions').then(r=>r.data),
     axios.get('/api/predictions/calibration').then(r=>r.data)
   ]);
 }
-function predictionsPanel(){
-  if(!PREDICTIONS){ loadPredictions().then(()=>{ if(TAB==='debrief')render(); }); return '<div class="card p-3 mb-3 text-[11px] text-gray-500">Loading prediction log…</div>'; }
-  const open = PREDICTIONS.filter(p=>p.outcome==='unresolved');
-  const overdue = open.filter(p=>p.resolve_by<=STATE.date);
-  const resolved = PREDICTIONS.filter(p=>p.outcome==='right'||p.outcome==='wrong');
-  const cal = CALIBRATION||{};
+export function predictionsPanel(){
+  if(!S.PREDICTIONS){ loadPredictions().then(()=>{ if(S.TAB==='debrief')render(); }); return '<div class="card p-3 mb-3 text-[11px] text-gray-500">Loading prediction log…</div>'; }
+  const open = S.PREDICTIONS.filter(p=>p.outcome==='unresolved');
+  const overdue = open.filter(p=>p.resolve_by<=S.STATE.date);
+  const resolved = S.PREDICTIONS.filter(p=>p.outcome==='right'||p.outcome==='wrong');
+  const cal = S.CALIBRATION||{};
   return '<div class="card-lux p-3.5 mb-3" id="prediction-log">'+
     '<h3 class="font-engraved font-bold text-xs gold-text mb-1"><i class="fas fa-crosshairs mr-1"></i>PREDICTION LOG — CALIBRATED JUDGMENT</h3>'+
     '<p class="text-[10px] text-gray-500 mb-2">Claim → confidence → date → graded. The only cure for a brain that rewrites its own past.</p>'+
@@ -107,7 +113,7 @@ function predictionsPanel(){
     '</div>':'<p class="text-[10px] text-gray-500 mb-2">'+esc(cal.verdict||'No graded predictions yet.')+'</p>')+
     (overdue.length?'<div class="card p-2.5 mb-2 border-red-800/50"><p class="text-[10px] font-bold text-red-400 mb-1">'+overdue.length+' PREDICTION'+(overdue.length>1?'S':'')+' AWAITING JUDGMENT — grade them now, memory rots fast:</p>'+
       overdue.map(p=>predRow(p)).join('')+'</div>':'')+
-    (open.filter(p=>p.resolve_by>STATE.date).length?'<div class="mb-2">'+open.filter(p=>p.resolve_by>STATE.date).slice(0,5).map(p=>predRow(p)).join('')+'</div>':'')+
+    (open.filter(p=>p.resolve_by>S.STATE.date).length?'<div class="mb-2">'+open.filter(p=>p.resolve_by>S.STATE.date).slice(0,5).map(p=>predRow(p)).join('')+'</div>':'')+
     '<div class="card p-2.5 mb-2">'+
       '<input id="pred-claim" type="text" placeholder="Precise, falsifiable claim — e.g. “X will reply within 3 days”" class="w-full bg-ink border border-line rounded px-2 py-2 text-[11px] mb-1.5">'+
       '<div class="grid grid-cols-3 gap-1.5 mb-1.5">'+
@@ -121,7 +127,7 @@ function predictionsPanel(){
       resolved.slice(0,15).map(p=>'<div class="py-1 border-b border-line/40"><span class="'+(p.outcome==='right'?'text-jade':'text-red-400')+' font-bold">'+p.outcome.toUpperCase()+'</span> · '+p.confidence+'% · '+esc(p.claim)+'</div>').join('')+'</details>':'')+
   '</div>';
 }
-function predRow(p){
+export function predRow(p){
   return '<div class="flex items-center gap-1.5 py-1 border-b border-line/40 last:border-0">'+
     '<div class="flex-1 min-w-0"><p class="text-[10px] text-gray-300 truncate">'+esc(p.claim)+'</p>'+
     '<p class="text-[8px] text-gray-600">'+p.confidence+'% · by '+p.resolve_by+(p.domain?' · '+esc(p.domain):'')+'</p></div>'+
@@ -130,27 +136,26 @@ function predRow(p){
     '<button class="btn px-1.5 py-1 text-[9px] bg-gray-800/60 border border-line text-gray-500" title="void (unfalsifiable/canceled)" data-act="resolvePred" data-args="['+p.id+',&quot;void&quot;]">—</button>'+
   '</div>';
 }
-async function savePrediction(){
+export async function savePrediction(){
   const claim=$('#pred-claim').value, confidence=Number($('#pred-conf').value), resolve_by=$('#pred-by').value, domain=$('#pred-domain').value;
   await api('post','/api/predictions',{claim,confidence,resolve_by,domain});
-  if (window.clearDrafts) clearDrafts(['pred-claim','pred-conf','pred-by','pred-domain']);
+  if (clearDrafts) clearDrafts(['pred-claim','pred-conf','pred-by','pred-domain']);
   FX.success(); FX.toast('CLAIM SEALED — reality will grade it on '+resolve_by,'gold');
   await loadPredictions(); render();
 }
-async function resolvePred(id,outcome){
+export async function resolvePred(id,outcome){
   await api('post','/api/predictions/'+id+'/resolve',{outcome});
   FX.tap(); await loadPredictions(); render();
 }
-window.savePrediction=savePrediction; window.resolvePred=resolvePred;
 
 /* ============ STATS ============ */
-function viewStats(){
-  const s=STATS;
+export function viewStats(){
+  const s=S.STATS;
   const avg=Math.round(s.days.reduce((a,d)=>a+d.pct,0)/s.days.length);
   const sleepDays=s.days.filter(d=>d.sleep!=null);
   const avgSleep=sleepDays.length?(sleepDays.reduce((a,d)=>a+d.sleep,0)/sleepDays.length).toFixed(1):'—';
   const catName={morning:'Morning',workout:'Exercise',deepwork:'Deep Work',study:'University',meal:'Meals',strategy:'Strategy',philosophy:'Philosophy',entertainment:'Entertainment',skincare:'Skincare',admin:'Admin',social:'Social',review:'Review',sleep:'Sleep',flex:'Recovery',rest:'Rest'};
-  const rank = FX.rank(STATE.points);
+  const rank = FX.rank(S.STATE.points);
   return header()+
   '<section id="stats-section" class="stagger">'+
     '<div class="card-lux p-4 mb-3 flex items-center gap-4">'+
@@ -159,12 +164,12 @@ function viewStats(){
         '<p class="text-[9px] text-gray-500 font-bold tracking-[.2em]">CURRENT RANK</p>'+
         '<p class="font-engraved font-bold text-lg gold-text"><i class="fas '+rank.icon+' mr-1"></i>'+rank.name+'</p>'+
         (rank.next
-          ?'<p class="text-[10px] text-gray-500 mt-0.5">'+(rank.nextAt-Math.max(STATE.points,0))+' pts to <span class="text-gold font-bold">'+rank.next+'</span> · '+rank.prog+'% there</p>'
+          ?'<p class="text-[10px] text-gray-500 mt-0.5">'+(rank.nextAt-Math.max(S.STATE.points,0))+' pts to <span class="text-gold font-bold">'+rank.next+'</span> · '+rank.prog+'% there</p>'
           :'<p class="text-[10px] text-gold mt-0.5">MAXIMUM RANK ACHIEVED</p>')+
       '</div>'+
     '</div>'+
     (s.alternativeExplanations?(function(){var ae=s.alternativeExplanations;var rate=ae.total?Math.round(ae.nonePlausible/ae.total*100):0;return '<div class="card p-3 mb-3 border-amber-800/40">'+'<h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1"><i class="fas fa-scale-balanced mr-1"></i>THE BRAKE — alternative explanations</h3>'+'<p class="text-xs text-gray-300">You logged <b>'+ae.total+'</b> alternative explanations on heated captures. <b class="'+(rate>=50?'text-red-400':'text-gray-300')+'">'+ae.nonePlausible+'</b> were \"none plausible\" ('+rate+'%).</p>'+'<p class="text-[10px] text-gray-500 mt-1">A rising none-plausible rate is the paranoia tell (Law 23). Low is good — it means you keep considering the charitable reading.</p>'+'</div>';})():'')+
-    (STATS.changelog&&STATS.changelog.length?'<div class="card p-3 mb-3">'+'<h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-scroll mr-1"></i>HOW THE RULES CHANGED</h3>'+STATS.changelog.map(function(e){return '<p class="text-[11px] text-gray-400 mb-1.5"><span class="text-gold font-bold">'+esc(e.date)+'</span> — '+esc(e.change)+'</p>';}).join('')+'<p class="text-[9px] text-gray-600 mt-1">The rules of your own game are visible. Nothing changes silently.</p>'+'</div>':'')+
+    (S.STATS.changelog&&S.STATS.changelog.length?'<div class="card p-3 mb-3">'+'<h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-scroll mr-1"></i>HOW THE RULES CHANGED</h3>'+S.STATS.changelog.map(function(e){return '<p class="text-[11px] text-gray-400 mb-1.5"><span class="text-gold font-bold">'+esc(e.date)+'</span> — '+esc(e.change)+'</p>';}).join('')+'<p class="text-[9px] text-gray-600 mt-1">The rules of your own game are visible. Nothing changes silently.</p>'+'</div>':'')+
     '<div class="grid grid-cols-3 gap-2 mb-3">'+
       '<div class="card-glass p-3 text-center"><p class="font-disp font-bold text-xl '+(avg>=80?'text-jade':avg>=50?'text-amber-400':'text-red-400')+'" data-countup="'+avg+'">'+avg+'</p><p class="text-[8px] text-gray-500 font-bold tracking-widest">14-DAY ADH %</p></div>'+
       '<div class="card-glass p-3 text-center"><p class="font-disp font-bold text-xl text-sky-400">'+avgSleep+'h</p><p class="text-[8px] text-gray-500 font-bold tracking-widest">AVG SLEEP</p></div>'+
@@ -224,7 +229,6 @@ function viewStats(){
   '</section>';
 }
 
-window.redeem=redeem; window.saveDebrief=saveDebrief;
 registerActions({
   saveDebrief:    () => saveDebrief(),
   redeem:         (e, el, id) => redeem(id),

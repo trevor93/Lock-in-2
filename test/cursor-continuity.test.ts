@@ -142,7 +142,7 @@ describe('Book 16 — Commander’s File carries the cursor', () => {
   })
 })
 
-import councilSource from '../public/static/app6.js?raw'
+import councilSource from '../public/static/app/features/council.js?raw'
 
 describe('Book 14 — frontend continuity-brief wiring', () => {
   it('offers a copy-continuity-brief action', () => {

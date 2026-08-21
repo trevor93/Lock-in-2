@@ -3,11 +3,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 // Extract the REAL escaping helpers from the shipped frontend source and run
-// them, rather than reasoning about them. app.js/app6.js can't be evaluated
-// wholesale (top-level IIFE needs axios + a live DOM), so pull out just the
-// pure functions under test.
-const appSrc = readFileSync(resolve(__dirname, '../public/static/app.js'), 'utf8')
-const app6Src = readFileSync(resolve(__dirname, '../public/static/app6.js'), 'utf8')
+// them, rather than reasoning about them. Book 7: esc/nl2br now live in
+// app/core/sanitize.js and mdLite in app/features/council.js; those modules can't
+// be evaluated wholesale here (they import siblings), so pull out just the pure
+// functions under test.
+const appSrc = readFileSync(resolve(__dirname, '../public/static/app/core/sanitize.js'), 'utf8')
+const app6Src = readFileSync(resolve(__dirname, '../public/static/app/features/council.js'), 'utf8')
 
 const escLine = appSrc.match(/const esc = [^\n]+/)![0]
 const nl2brLine = appSrc.match(/const nl2br = [^\n]+/)![0]

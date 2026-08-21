@@ -13,7 +13,7 @@
  * `id` anywhere among the siblings, so lists can reorder without being rebuilt.
  * Elements without an id are matched by tag name and position.
  */
-(function () {
+// (module scope replaces the former IIFE wrapper)
   'use strict';
 
   var FORM_TAGS = { INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1 };
@@ -159,6 +159,4 @@
     }
   }
 
-  if (typeof window !== 'undefined') window.morphInto = morphInto;
-  if (typeof module !== 'undefined' && module.exports) module.exports = { morphInto: morphInto };
-})();
+export { morphInto }
