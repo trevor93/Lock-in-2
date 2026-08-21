@@ -97,4 +97,39 @@ describe('B7 frontend interaction integrity', () => {
     expect(logged, '/api/blocks/42/log was not called').toBeTruthy()
     expect((logged!.data as { status: string }).status).toBe('done')
   })
+
+  it('the MIND drill flips a card and grading it posts to /api/cards/:id/review', async () => {
+    const card = {
+      maxim_id: 7, source: 'Sun Tzu', principle: 'Win first, then go to war.',
+      naive_reading: 'prepare', master_reading: 'decide it before the field',
+      my_words: null, mastery: 'new', due_date: '2026-08-20', reps: 0, lapses: 0,
+      interval_days: 0, total_reviews: 0, correct_reviews: 0,
+    }
+    const { calls } = bootFrontend({
+      'GET /api/auth/status': { setup: true, authed: true, csrfToken: 'test-csrf' },
+      'POST /api/tick': MINIMAL_STATE,
+      'GET /api/cards/due': [card],
+      'GET /api/maxims': [],
+      'POST /api/cards/7/review': { ok: true },
+    })
+    await flush()
+
+    ;(document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement).click()
+    await flush()
+    // Grade buttons only appear once the card is flipped.
+    const flip = document.querySelector('[data-act="flipCard"]') as HTMLElement
+    expect(flip, 'flip card not rendered in the drill').not.toBeNull()
+    flip.click()
+    await flush()
+
+    const good = Array.from(document.querySelectorAll('[data-act="gradeCard"]'))
+      .find((b) => (b.getAttribute('data-args') || '').includes(',2]')) as HTMLElement
+    expect(good, 'GOOD grade button not rendered after flip').toBeTruthy()
+    good.click()
+    await flush()
+
+    const graded = findCall(calls, 'POST', '/api/cards/7/review')
+    expect(graded, '/api/cards/7/review was not called').toBeTruthy()
+    expect((graded!.data as { grade: number }).grade).toBe(2)
+  })
 })
