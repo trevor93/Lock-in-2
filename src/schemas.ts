@@ -211,3 +211,12 @@ export const notificationPreferencesBodySchema = z.strictObject({
   quiet_end: clockTime.optional(),
   lead_minutes: z.number().int().min(0).max(60).optional(),
 })
+
+// Book 8.1 — the ratchet. Promotion/demotion name a block the commander already owns.
+export const ratchetPromoteBodySchema = z.strictObject({
+  block_id: positiveIdSchema.or(z.number().int().positive()),
+})
+export const ratchetDemoteBodySchema = z.strictObject({
+  block_id: positiveIdSchema.or(z.number().int().positive()),
+  reason: optionalTrimmedText(500),
+})

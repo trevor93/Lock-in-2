@@ -1,4 +1,8 @@
 // Book 7 refactor — extracted adherence/scoring math.
+// Book 8.1 (the ratchet): a day is scored on its MANDATORY set alone. Deck blocks are
+// visible and loggable and still earn their points, but they never move adherence and
+// never generate consequence. Until a mandatory set is named the prior rule stands.
+import { consequenceBlocks } from './ratchet'
 // Pure: it takes an array of block rows (each with weight, log_status, is_mvd)
 // and returns the weighted adherence plus the Minimum Viable Day verdict. No DB,
 // no request state — the single source of truth for how a day is scored.
@@ -19,7 +23,8 @@ export type Adherence = {
 // full credit, a partial is half. Context (weight 0) blocks are visible but
 // unscored. The Minimum Viable Day holds when every nominated CORE block landed.
 export function dayAdherence(blocks: any[]): Adherence {
-  const scored = blocks.filter((b: any) => (b.weight ?? 1) > 0)
+  const owed = consequenceBlocks(blocks as any[])
+  const scored = owed.filter((b: any) => (b.weight ?? 1) > 0)
   if (!scored.length) return { pct: 100, done: 0, total: 0, wScore: 0, wTotal: 0, mvdHeld: false, mvdTotal: 0, mvdDone: 0 }
   let wScore = 0, wTotal = 0, done = 0
   for (const b of scored) {

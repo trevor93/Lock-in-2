@@ -5,6 +5,7 @@
 // appeal availability, and the cheap re-entry (needsCatchup) signal. No writes.
 import { blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
+import { isMandatory, needsAnchors, ANCHOR_TARGET } from './ratchet'
 import { computeStreak, trailingMedian } from './streak'
 import { addDays, isoWeekKey } from './time'
 
@@ -81,6 +82,15 @@ export async function buildState(DB: D1Database, userId: number, date: string, t
     dueCards: dueCards?.n ?? 0, dueTongue: (dueTongue as any)?.n ?? 0, activeUnits,
     median, delta: median === null ? null : adh.pct - median,
     appealAvailable: !appealUsed, loadReductions,
+    // Book 8.1 — the ratchet, derived from the blocks already loaded (no extra query).
+    // needsAnchors tells TODAY to ask him to name his three anchors instead of
+    // scoring a day he never agreed to.
+    ratchet: {
+      mandatoryToday: blocks.filter(isMandatory).length,
+      deckToday: blocks.filter((b: any) => !isMandatory(b)).length,
+      anchorTarget: ANCHOR_TARGET,
+      needsAnchors: needsAnchors(blocks as any[]),
+    },
     duePredictions: (openPredictions as any)?.n ?? 0,
     needsCatchup
   }

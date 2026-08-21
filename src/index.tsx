@@ -24,6 +24,7 @@ import { agentRoute, AGENT_V1_PATHS, authenticateAgent, agentCredentialEvent } f
 import { registerAgentCredentialRoutes } from './routes/agent-credentials'
 import { registerCalendarRoutes } from './routes/calendar'
 import { registerPushRoutes } from './routes/push'
+import { registerRatchetRoutes } from './routes/ratchet'
 import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -242,6 +243,9 @@ registerCalendarRoutes(app)
 
 // Alarms: Web Push subscribe/preferences + the internal Cron entry (Book 7).
 registerPushRoutes(app)
+
+// The ratchet: mandatory set vs deck, promotion and demotion (Book 8.1).
+registerRatchetRoutes(app)
 
 // COUNCIL/Hermes routes registered from ./routes/hermes (Book 7).
 registerHermesRoutes(app)
