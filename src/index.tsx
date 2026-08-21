@@ -13,10 +13,11 @@ import { computeStreak, trailingMedian } from './streak'
 import { type ChapterCursor, readChapterCursor } from './cursor'
 import { hermesBriefing, continuityBrief } from './commanders-file'
 import { callModel, fencedModelData, EXTERNAL_MESSAGE_PREFIX, modelAudit, modelBaseURL } from './ai'
-import { flagExists, addFlag, writeDaySummary, runHonestyEngine, runSameDayEnforcement } from './enforcement'
+import { flagExists, addFlag, writeDaySummary, runEnforcement } from './enforcement'
 import { userNow, safeDate } from './clock'
 import { type SessionRecord, sessionCookie, findSession, sessionValid, revokePresentedSession, issueSession, ownerUser } from './auth'
 import { isNonePlausible, altGate, recordAltExplanation, requestId, auditEvent, withIdempotency } from './request-support'
+import { ensureUnlocks, ensureCards } from './curriculum'
 import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -759,15 +760,7 @@ app.post('/api/tick', async (c) => {
   return c.json(await buildState(DB, userId, date, time))
 })
 
-async function runEnforcement(DB: D1Database, userId: number): Promise<{ date: string; time: string; tz: string }> {
-  const now = await userNow(DB, userId)
-  await ensureUnlocks(DB, userId)
-  await ensureCards(DB, userId)
-  await runHonestyEngine(DB, userId, now.date)
-  await runSameDayEnforcement(DB, userId, now.date, now.time)
-  await writeDaySummary(DB, userId, now.date, false)
-  return now
-}
+// runEnforcement extracted to ./enforcement (Book 7).
 
 // Cloudflare Pages has no native scheduled handler. A separately configured Cron
 // Worker calls this POST with the shared secret; no client-supplied clock is read.
@@ -1292,38 +1285,7 @@ app.get('/api/debriefs', async (c) => {
 })
 
 // ============ CAMPAIGN (progress-locked) ============
-async function ensureUnlocks(DB: D1Database, userId: number) {
-  // seed progress rows for all units
-  await DB.prepare(
-    `INSERT OR IGNORE INTO unit_progress (user_id, unit_id, status)
-     SELECT ?, u.id, 'locked' FROM units u
-     WHERE u.id NOT IN (SELECT unit_id FROM unit_progress WHERE user_id=?)`
-  ).bind(userId, userId).run()
-  // per track: walk phases in order; first incomplete unit becomes active
-  const phases = (await DB.prepare(`SELECT * FROM phases ORDER BY sort_order`).all()).results as any[]
-  const tracks: Record<string, any[]> = {}
-  for (const p of phases) { (tracks[p.track] ||= []).push(p) }
-  for (const track of Object.keys(tracks)) {
-    let blocked = false
-    for (const p of tracks[track]) {
-      if (blocked) break
-      const units = (await DB.prepare(
-        `SELECT u.id, up.status FROM units u JOIN unit_progress up ON up.unit_id=u.id
-         WHERE up.user_id=? AND u.phase_id=? ORDER BY u.sort_order`
-      ).bind(userId, p.id).all()).results as any[]
-      for (const u of units) {
-        if (u.status === 'complete') continue
-        if (u.status === 'locked') {
-          await DB.prepare(
-            `UPDATE unit_progress SET status='active' WHERE unit_id=? AND user_id=?`,
-          ).bind(u.id, userId).run()
-        }
-        blocked = true
-        break
-      }
-    }
-  }
-}
+// ensureUnlocks extracted to ./curriculum (Book 7).
 
 app.get('/api/campaign', async (c) => {
   const DB = c.env.DB
@@ -1468,13 +1430,7 @@ function myWordsOrNull(body: any): string | null {
   return body.my_words ?? null
 }
 
-async function ensureCards(DB: D1Database, userId: number) {
-  await DB.prepare(
-    `INSERT OR IGNORE INTO flashcards (user_id, maxim_id)
-     SELECT ?, id FROM maxims
-     WHERE user_id=? AND id NOT IN (SELECT maxim_id FROM flashcards WHERE user_id=?)`,
-  ).bind(userId, userId, userId).run()
-}
+// ensureCards extracted to ./curriculum (Book 7).
 app.get('/api/cards/due', async (c) => {
   const DB = c.env.DB
   const userId = c.get('userId')

@@ -10,6 +10,8 @@ import { getSetting, blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
 import { addDays } from './time'
 import { computeStreak, trailingMedian } from './streak'
+import { userNow } from './clock'
+import { ensureUnlocks, ensureCards } from './curriculum'
 
 export async function flagExists(
   DB: D1Database,
@@ -245,4 +247,16 @@ export async function runSameDayEnforcement(DB: D1Database, userId: number, date
       `[Block #${b.id}] ${nn ? 'NON-NEGOTIABLE ' : ''}MISSED — CANCELED: "${b.title}" (${b.start_time}–${b.end_time}) ended unlogged. The window is closed. ${penalty} pts. One appeal token per week can reopen a window — at the cost of a written, permanent reason.`,
       penalty, 'block', b.id)
   }
+}
+
+// The single enforcement pass (Book 5.3): the only place engines run, invoked
+// by POST /api/tick and the protected internal cron job. Never by a GET.
+export async function runEnforcement(DB: D1Database, userId: number): Promise<{ date: string; time: string; tz: string }> {
+  const now = await userNow(DB, userId)
+  await ensureUnlocks(DB, userId)
+  await ensureCards(DB, userId)
+  await runHonestyEngine(DB, userId, now.date)
+  await runSameDayEnforcement(DB, userId, now.date, now.time)
+  await writeDaySummary(DB, userId, now.date, false)
+  return now
 }
