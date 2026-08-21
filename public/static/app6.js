@@ -16,10 +16,10 @@ const domainMeta = (d) => DOMAINS.find(x => x[0] === d) || DOMAINS[DOMAINS.lengt
 function viewCouncil() {
   return header() +
   '<section id="council-section" class="fade-in">' +
-    '<button class="btn w-full p-2 mb-3 text-xs font-bold bg-panel border border-line text-gray-300" onclick="copyContinuityBrief()"><i class="fas fa-clipboard-list mr-1"></i>COPY SESSION CONTINUITY BRIEF</button>' +
+    '<button class="btn w-full p-2 mb-3 text-xs font-bold bg-panel border border-line text-gray-300" data-act="copyBrief"><i class="fas fa-clipboard-list mr-1"></i>COPY SESSION CONTINUITY BRIEF</button>' +
     '<div class="flex gap-2 mb-3">' +
-      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'hermes' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" onclick="COUNCIL_MODE=\'hermes\';render()"><i class="fas fa-user-secret mr-1"></i>HERMES</button>' +
-      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'intel' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" onclick="COUNCIL_MODE=\'intel\';render()"><i class="fas fa-folder-open mr-1"></i>LIFE INTEL (' + (INTEL ? INTEL.length : 0) + ')</button>' +
+      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'hermes' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;hermes&quot;]"><i class="fas fa-user-secret mr-1"></i>HERMES</button>' +
+      '<button class="btn flex-1 p-2 text-xs font-bold ' + (COUNCIL_MODE === 'intel' ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') + '" data-act="setCouncilMode" data-args="[&quot;intel&quot;]"><i class="fas fa-folder-open mr-1"></i>LIFE INTEL (' + (INTEL ? INTEL.length : 0) + ')</button>' +
     '</div>' +
     (COUNCIL_MODE === 'hermes' ? viewHermes() : viewIntel()) +
   '</section>';
@@ -41,21 +41,21 @@ async function showBridge() {
     '<p class="text-[11px] text-gray-400 mb-2">Issue one credential per device. Default bridge access excludes full export. Revoke a lost or retired device without disrupting the others.</p>' +
     '<label class="text-[10px] font-bold text-gray-400">DEVICE LABEL</label>' +
     '<input id="bridge-device-label" maxlength="100" placeholder="Termux phone" class="w-full mb-2">' +
-    '<button class="btn w-full p-2 mb-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" onclick="issueBridgeCredential(this)">ISSUE DEFAULT BRIDGE CREDENTIAL</button>' +
+    '<button class="btn w-full p-2 mb-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" data-act="issueBridge">ISSUE DEFAULT BRIDGE CREDENTIAL</button>' +
     (BRIDGE_CREDENTIAL
       ? '<p class="text-[10px] font-bold text-gray-400">RAW CREDENTIAL — COPY NOW:</p>' +
-        '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.textContent).then(()=>toast(\'Credential copied.\'))">' + esc(BRIDGE_CREDENTIAL.token) + '</div>' +
+        '<div class="card p-2 mb-2 text-[10px] font-mono text-gold break-all" data-act="copyCred">' + esc(BRIDGE_CREDENTIAL.token) + '</div>' +
         '<p class="text-[10px] text-amber-300 mb-2">Shown once. The server stores only its hash.</p>'
       : '<div class="card p-2 mb-2 text-[10px] text-gray-400">No raw credential is retrievable. Issue one and copy it before closing.</div>') +
     '<p class="text-[10px] font-bold text-gray-400">ACTIVE / REVOKED DEVICES:</p>' +
     '<div class="mb-2">' + (BRIDGE_CREDENTIALS.length ? BRIDGE_CREDENTIALS.map(function(c) {
       return '<div class="card p-2 mb-1 text-[10px]"><div class="flex justify-between gap-2"><span><b>' + esc(c.deviceLabel) + '</b><br><span class="font-mono text-gray-500">' + esc(c.tokenPrefix) + '…</span><br><span class="text-gray-500">' + esc(c.scopes.join(', ')) + '</span></span>' +
-        (c.revokedAt ? '<span class="text-red-400">REVOKED</span>' : '<button class="btn px-2 border border-red-700 text-red-300" onclick="revokeBridgeCredential(' + c.id + ',this)">REVOKE</button>') + '</div></div>';
+        (c.revokedAt ? '<span class="text-red-400">REVOKED</span>' : '<button class="btn px-2 border border-red-700 text-red-300" data-act="revokeBridge" data-args="[' + c.id + ']">REVOKE</button>') + '</div></div>';
     }).join('') : '<p class="text-[10px] text-gray-500">No credentials issued.</p>') + '</div>' +
     '<p class="text-[10px] font-bold text-gray-400">TERMUX:</p>' +
     '<pre class="card p-2 mb-2 text-[9px] font-mono text-emerald-300 overflow-x-auto">pkg install python termux-api -y\npip install requests\ncurl -o hermes_bridge.py \\\n  ' + url + '/static/hermes_bridge.py\nmkdir -p ~/.config/warroom\numask 077\ncat &gt; ~/.config/warroom/agent_token\n# Paste the copied credential, press Enter, then Ctrl-D\nexport WARROOM_URL="' + url + '"\nexport WARROOM_TOKEN_FILE="$HOME/.config/warroom/agent_token"</pre>' +
     '<p class="text-[10px] text-gray-500 mb-2">Full export requires a separate credential carrying <span class="font-mono">export:read</span> and the bridge flag <span class="font-mono">--authorize-full-export</span>.</p>' +
-    '<button class="btn w-full p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" onclick="BRIDGE_CREDENTIAL=null;this.closest(\'.fixed\').remove()">CLOSE</button>' +
+    '<button class="btn w-full p-2 bg-gray-800 border border-line text-gray-300 text-xs font-bold" data-act="closeBridge">CLOSE</button>' +
     '</div>';
   document.body.appendChild(el);
 }
@@ -80,8 +80,8 @@ window.revokeBridgeCredential = revokeBridgeCredential;
 function viewHermes() {
   return '<div class="card p-3 mb-3 border-gold/30">' +
     '<p class="text-[10px] text-gray-500 leading-relaxed"><span class="text-gold font-bold">HERMES</span> reads your ENTIRE file live: every debrief, honesty flag, drill report, and life-intel move. He answers with named principles, calls out your patterns, and never flatters. Ask him anything — loyalty, money moves, classmates, reading manipulations, your next play.</p>' +
-    '<button class="btn w-full p-2.5 mt-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" onclick="convene()"><i class="fas fa-chess-king mr-1"></i> CONVENE MORNING WAR COUNCIL (auto-review of my file)</button>' +
-    '<button class="btn w-full p-2.5 mt-2 bg-indigo-900/50 border border-indigo-700 text-indigo-200 text-xs font-bold" onclick="showBridge()"><i class="fas fa-terminal mr-1"></i> HERMES BRIDGE — connect Termux / Telegram / CLI agent</button>' +
+    '<button class="btn w-full p-2.5 mt-2 bg-gold/15 border border-gold/40 text-gold text-xs font-bold" data-act="convene"><i class="fas fa-chess-king mr-1"></i> CONVENE MORNING WAR COUNCIL (auto-review of my file)</button>' +
+    '<button class="btn w-full p-2.5 mt-2 bg-indigo-900/50 border border-indigo-700 text-indigo-200 text-xs font-bold" data-act="showBridge"><i class="fas fa-terminal mr-1"></i> HERMES BRIDGE — connect Termux / Telegram / CLI agent</button>' +
   '</div>' +
   '<div id="hermes-log" class="mb-3 flex flex-col gap-2">' +
     (HERMES_HIST && HERMES_HIST.length ? HERMES_HIST.map(m => {
@@ -97,7 +97,7 @@ function viewHermes() {
   '</div>' +
   '<div class="card-glass p-2 flex gap-2 items-end sticky bottom-20">' +
     '<textarea id="hermes-input" rows="2" placeholder="Speak to your counsel, Commander…" class="flex-1"></textarea>' +
-    '<button class="btn btn-gold p-3" onclick="askHermes()"><i class="fas fa-paper-plane"></i></button>' +
+    '<button class="btn btn-gold p-3" data-act="askHermes"><i class="fas fa-paper-plane"></i></button>' +
   '</div>';
 }
 
@@ -146,7 +146,7 @@ async function convene() {
 
 /* ============ LIFE INTEL ============ */
 function viewIntel() {
-  let h = '<button class="btn w-full p-2.5 mb-3 bg-emerald-900/50 border border-emerald-700 text-emerald-200 text-xs font-bold" onclick="INTEL_OPEN=!INTEL_OPEN;render()"><i class="fas fa-plus mr-1"></i> FILE NEW INTEL — a move, a read, a lesson (+15)</button>';
+  let h = '<button class="btn w-full p-2.5 mb-3 bg-emerald-900/50 border border-emerald-700 text-emerald-200 text-xs font-bold" data-act="toggleIntel"><i class="fas fa-plus mr-1"></i> FILE NEW INTEL — a move, a read, a lesson (+15)</button>';
   if (INTEL_OPEN) {
     h += '<div class="card p-3 mb-3 fade-in">' +
       '<label class="text-[10px] font-bold text-gray-400">DOMAIN</label>' +
@@ -162,7 +162,7 @@ function viewIntel() {
       '<select id="in-heat" class="mb-1.5"><option value="calm">Calm</option><option value="baited">Baited</option><option value="proud">Proud</option><option value="afraid">Afraid</option></select>' +
       '<label class="text-[10px] font-bold text-amber-400">ALTERNATIVE EXPLANATION — required when heat is not calm (Law 23). The brake before you attribute intent. None plausible is allowed, but it is counted.</label>' +
       '<textarea id="in-alt" rows="2" placeholder="The most charitable reading. What else could explain it?" class="mb-1.5"></textarea>' +
-      '<button class="btn w-full p-2.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" onclick="fileIntel()">FILE INTO THE RECORD</button>' +
+      '<button class="btn w-full p-2.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" data-act="fileIntel">FILE INTO THE RECORD</button>' +
     '</div>';
   }
   if (!INTEL || !INTEL.length) return h + '<div class="card p-4 text-center text-xs text-gray-500">The record is empty. Every real-world move you file becomes ammunition: Hermes cross-references all of it, and patterns emerge that you cannot see alone.</div>';
@@ -184,7 +184,7 @@ function viewIntel() {
         (e.lesson ? '<p><span class="text-fuchsia-400 font-bold">LESSON:</span> ' + nl2br(e.lesson) + '</p>' : '') +
         (e.hermes_analysis
           ? '<div class="card p-2 mt-1 border-gold/25"><p class="text-[9px] font-bold text-gold">🦉 HERMES COUNSEL</p><div class="hermes-md">' + mdLite(e.hermes_analysis) + '</div></div>'
-          : '<button class="btn px-3 py-1.5 mt-1 bg-gold/15 border border-gold/40 text-gold text-[10px] font-bold" onclick="analyzeIntel(' + e.id + ')"><i class="fas fa-user-secret mr-1"></i>REQUEST HERMES ANALYSIS</button>') +
+          : '<button class="btn px-3 py-1.5 mt-1 bg-gold/15 border border-gold/40 text-gold text-[10px] font-bold" data-act="analyzeIntel" data-args="[' + e.id + ']"><i class="fas fa-user-secret mr-1"></i>REQUEST HERMES ANALYSIS</button>') +
       '</div>' +
     '</details>';
   }).join('');
@@ -235,3 +235,18 @@ async function copyContinuityBrief() {
 }
 window.copyContinuityBrief = copyContinuityBrief;
 window.fileIntel = fileIntel; window.analyzeIntel = analyzeIntel;
+
+registerActions({
+  copyBrief:      () => copyContinuityBrief(),
+  setCouncilMode: (e, el, mode) => { COUNCIL_MODE = mode; render(); },
+  issueBridge:    (e, el) => issueBridgeCredential(el),
+  copyCred:       (e, el) => { if (navigator.clipboard) navigator.clipboard.writeText(el.textContent).then(() => toast('Credential copied.')); },
+  revokeBridge:   (e, el, id) => revokeBridgeCredential(id, el),
+  closeBridge:    (e, el) => { BRIDGE_CREDENTIAL = null; const d = el.closest('.fixed'); if (d) d.remove(); },
+  convene:        () => convene(),
+  showBridge:     () => showBridge(),
+  askHermes:      () => askHermes(),
+  toggleIntel:    () => { INTEL_OPEN = !INTEL_OPEN; render(); },
+  fileIntel:      () => fileIntel(),
+  analyzeIntel:   (e, el, id) => analyzeIntel(id),
+});

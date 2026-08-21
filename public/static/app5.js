@@ -136,8 +136,8 @@ const Alarm = {
       '<p class="font-disp font-bold text-lg">' + esc(b.title) + '</p>' +
       '<p class="text-xs text-gray-400">' + esc(b.description || '') + '</p>' +
       '<div class="flex gap-2 mt-2">' +
-      '<button class="btn flex-1 p-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" onclick="this.closest(\'div.fixed\').remove();TAB=\'now\';render()">REPORTING FOR DUTY</button>' +
-      '<button class="btn p-2 bg-gray-800 text-gray-400 text-xs border border-line" onclick="this.closest(\'div.fixed\').remove()">✕</button></div>';
+      '<button class="btn flex-1 p-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" data-act="dismissHome">REPORTING FOR DUTY</button>' +
+      '<button class="btn p-2 bg-gray-800 text-gray-400 text-xs border border-line" data-act="dismissClosest">✕</button></div>';
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 120000);
   },
@@ -165,11 +165,11 @@ function viewLibrary() {
     '<div class="card-glass p-3.5 mb-3">' +
       '<h3 class="text-[10px] font-bold tracking-[.2em] text-gold mb-1"><i class="fas fa-bell"></i> ALARMS & ENGAGEMENT</h3>' +
       '<div class="flex items-center justify-between py-1.5"><span class="text-xs">War-horn alarm at every block start</span>' +
-      '<button class="btn px-3 py-1 text-[11px] font-bold ' + (Alarm.enabled ? 'bg-emerald-800 text-emerald-100' : 'bg-gray-800 text-gray-500 border border-line') + '" onclick="Alarm.toggle()">' + (Alarm.enabled ? 'ARMED' : 'OFF') + '</button></div>' +
+      '<button class="btn px-3 py-1 text-[11px] font-bold ' + (Alarm.enabled ? 'bg-emerald-800 text-emerald-100' : 'bg-gray-800 text-gray-500 border border-line') + '" data-act="alarmToggle">' + (Alarm.enabled ? 'ARMED' : 'OFF') + '</button></div>' +
       '<div class="flex items-center justify-between py-1.5"><span class="text-xs">Test the war horn</span>' +
-      '<button class="btn px-3 py-1 text-[11px] font-bold bg-gold/20 border border-gold/50 text-gold" onclick="Alarm.ring(2)">SOUND IT</button></div>' +
+      '<button class="btn px-3 py-1 text-[11px] font-bold bg-gold/20 border border-gold/50 text-gold" data-act="alarmRing">SOUND IT</button></div>' +
       '<div class="flex items-center justify-between py-1.5"><span class="text-xs">Push notifications</span>' +
-      '<button class="btn px-3 py-1 text-[11px] font-bold bg-sky-900/60 border border-sky-700 text-sky-200" onclick="Notification.requestPermission().then(p=>toast(p===\'granted\'?\'Notifications armed.\':\'Denied — enable in browser settings.\',p!==\'granted\'))">ENABLE</button></div>' +
+      '<button class="btn px-3 py-1 text-[11px] font-bold bg-sky-900/60 border border-sky-700 text-sky-200" data-act="askNotify">ENABLE</button></div>' +
       '<div class="flex items-center justify-between py-1.5"><span class="text-xs pr-2">Device calendar + native alarms (rings even when app is closed)</span>' +
       '<a class="btn px-3 py-1 text-[11px] font-bold bg-indigo-900/60 border border-indigo-700 text-indigo-200 shrink-0" href="/calendar.ics" download>EXPORT .ICS</a></div>' +
       '<p class="text-[9px] text-gray-600 mt-1">Import warroom.ics into Google Calendar / iPhone Calendar once — every block becomes a repeating native event with a 2-min-before alert. That is the bulletproof layer: your phone itself becomes the war horn.</p>' +
@@ -179,7 +179,7 @@ function viewLibrary() {
       const total = b.chapters || 0;
       const pct = total ? Math.round((b.chaptersDone / total) * 100) : 0;
       const finished = total > 0 && b.chaptersDone >= total;
-      return '<button class="' + (finished ? 'card-lux' : 'card') + ' w-full p-3.5 mb-2 text-left flex items-center gap-3" onclick="openBook(\'' + b.id + '\')">' +
+      return '<button class="' + (finished ? 'card-lux' : 'card') + ' w-full p-3.5 mb-2 text-left flex items-center gap-3" data-act="openBook" data-args="[&quot;' + b.id + '&quot;]">' +
         '<div class="w-10 h-12 rounded-md flex items-center justify-center shrink-0" style="background:linear-gradient(160deg,' + (b.phase === 'PHIL' ? '#1e1b4b,#0f0d26' : '#4c0519,#1c0208') + ');border:1px solid ' + (b.phase === 'PHIL' ? 'rgba(129,140,248,.35)' : 'rgba(244,63,94,.35)') + ';box-shadow:inset 0 1px 0 rgba(255,255,255,.08)">' +
           (finished ? '<i class="fas fa-crown text-gold"></i>' : '<i class="fas fa-book ' + (b.phase === 'PHIL' ? 'text-indigo-400' : 'text-rose-400') + '"></i>') +
         '</div>' +
@@ -211,10 +211,10 @@ function viewReader() {
   const ch = BOOK.chapters[CHAP_IDX];
   const chPct = Math.round(((CHAP_IDX + 1) / BOOK.chapters.length) * 100);
   return '<header class="flex items-center gap-2 mb-1 sticky top-0 py-2 z-40" style="background:linear-gradient(180deg,var(--ink-1) 75%,transparent)">' +
-    '<button class="btn btn-ghost px-3 py-2 text-xs" onclick="FX.tap();BOOK=null;loadLibrary().then(render)"><i class="fas fa-arrow-left"></i></button>' +
+    '<button class="btn btn-ghost px-3 py-2 text-xs" data-act="closeBook"><i class="fas fa-arrow-left"></i></button>' +
     '<div class="flex-1 min-w-0"><p class="text-xs font-bold truncate text-white">' + esc(BOOK.title) + '</p>' +
     '<p class="text-[9px] text-gray-500">' + esc(BOOK.author) + ' · tr. ' + esc(BOOK.translator) + '</p></div>' +
-    '<select class="!w-auto text-xs" onchange="CHAP_IDX=Number(this.value);render();window.scrollTo(0,0)">' +
+    '<select class="!w-auto text-xs" data-act-change="chapSelect">' +
       BOOK.chapters.map((c, i) => '<option value="' + i + '" ' + (i === CHAP_IDX ? 'selected' : '') + '>' + esc(c.title.slice(0, 40)) + '</option>').join('') +
     '</select>' +
   '</header>' +
@@ -227,7 +227,7 @@ function viewReader() {
     '</div>' +
     ch.paras.map((p, i) => '<p class="text-[13.5px] leading-[1.85] text-gray-300 mb-3.5" style="text-align:justify">' + (i === 0 ? '<span class="font-engraved text-2xl gold-text float-left mr-1.5 leading-none mt-0.5">' + esc(p.charAt(0)) + '</span>' + esc(p.slice(1)) : esc(p)) + '</p>').join('') +
     '<div class="card-lux p-4 my-5 text-center">' +
-      '<button class="btn btn-gold w-full p-3 text-sm" onclick="finishChapter()"><i class="fas fa-check mr-1"></i> CHAPTER CONQUERED (+20) → NEXT</button>' +
+      '<button class="btn btn-gold w-full p-3 text-sm" data-act="finishChapter"><i class="fas fa-check mr-1"></i> CHAPTER CONQUERED (+20) → NEXT</button>' +
       '<p class="text-[9px] text-gray-600 mt-2">Slow reading is deep reading. Mark done only when you truly finished — the honesty engine trusts you here.</p>' +
     '</div>' +
   '</article>';
@@ -248,3 +248,15 @@ async function finishChapter() {
 
 window.openBook = openBook; window.finishChapter = finishChapter;
 window.viewLibrary = viewLibrary; window.loadLibrary = loadLibrary;
+
+registerActions({
+  dismissHome:    (e, el) => { const d = el.closest('div.fixed'); if (d) d.remove(); TAB = 'now'; render(); },
+  dismissClosest: (e, el) => { const d = el.closest('div.fixed'); if (d) d.remove(); },
+  alarmToggle:    () => Alarm.toggle(),
+  alarmRing:      () => Alarm.ring(2),
+  askNotify:      () => Notification.requestPermission().then((p) => toast(p === 'granted' ? 'Notifications armed.' : 'Denied — enable in browser settings.', p !== 'granted')),
+  openBook:       (e, el, id) => openBook(id),
+  closeBook:      () => { FX.tap(); BOOK = null; loadLibrary().then(render); },
+  chapSelect:     (e, el) => { CHAP_IDX = Number(el.value); render(); window.scrollTo(0, 0); },
+  finishChapter:  () => finishChapter(),
+});

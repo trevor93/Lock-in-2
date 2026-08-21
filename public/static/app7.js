@@ -90,7 +90,7 @@ function viewTongue(){
     <div class="flex gap-1.5 mb-3">
       ${[['today','fa-crosshairs','TRAIN'],['capture','fa-plus','CAPTURE'],['armory','fa-box-archive','ARMORY'],['exam','fa-graduation-cap','EXAM']].map(([v,ic,l])=>`
         <button class="btn flex-1 py-2 text-[10px] font-bold tracking-wider ${TG.view===v?'bg-gold/15 text-gold border border-gold/40':'bg-panel text-gray-400 border border-line'}"
-          onclick="TG.view='${v}';tgRefresh()"><i class="fas ${ic} mr-1"></i>${l}</button>`).join('')}
+          data-act="tgView" data-args="${actArgs([v])}"><i class="fas ${ic} mr-1"></i>${l}</button>`).join('')}
     </div>
 
     ${TG.view==='today'?tgToday():TG.view==='capture'?tgCapture():TG.view==='armory'?tgArmory():tgExamView()}
@@ -121,7 +121,7 @@ function tgToday(){
   }).join('<div class="text-gray-700 self-center">→</div>');
   return `
     ${due.length?`
-    <button class="btn w-full p-4 mb-3 bg-gold/10 border border-gold/40 text-gold font-bold text-sm" onclick="tgStartDrill()">
+    <button class="btn w-full p-4 mb-3 bg-gold/10 border border-gold/40 text-gold font-bold text-sm" data-act="tgStartDrill">
       <i class="fas fa-dumbbell mr-1"></i> ${due.length} RESPONSE${due.length>1?'S':''} DUE — DRILL THE ARMORY NOW
     </button>`:`
     <div class="card p-4 mb-3 text-center">
@@ -152,7 +152,7 @@ function tgToday(){
     </div>
 
     ${!s.weekExamDone && s.total>=3?`
-    <button class="btn w-full p-3 mb-3 bg-red-950/40 border border-red-800/50 text-red-300 text-xs font-bold" onclick="TG.view='exam';render()">
+    <button class="btn w-full p-3 mb-3 bg-red-950/40 border border-red-800/50 text-red-300 text-xs font-bold" data-act="tgExamView">
       <i class="fas fa-graduation-cap mr-1"></i> WEEKLY EXAM NOT TAKEN — FACE IT (pass ≥80% or take the flag)
     </button>`:''}
 
@@ -187,7 +187,7 @@ function tgCapture(){
         </select>
       </div>
     </div>
-    <button class="btn btn-gold w-full p-3 text-sm font-bold" onclick="tgSave()"><i class="fas fa-vault mr-1"></i> LOCK IT IN THE ARMORY (+3 pts)</button>
+    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgSave"><i class="fas fa-vault mr-1"></i> LOCK IT IN THE ARMORY (+3 pts)</button>
     <p class="text-[9px] text-gray-600 mt-2 text-center">It enters the drill queue immediately — first drill today.</p>
   </div>`;
 }
@@ -220,7 +220,7 @@ function tgDrillCard(){
       <h3 class="font-engraved font-bold text-lg gold-text">DRILL SESSION COMPLETE</h3>
       <p class="text-xs text-gray-400 mt-1">${s.done} lines attacked · ${s.fluent} fluent</p>
       <p class="text-[10px] text-gray-500 mt-2 leading-relaxed">Every honest grade tightens the schedule. Lines you almost lost come back tomorrow; lines you own retreat for weeks — that is long-term memory being built.</p>
-      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" onclick="tgRefresh()">BACK TO TRAINING GROUND</button>
+      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgRefresh">BACK TO TRAINING GROUND</button>
     </div>`;
   }
   const r = list[TG.drillIdx];
@@ -300,13 +300,13 @@ function tgDrillCard(){
     <p class="text-[10px] text-gray-500 mb-3 leading-relaxed"><i class="fas fa-circle-info mr-1"></i>${mHint}</p>
     ${challenge}
     ${!TG.drillReveal?`
-    <button class="btn btn-gold w-full p-3 mt-2 text-sm font-bold" onclick="TG.drillReveal=true;FX.tap();render()"><i class="fas fa-eye mr-1"></i> REVEAL THE LINE</button>`:`
+    <button class="btn btn-gold w-full p-3 mt-2 text-sm font-bold" data-act="tgDrillReveal"><i class="fas fa-eye mr-1"></i> REVEAL THE LINE</button>`:`
     <p class="text-[10px] font-bold tracking-widest text-gray-400 text-center mt-3 mb-2">HONEST GRADE — HOW DID IT FIRE?</p>
     <div class="grid grid-cols-4 gap-1.5">
-      <button class="btn p-2.5 bg-red-950/60 border border-red-800/60 text-red-300 text-[10px] font-bold" onclick="tgGrade(${r.id},0,'${mode}')">BLANK<br><span class="text-[8px] opacity-70">reset</span></button>
-      <button class="btn p-2.5 bg-amber-950/60 border border-amber-800/60 text-amber-300 text-[10px] font-bold" onclick="tgGrade(${r.id},1,'${mode}')">SHAKY<br><span class="text-[8px] opacity-70">soon</span></button>
-      <button class="btn p-2.5 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px] font-bold" onclick="tgGrade(${r.id},2,'${mode}')">SOLID<br><span class="text-[8px] opacity-70">later</span></button>
-      <button class="btn p-2.5 bg-gold/15 border border-gold/50 text-gold text-[10px] font-bold" onclick="tgGrade(${r.id},3,'${mode}')">FLUENT<br><span class="text-[8px] opacity-70">far</span></button>
+      <button class="btn p-2.5 bg-red-950/60 border border-red-800/60 text-red-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id,0,mode])}">BLANK<br><span class="text-[8px] opacity-70">reset</span></button>
+      <button class="btn p-2.5 bg-amber-950/60 border border-amber-800/60 text-amber-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id,1,mode])}">SHAKY<br><span class="text-[8px] opacity-70">soon</span></button>
+      <button class="btn p-2.5 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id,2,mode])}">SOLID<br><span class="text-[8px] opacity-70">later</span></button>
+      <button class="btn p-2.5 bg-gold/15 border border-gold/50 text-gold text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id,3,mode])}">FLUENT<br><span class="text-[8px] opacity-70">far</span></button>
     </div>`}
   </div>`;
 }
@@ -333,12 +333,12 @@ function tgArmory(){
   return `
   <div class="flex gap-1.5 mb-2">
     <input id="tg-search" class="flex-1 bg-black/30 border border-line rounded-lg px-3 py-2 text-xs" placeholder="Search situations, questions, lines…" value="${esc(TG.search)}"
-      onchange="TG.search=this.value;tgRefresh()">
-    <button class="btn px-3 bg-panel border border-line text-gray-400 text-xs" onclick="TG.search='';tgRefresh()"><i class="fas fa-xmark"></i></button>
+      data-act-change="tgSearch">
+    <button class="btn px-3 bg-panel border border-line text-gray-400 text-xs" data-act="tgSearchClear"><i class="fas fa-xmark"></i></button>
   </div>
   <div class="flex gap-1 mb-3 overflow-x-auto pb-1" style="scrollbar-width:none">
-    <button class="pill shrink-0 ${TG.filter==='all'?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" onclick="TG.filter='all';tgRefresh()">ALL</button>
-    ${TG_CATS.map(c=>`<button class="pill shrink-0 ${TG.filter===c[0]?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" onclick="TG.filter='${c[0]}';tgRefresh()"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join('')}
+    <button class="pill shrink-0 ${TG.filter==='all'?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs(['all'])}">ALL</button>
+    ${TG_CATS.map(c=>`<button class="pill shrink-0 ${TG.filter===c[0]?'bg-gold/15 text-gold border border-gold/40':'bg-gray-900 text-gray-400 border border-line'}" data-act="tgFilter" data-args="${actArgs([c[0]])}"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join('')}
   </div>
   ${list.length===0?`<div class="card p-5 text-center"><i class="fas fa-box-open text-2xl text-gray-600 mb-2"></i><p class="text-xs text-gray-500">Armory ${TG.search||TG.filter!=='all'?'has no match':'is empty'}. ${!TG.search&&TG.filter==='all'?'Capture your first wise line — the hunt starts today.':''}</p></div>`:''}
   ${list.map(r=>`
@@ -351,7 +351,7 @@ function tgArmory(){
     ${r.why_works?`<p class="text-[10px] text-gray-500 mt-1 italic">${esc(r.why_works)}</p>`:''}
     <div class="flex gap-2 mt-2 items-center">
       ${r.source?`<span class="text-[9px] text-gray-600"><i class="fas fa-film text-[8px] mr-0.5"></i>${esc(r.source)}</span>`:''}
-      <button class="btn ml-auto px-2.5 py-1 text-[10px] bg-gray-900 text-gray-500 border border-line" onclick="tgDelete(${r.id})"><i class="fas fa-trash text-[9px]"></i></button>
+      <button class="btn ml-auto px-2.5 py-1 text-[10px] bg-gray-900 text-gray-500 border border-line" data-act="tgDelete" data-args="${actArgs([r.id])}"><i class="fas fa-trash text-[9px]"></i></button>
     </div>
   </article>`).join('')}`;
 }
@@ -371,7 +371,7 @@ function tgExamView(){
       <h3 class="font-engraved font-bold text-sm gold-text mb-2"><i class="fas fa-graduation-cap mr-1"></i>THE WEEKLY TONGUE EXAM</h3>
       <p class="text-[11px] text-gray-400 leading-relaxed mb-2">10 random lines from your armory. For each: the situation and question appear — <b class="text-white">speak your exact line out loud</b>, reveal, and judge yourself with ruthless honesty. <b class="text-gold">Pass ≥ 80%</b>. Fail = honesty flag + −10 pts. This is where you prove the armory lives in your head, not in the app.</p>
       ${s.total<3?`<p class="text-[10px] text-amber-400"><i class="fas fa-triangle-exclamation mr-1"></i>You need at least 3 trained lines before an exam makes sense. Capture and drill first.</p>`
-      :`<button class="btn btn-gold w-full p-3 text-sm font-bold" onclick="tgStartExam()"><i class="fas fa-swords mr-1"></i> BEGIN THE EXAM</button>`}
+      :`<button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgStartExam"><i class="fas fa-swords mr-1"></i> BEGIN THE EXAM</button>`}
     </div>
     ${(s.exams&&s.exams.length)?`
     <div class="card p-3">
@@ -395,7 +395,7 @@ function tgExamView(){
       <p class="font-disp font-bold text-3xl mt-1 ${pct>=80?'text-jade':'text-red-400'}">${pct}%</p>
       <p class="text-xs text-gray-400 mt-1">${TG.examCorrect} / ${list.length} lines fired correctly</p>
       <p class="text-[10px] text-gray-500 mt-2">${pct>=80?'+25 pts. The armory is in your head.':'−10 pts + flag filed. Drill the failures and retake.'}</p>
-      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" onclick="tgFinishExam(${list.length})">SEAL THE RECORD</button>
+      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgFinishExam" data-args="${actArgs([list.length])}">SEAL THE RECORD</button>
     </div>`;
   }
   const q = list[TG.examIdx];
@@ -416,15 +416,15 @@ function tgExamView(){
     </div>
     ${!TG.examReveal?`
     <p class="text-[10px] text-gold text-center font-bold tracking-wider my-3">⟡ SPEAK YOUR EXACT LINE OUT LOUD ⟡</p>
-    <button class="btn btn-gold w-full p-3 text-sm font-bold" onclick="TG.examReveal=true;FX.tap();render()"><i class="fas fa-eye mr-1"></i> REVEAL & JUDGE</button>`:`
+    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgExamReveal"><i class="fas fa-eye mr-1"></i> REVEAL & JUDGE</button>`:`
     <div class="p-3 rounded-lg border mb-3" style="background:rgba(212,175,55,.07);border-color:rgba(212,175,55,.4)">
       <p class="text-[9px] font-bold tracking-widest text-gold mb-1">THE EXACT LINE</p>
       <p class="text-sm text-white font-semibold leading-relaxed">“${esc(q.response)}”</p>
     </div>
     <p class="text-[10px] font-bold tracking-widest text-gray-400 text-center mb-2">DID YOU FIRE IT WORD-FOR-WORD? BE RUTHLESS.</p>
     <div class="grid grid-cols-2 gap-2">
-      <button class="btn p-3 bg-red-950/60 border border-red-800/60 text-red-300 text-xs font-bold" onclick="tgExamAnswer(false)"><i class="fas fa-xmark mr-1"></i>MISSED IT</button>
-      <button class="btn p-3 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-xs font-bold" onclick="tgExamAnswer(true)"><i class="fas fa-check mr-1"></i>NAILED IT</button>
+      <button class="btn p-3 bg-red-950/60 border border-red-800/60 text-red-300 text-xs font-bold" data-act="tgExamAnswer" data-args="${actArgs([false])}"><i class="fas fa-xmark mr-1"></i>MISSED IT</button>
+      <button class="btn p-3 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-xs font-bold" data-act="tgExamAnswer" data-args="${actArgs([true])}"><i class="fas fa-check mr-1"></i>NAILED IT</button>
     </div>`}
   </div>`;
 }
@@ -448,3 +448,21 @@ async function tgFinishExam(total){
   await loadTongue(); await loadState(); render();
 }
 window.tgFinishExam = tgFinishExam;
+
+registerActions({
+  tgView:        (e, el, v) => { TG.view = v; tgRefresh(); },
+  tgExamView:    () => { TG.view = 'exam'; render(); },
+  tgStartDrill:  () => tgStartDrill(),
+  tgSave:        () => tgSave(),
+  tgRefresh:     () => tgRefresh(),
+  tgDrillReveal: () => { TG.drillReveal = true; FX.tap(); render(); },
+  tgGrade:       (e, el, id, grade, mode) => tgGrade(id, grade, mode),
+  tgSearch:      (e, el) => { TG.search = el.value; tgRefresh(); },
+  tgSearchClear: () => { TG.search = ''; tgRefresh(); },
+  tgFilter:      (e, el, f) => { TG.filter = f; tgRefresh(); },
+  tgDelete:      (e, el, id) => tgDelete(id),
+  tgStartExam:   () => tgStartExam(),
+  tgFinishExam:  (e, el, total) => tgFinishExam(total),
+  tgExamReveal:  () => { TG.examReveal = true; FX.tap(); render(); },
+  tgExamAnswer:  (e, el, ok) => tgExamAnswer(ok),
+});

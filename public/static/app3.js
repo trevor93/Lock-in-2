@@ -3,8 +3,8 @@ function viewMind(){
   return header()+
   '<section id="mind-section" class="fade-in">'+
     '<div class="flex gap-2 mb-3">'+
-      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='cards'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" onclick="MIND_MODE=\'cards\';render()"><i class="fas fa-layer-group mr-1"></i>DRILL ('+DUE.length+' due)</button>'+
-      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='bank'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" onclick="MIND_MODE=\'bank\';render()"><i class="fas fa-book-skull mr-1"></i>MAXIM BANK</button>'+
+      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='cards'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;cards&quot;]"><i class="fas fa-layer-group mr-1"></i>DRILL ('+DUE.length+' due)</button>'+
+      '<button class="btn flex-1 p-2 text-xs font-bold '+(MIND_MODE==='bank'?'bg-gold/20 border border-gold/50 text-gold':'bg-panel border border-line text-gray-400')+'" data-act="setMindMode" data-args="[&quot;bank&quot;]"><i class="fas fa-book-skull mr-1"></i>MAXIM BANK</button>'+
     '</div>'+
     (MIND_MODE==='cards'?viewCards():viewBank())+
   '</section>';
@@ -17,7 +17,7 @@ function viewCards(){
   const pct=Math.round(((CARD_IDX)/DUE.length)*100);
   let h='<div class="flex items-center gap-2 mb-2"><div class="prog flex-1"><div style="width:'+pct+'%"></div></div><span class="text-[10px] text-gray-500 font-bold">'+(CARD_IDX+1)+'/'+DUE.length+'</span></div>'+
   '<p class="text-[10px] text-gray-500 text-center mb-2 tracking-wider">RECALL THE MASTER READING BEFORE FLIPPING</p>'+
-  '<div class="flip-card mb-3" onclick="FX.tap();CARD_FLIP=!CARD_FLIP;render()">'+
+  '<div class="flip-card mb-3" data-act="flipCard">'+
     '<div class="flip-inner '+(CARD_FLIP?'flipped':'')+'" style="min-height:230px">'+
       '<div class="flip-face card-lux gold-glow p-5 flex flex-col justify-center text-center" style="min-height:230px">'+
         '<p class="pill pill-dim mx-auto mb-3">'+esc(c.source)+'</p>'+
@@ -34,10 +34,10 @@ function viewCards(){
     '</div>'+
   '</div>';
   if(CARD_FLIP) h+='<div class="grid grid-cols-4 gap-1.5">'+
-    '<button class="btn p-2.5 bg-red-900/70 border border-red-700 text-red-200 text-[11px] font-bold" onclick="gradeCard('+c.maxim_id+',0)">FAIL</button>'+
-    '<button class="btn p-2.5 bg-orange-900/70 border border-orange-700 text-orange-200 text-[11px] font-bold" onclick="gradeCard('+c.maxim_id+',1)">HARD</button>'+
-    '<button class="btn p-2.5 bg-emerald-900/70 border border-emerald-700 text-emerald-200 text-[11px] font-bold" onclick="gradeCard('+c.maxim_id+',2)">GOOD</button>'+
-    '<button class="btn p-2.5 bg-sky-900/70 border border-sky-700 text-sky-200 text-[11px] font-bold" onclick="gradeCard('+c.maxim_id+',3)">EASY</button>'+
+    '<button class="btn p-2.5 bg-red-900/70 border border-red-700 text-red-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',0]">FAIL</button>'+
+    '<button class="btn p-2.5 bg-orange-900/70 border border-orange-700 text-orange-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',1]">HARD</button>'+
+    '<button class="btn p-2.5 bg-emerald-900/70 border border-emerald-700 text-emerald-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',2]">GOOD</button>'+
+    '<button class="btn p-2.5 bg-sky-900/70 border border-sky-700 text-sky-200 text-[11px] font-bold" data-act="gradeCard" data-args="['+c.maxim_id+',3]">EASY</button>'+
   '</div>';
   return h;
 }
@@ -61,7 +61,7 @@ function viewBank(){
     '<input id="nm-naive" placeholder="Naive reading (the trap)" class="mb-1.5">'+
     '<input id="nm-master" placeholder="Master reading (the extraction)" class="mb-1.5">'+
     '<input id="nm-mine" placeholder="In YOUR words (this is where ownership happens)" class="mb-1.5">'+
-    '<button class="btn w-full p-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" onclick="addMaxim()">DEPOSIT INTO BANK → creates flashcard</button>'+
+    '<button class="btn w-full p-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" data-act="addMaxim">DEPOSIT INTO BANK → creates flashcard</button>'+
   '</div>';
   for(const src of Object.keys(groups)){
     const list=groups[src];
@@ -73,7 +73,7 @@ function viewBank(){
         '<p class="text-[10px] mt-0.5"><span class="text-gold font-bold">✓</span> <span class="text-gray-300">'+esc(m.master_reading)+'</span></p>'+
         (m.my_words
           ?'<p class="text-[10px] mt-0.5"><span class="text-emerald-400 font-bold">✍</span> <span class="text-emerald-200/80">'+esc(m.my_words)+'</span></p>'
-          :'<button class="text-[10px] text-gray-500 underline mt-1" onclick="ownWords('+m.id+')">+ rewrite in my own words</button>')+
+          :'<button class="text-[10px] text-gray-500 underline mt-1" data-act="ownWords" data-args="['+m.id+']">+ rewrite in my own words</button>')+
       '</article>').join('');
   }
   return h;
@@ -96,3 +96,10 @@ async function ownWords(id){
 }
 
 window.gradeCard=gradeCard; window.addMaxim=addMaxim; window.ownWords=ownWords;
+registerActions({
+  setMindMode: (e, el, mode) => { MIND_MODE = mode; render(); },
+  flipCard:    (e, el) => { FX.tap(); CARD_FLIP = !CARD_FLIP; render(); },
+  gradeCard:   (e, el, mid, g) => gradeCard(mid, g),
+  addMaxim:    () => addMaxim(),
+  ownWords:    (e, el, id) => ownWords(id),
+});

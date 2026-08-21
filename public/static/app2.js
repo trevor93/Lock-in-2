@@ -52,7 +52,7 @@ function viewCampaign(){
           const isActive=['active','reading_done','drill_done'].includes(u.status);
           const icon=u.status==='locked'?'fa-lock text-gray-600':u.status==='complete'?'fa-flag text-emerald-400':u.is_exam?'fa-shield-halved text-gold':'fa-location-dot text-gold';
           return '<div class="border-t border-line/50 py-2 '+(isActive?'-mx-2 px-2 rounded-lg" style="background:rgba(212,175,55,.05)':'')+'">'+
-            '<button class="w-full flex items-center gap-2 text-left" onclick="toggleUnit('+u.id+')" '+(u.status==='locked'?'disabled':'')+'>'+
+            '<button class="w-full flex items-center gap-2 text-left" data-act="toggleUnit" data-args="['+u.id+']" '+(u.status==='locked'?'disabled':'')+'>'+
               '<i class="fas '+icon+' text-xs w-4 '+(isActive?'animate-pulse':'')+'"></i>'+
               '<span class="text-xs flex-1 '+(u.status==='locked'?'text-gray-600':'')+' '+(u.status==='complete'?'line-through text-gray-500':'')+'">'+esc(u.title)+'</span>'+
               '<span class="pill '+st[1]+'">'+st[0]+'</span>'+
@@ -78,12 +78,12 @@ function unitDetail(u){
 }
 
 function stepForm(u){
-  if(u.status==='active') return '<button class="btn w-full p-2.5 bg-sky-900/60 border border-sky-700 text-sky-200 text-xs font-bold" onclick="unitStep('+u.id+',\'reading\')"><i class="fas fa-book mr-1"></i> I FINISHED THE READING (twice, pen in hand)</button>';
+  if(u.status==='active') return '<button class="btn w-full p-2.5 bg-sky-900/60 border border-sky-700 text-sky-200 text-xs font-bold" data-act="unitStep" data-args="['+u.id+',&quot;reading&quot;]"><i class="fas fa-book mr-1"></i> I FINISHED THE READING (twice, pen in hand)</button>';
   if(u.status==='reading_done') return '<p class="text-[10px] font-bold text-emerald-400 mb-1">NOW: EXECUTE THE FIELD DRILL, THEN REPORT:</p>'+
     '<textarea id="drill-report-'+u.id+'" rows="4" placeholder="What did you actually DO? What happened? Be specific — thin reports are rejected by the honesty engine."></textarea>'+
-    '<button class="btn w-full p-2.5 mt-1.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" onclick="unitStep('+u.id+',\'drill\')"><i class="fas fa-person-running mr-1"></i> FILE DRILL REPORT</button>';
+    '<button class="btn w-full p-2.5 mt-1.5 bg-emerald-900/60 border border-emerald-700 text-emerald-200 text-xs font-bold" data-act="unitStep" data-args="['+u.id+',&quot;drill&quot;]"><i class="fas fa-person-running mr-1"></i> FILE DRILL REPORT</button>';
   if(u.status==='drill_done') return '<textarea id="debrief-ans-'+u.id+'" rows="2" placeholder="(Optional) Answer the debrief prompt above in 1-3 sentences"></textarea>'+
-    '<button class="btn w-full p-2.5 mt-1.5 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" onclick="unitStep('+u.id+',\'complete\')"><i class="fas fa-flag mr-1"></i> CONQUER UNIT → UNLOCK NEXT</button>';
+    '<button class="btn w-full p-2.5 mt-1.5 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" data-act="unitStep" data-args="['+u.id+',&quot;complete&quot;]"><i class="fas fa-flag mr-1"></i> CONQUER UNIT → UNLOCK NEXT</button>';
   return '';
 }
 
@@ -93,7 +93,7 @@ function examForm(u,qs){
     qs.map((q,i)=>'<div class="mb-2"><p class="text-[11px] text-gray-300 font-semibold mb-1">Q'+(i+1)+'. '+esc(q)+'</p><textarea id="exam-'+u.id+'-'+i+'" rows="3" placeholder="Your answer..."></textarea></div>').join('')+
     '<label class="text-[11px] text-gray-400 font-semibold">Brutal self-score (0-100): fluff = fail</label>'+
     '<input type="number" id="exam-score-'+u.id+'" min="0" max="100" placeholder="e.g. 75">'+
-    '<button class="btn w-full p-2.5 mt-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" onclick="submitExam('+u.id+','+qs.length+')"><i class="fas fa-gavel mr-1"></i> SUBMIT EXAM FOR JUDGMENT</button>'+
+    '<button class="btn w-full p-2.5 mt-2 bg-gold/20 border border-gold/50 text-gold text-xs font-bold" data-act="submitExam" data-args="['+u.id+','+qs.length+']"><i class="fas fa-gavel mr-1"></i> SUBMIT EXAM FOR JUDGMENT</button>'+
   '</div>';
 }
 
@@ -120,3 +120,8 @@ async function submitExam(id, n){
 }
 
 window.toggleUnit=toggleUnit; window.unitStep=unitStep; window.submitExam=submitExam;
+registerActions({
+  toggleUnit: (e, el, id) => toggleUnit(id),
+  unitStep:   (e, el, id, step) => unitStep(id, step),
+  submitExam: (e, el, id, n) => submitExam(id, n),
+});

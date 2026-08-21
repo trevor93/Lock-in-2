@@ -29,7 +29,7 @@ function viewDebrief(){
         '<div><label class="text-[10px] font-bold text-gray-400">LIGHTS OUT</label><input type="time" id="db-sleep" value="'+(d.sleep_time||'')+'"></div>'+
         '<div><label class="text-[10px] font-bold text-gray-400">SLEPT (h)</label><input type="number" step="0.25" id="db-hours" value="'+(d.sleep_hours||'')+'"></div>'+
       '</div>'+
-      '<button class="btn btn-gold w-full p-3 text-sm" onclick="saveDebrief()"><i class="fas fa-file-shield mr-1"></i> FILE INTELLIGENCE REPORT (+25)</button>'+
+      '<button class="btn btn-gold w-full p-3 text-sm" data-act="saveDebrief"><i class="fas fa-file-shield mr-1"></i> FILE INTELLIGENCE REPORT (+25)</button>'+
     '</div>'+
     predictionsPanel()+
     rewardsPanel()+
@@ -54,7 +54,7 @@ function rewardsPanel(){
     REWARDS.map(r=>
       '<div class="flex items-center gap-2 py-1.5 border-b border-line/50 last:border-0">'+
         '<div class="flex-1"><p class="text-xs font-semibold">'+esc(r.title)+'</p><p class="text-[10px] text-gray-500">'+esc(r.description||'')+(r.redeemed_count?' · taken ×'+r.redeemed_count:'')+'</p></div>'+
-        '<button class="btn px-3 py-1.5 text-[11px] font-bold '+(STATE.points>=r.cost?'bg-gold/20 border border-gold/50 text-gold':'bg-gray-800 text-gray-600 border border-line')+'" onclick="redeem('+r.id+')">'+r.cost+'</button>'+
+        '<button class="btn px-3 py-1.5 text-[11px] font-bold '+(STATE.points>=r.cost?'bg-gold/20 border border-gold/50 text-gold':'bg-gray-800 text-gray-600 border border-line')+'" data-act="redeem" data-args="['+r.id+']">'+r.cost+'</button>'+
       '</div>').join('')+
   '</div>';
 }
@@ -115,7 +115,7 @@ function predictionsPanel(){
         '<div><label class="text-[8px] font-bold text-gray-500">RESOLVE BY</label><input id="pred-by" type="date" class="w-full"></div>'+
         '<div><label class="text-[8px] font-bold text-gray-500">DOMAIN</label><input id="pred-domain" type="text" placeholder="people/money/…" class="w-full"></div>'+
       '</div>'+
-      '<button class="btn w-full p-2 text-[11px] bg-gold/10 border border-gold/40 text-gold font-bold" onclick="savePrediction()"><i class="fas fa-stamp mr-1"></i>SEAL THE CLAIM</button>'+
+      '<button class="btn w-full p-2 text-[11px] bg-gold/10 border border-gold/40 text-gold font-bold" data-act="savePrediction"><i class="fas fa-stamp mr-1"></i>SEAL THE CLAIM</button>'+
     '</div>'+
     (resolved.length?'<details class="text-[10px] text-gray-500"><summary class="cursor-pointer font-bold">GRADED RECORD ('+resolved.length+')</summary>'+
       resolved.slice(0,15).map(p=>'<div class="py-1 border-b border-line/40"><span class="'+(p.outcome==='right'?'text-jade':'text-red-400')+' font-bold">'+p.outcome.toUpperCase()+'</span> · '+p.confidence+'% · '+esc(p.claim)+'</div>').join('')+'</details>':'')+
@@ -125,9 +125,9 @@ function predRow(p){
   return '<div class="flex items-center gap-1.5 py-1 border-b border-line/40 last:border-0">'+
     '<div class="flex-1 min-w-0"><p class="text-[10px] text-gray-300 truncate">'+esc(p.claim)+'</p>'+
     '<p class="text-[8px] text-gray-600">'+p.confidence+'% · by '+p.resolve_by+(p.domain?' · '+esc(p.domain):'')+'</p></div>'+
-    '<button class="btn px-2 py-1 text-[9px] bg-emerald-900/60 border border-emerald-700 text-emerald-300" onclick="resolvePred('+p.id+',\'right\')">RIGHT</button>'+
-    '<button class="btn px-2 py-1 text-[9px] bg-red-900/60 border border-red-800 text-red-300" onclick="resolvePred('+p.id+',\'wrong\')">WRONG</button>'+
-    '<button class="btn px-1.5 py-1 text-[9px] bg-gray-800/60 border border-line text-gray-500" title="void (unfalsifiable/canceled)" onclick="resolvePred('+p.id+',\'void\')">—</button>'+
+    '<button class="btn px-2 py-1 text-[9px] bg-emerald-900/60 border border-emerald-700 text-emerald-300" data-act="resolvePred" data-args="['+p.id+',&quot;right&quot;]">RIGHT</button>'+
+    '<button class="btn px-2 py-1 text-[9px] bg-red-900/60 border border-red-800 text-red-300" data-act="resolvePred" data-args="['+p.id+',&quot;wrong&quot;]">WRONG</button>'+
+    '<button class="btn px-1.5 py-1 text-[9px] bg-gray-800/60 border border-line text-gray-500" title="void (unfalsifiable/canceled)" data-act="resolvePred" data-args="['+p.id+',&quot;void&quot;]">—</button>'+
   '</div>';
 }
 async function savePrediction(){
@@ -225,3 +225,9 @@ function viewStats(){
 }
 
 window.redeem=redeem; window.saveDebrief=saveDebrief;
+registerActions({
+  saveDebrief:    () => saveDebrief(),
+  redeem:         (e, el, id) => redeem(id),
+  savePrediction: () => savePrediction(),
+  resolvePred:    (e, el, id, outcome) => resolvePred(id, outcome),
+});

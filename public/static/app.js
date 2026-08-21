@@ -93,6 +93,10 @@ document.addEventListener('keydown', (e) => {
   const el = e.target && e.target.closest && e.target.closest('[data-act-enter]');
   if (el) _dispatchAct(e, 'data-act-enter', el);
 });
+document.addEventListener('change', (e) => {
+  const el = e.target && e.target.closest && e.target.closest('[data-act-change]');
+  if (el) _dispatchAct(e, 'data-act-change', el);
+});
 registerActions({
   doLogin:     (e, el, isSetup) => doLogin(isSetup),
   ackFlag:     (e, el, id) => ackFlag(id),
