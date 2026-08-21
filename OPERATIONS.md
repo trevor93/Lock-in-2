@@ -631,6 +631,48 @@ Expected: `cursor_table` is `1`; `unowned_cursor` is `0`.
 
 Deploy the prior application while retaining the table and rows. The prior application ignores it; no user data is deleted. Consequence: the chapter cursor and Continuity Brief are unavailable until the corrected application is restored.
 
+### 5.8 `migrations/0012_unify_captures.sql`
+
+**Purpose**
+
+- Book 7 table unification, **Slice 1 (additive + reversible)**. Creates `captures` (a `kind`-discriminated union of `intel_entries` + `maxims` + `responses`), `review_items` (unifies `response_srs`, with FSRS-ready `stability`/`difficulty`/`last_review` columns left NULL until the SM-2→FSRS migration), and `exams` (unifies `tongue_exams`), then backfills each 1:1 from its legacy source, stamping `(legacy_table, legacy_id)` provenance on every row.
+- Adds only tables, indexes, and rows in the new tables. It does **not** alter, drop, or delete `intel_entries`, `maxims`, `responses`, `response_srs`, or `tongue_exams`, which remain the authoritative stores that the current application still reads and writes. Application behaviour is unchanged by this slice; the unified tables are populated shadows that later slices will dual-write and switch reads onto, one feature at a time.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/migration-0012.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/migration-0012.test.ts` proves `captures` = intel+maxim+response split by `kind`, `review_items` = `response_srs`, `exams` = `tongue_exams`, that field values and owner (`user_id`) survive the mapping, that the legacy tables are left byte-for-byte unchanged, and that the backfill is idempotent (re-runnable, `NOT EXISTS`-guarded).
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS captures_table FROM sqlite_schema WHERE type='table' AND name='captures';
+SELECT COUNT(*) AS review_table FROM sqlite_schema WHERE type='table' AND name='review_items';
+SELECT COUNT(*) AS exams_table FROM sqlite_schema WHERE type='table' AND name='exams';
+SELECT
+  (SELECT COUNT(*) FROM captures) AS captures_rows,
+  (SELECT COUNT(*) FROM intel_entries) + (SELECT COUNT(*) FROM maxims) + (SELECT COUNT(*) FROM responses) AS legacy_rows;
+SELECT COUNT(*) AS unowned FROM captures c LEFT JOIN users u ON u.id=c.user_id WHERE u.id IS NULL;
+```
+
+Expected: the three `*_table` counts are each `1`; `captures_rows` equals `legacy_rows`; `unowned` is `0`.
+
+**Rollback**
+
+Drop the three shadow tables only — `DROP TABLE IF EXISTS exams; DROP TABLE IF EXISTS review_items; DROP TABLE IF EXISTS captures;` — leaving every legacy source table and row untouched. The prior application never referenced the shadows, so it continues to work unchanged. No user data is deleted by applying or rolling back this migration.
+
 ## 6. Deploy and Verify the Pages Application
 
 

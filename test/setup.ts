@@ -11,6 +11,7 @@ import auditIdempotency from '../migrations/0008_audit_idempotency.sql?raw'
 import recoveryCatchup from '../migrations/0009_recovery_catchup.sql?raw'
 import altExplanationGate from '../migrations/0010_alternative_explanation_gate.sql?raw'
 import chapterCursor from '../migrations/0011_chapter_cursor.sql?raw'
+import unifyCaptures from '../migrations/0012_unify_captures.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -192,4 +193,5 @@ beforeAll(async () => {
   await apply(recoveryCatchup)
   await apply(altExplanationGate)
   await apply(chapterCursor)
+  await apply(unifyCaptures)
 })
