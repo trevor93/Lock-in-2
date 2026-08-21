@@ -711,6 +711,45 @@ Expected: `backup_table` is `1`; `cards` equals `backup`; `orphans` is `0`.
 
 `DROP TABLE flashcards; ALTER TABLE flashcards_pre0013_backup RENAME TO flashcards;` then redeploy the prior application (which reads maxims from the `maxims` table). The `maxims` rows were never modified, and the backup restores the original SR state exactly. No user data is destroyed by applying or rolling back.
 
+### 5.10 `migrations/0014_intel_cutover.sql`
+
+**Purpose**
+
+- Book 7 table unification, **intel cutover**. After 0012 backfilled every intel entry into `captures(kind='intel')`, this re-establishes the Law-23 alternative-explanation brake ON `captures` (a `BEFORE INSERT` and a `BEFORE UPDATE` trigger, scoped to `kind='intel'`, that abort a non-calm capture with an empty `alternative_explanation`). `intel_entries` has **no incoming foreign keys**, so — unlike the maxims cutover — no table is recreated: `intel_entries` and its own 0010 triggers are simply frozen (never written) and kept as a backup.
+- The application (intel-library, hermes analyze, agent read/write, commander's-file briefing, stats count, agent export) now reads and writes intel through `captures`; the app-level `altGate` still returns a clean 400 before insert, and these triggers are the schema backstop on the unified table.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/intel-cutover.test.ts test/alt-explanation-gate.test.ts test/alt-gate-wiring.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/intel-cutover.test.ts` proves intel is written to `captures` (not the frozen `intel_entries`), read back through the API, verdict finality holds, the heated-capture brake returns 400 through the API, and the captures trigger aborts a non-calm intel row with no alternative while accepting a calm one or a heated one with an alternative.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only. Applies only after `0012`.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS captures_alt_triggers FROM sqlite_schema
+  WHERE type='trigger' AND name IN ('trg_captures_alt_gate_insert','trg_captures_alt_gate_update');
+SELECT (SELECT COUNT(*) FROM captures WHERE kind='intel') AS intel_captures,
+       (SELECT COUNT(*) FROM intel_entries) AS legacy_intel;
+```
+
+Expected: `captures_alt_triggers` is `2`; at cutover time `intel_captures` equals `legacy_intel` (they diverge afterward as new intel is written only to captures).
+
+**Rollback**
+
+`DROP TRIGGER IF EXISTS trg_captures_alt_gate_insert; DROP TRIGGER IF EXISTS trg_captures_alt_gate_update;` then redeploy the prior application, which reads and writes `intel_entries` (untouched, triggers intact). No user data is destroyed by applying or rolling back.
+
 ## 6. Deploy and Verify the Pages Application
 
 

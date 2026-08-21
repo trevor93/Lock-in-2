@@ -21,11 +21,11 @@ app.get('/api/intel', async (c) => {
     : parseValue(intelDomainSchema, c.req.query('domain'))
   const q = domain
     ? c.env.DB.prepare(
-      `SELECT * FROM intel_entries WHERE user_id=? AND domain=?
+      `SELECT * FROM captures WHERE kind='intel' AND user_id=? AND domain=?
        ORDER BY log_date DESC, id DESC LIMIT 100`,
     ).bind(userId, domain)
     : c.env.DB.prepare(
-      `SELECT * FROM intel_entries WHERE user_id=? ORDER BY log_date DESC, id DESC LIMIT 100`,
+      `SELECT * FROM captures WHERE kind='intel' AND user_id=? ORDER BY log_date DESC, id DESC LIMIT 100`,
     ).bind(userId)
   return c.json((await q.all()).results)
 })
@@ -41,10 +41,10 @@ app.post('/api/intel', async (c) => withIdempotency(c, 'intel:file', async () =>
   // entry can be honestly back-dated but its +15 can never land on a future day.
   const logDate = await safeDate(DB, b.log_date, userId)
   const r = await DB.prepare(
-    `INSERT INTO intel_entries
-       (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
+    `INSERT INTO captures
+       (user_id, kind, log_date, domain, title, situation, my_move, outcome, verdict,
         principle_used, lesson, people, heat, alternative_explanation)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,'intel',?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(userId, logDate, b.domain, b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
     b.lesson || null, b.people || null, b.heat || null, b.alternative_explanation || null).run()
@@ -74,15 +74,15 @@ app.post('/api/intel/:id/verdict', async (c) => {
   const id = parseValue(positiveIdSchema, c.req.param('id'))
   const { verdict, lesson } = await parseJson(c, intelVerdictBodySchema)
   const entry = await c.env.DB.prepare(
-    `SELECT verdict FROM intel_entries WHERE id=? AND user_id=?`,
+    `SELECT verdict FROM captures WHERE kind='intel' AND id=? AND user_id=?`,
   ).bind(id, c.get('userId')).first<{ verdict: string | null }>()
   if (!entry) return c.json({ error: 'not found' }, 404)
   if (entry.verdict && entry.verdict !== 'pending') {
     return c.json({ error: 'VERDICT FINAL. Terminal records cannot be rewritten.' }, 409)
   }
   await c.env.DB.prepare(
-    `UPDATE intel_entries SET verdict=?, lesson=COALESCE(?,lesson)
-     WHERE id=? AND user_id=?`,
+    `UPDATE captures SET verdict=?, lesson=COALESCE(?,lesson)
+     WHERE kind='intel' AND id=? AND user_id=?`,
   ).bind(verdict, lesson || null, id, c.get('userId')).run()
   return c.json({ ok: true })
 })

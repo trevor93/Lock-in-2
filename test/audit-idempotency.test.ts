@@ -91,9 +91,13 @@ async function issueCredential(
 }
 
 async function countRows(table: string, userId: number): Promise<number> {
-  const row = await env.DB.prepare(
-    `SELECT COUNT(*) AS total FROM ${table} WHERE user_id=?`,
-  ).bind(userId).first<{ total: number }>()
+  // Book 7: intel and maxims were cut over to the unified captures table under a
+  // kind discriminator, so count them there. (responses is not yet cut over.)
+  const kindOf: Record<string, string> = { intel_entries: 'intel', maxims: 'maxim' }
+  const sql = kindOf[table]
+    ? `SELECT COUNT(*) AS total FROM captures WHERE kind='${kindOf[table]}' AND user_id=?`
+    : `SELECT COUNT(*) AS total FROM ${table} WHERE user_id=?`
+  const row = await env.DB.prepare(sql).bind(userId).first<{ total: number }>()
   return row?.total ?? 0
 }
 
@@ -123,7 +127,7 @@ afterEach(async () => {
   ).first<{ id: number }>()
   if (!owner) return
   await env.DB.prepare(
-    `DELETE FROM intel_entries WHERE user_id=? AND title LIKE '%IDEMPOTENCY FIXTURE%'`,
+    `DELETE FROM captures WHERE kind='intel' AND user_id=? AND title LIKE '%IDEMPOTENCY FIXTURE%'`,
   ).bind(owner.id).run()
 })
 

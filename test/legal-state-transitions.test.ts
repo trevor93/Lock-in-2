@@ -416,9 +416,9 @@ describe('Book 5.4 legal state transitions', () => {
   it('prevents a final intel verdict from being rewritten', async () => {
     const { headers, userId } = await authenticatedContext()
     const inserted = await env.DB.prepare(
-      `INSERT INTO intel_entries
-         (user_id, log_date, domain, title, verdict)
-       VALUES (?,'2026-08-15','other','Transition verdict fixture','pending')`,
+      `INSERT INTO captures
+         (user_id, kind, log_date, domain, title, verdict)
+       VALUES (?,'intel','2026-08-15','other','Transition verdict fixture','pending')`,
     ).bind(userId).run()
     const path = `/api/intel/${inserted.meta.last_row_id}/verdict`
 
@@ -432,7 +432,7 @@ describe('Book 5.4 legal state transitions', () => {
     expect(rewrite.status).toBe(409)
 
     const row = await env.DB.prepare(
-      `SELECT verdict FROM intel_entries WHERE id=? AND user_id=?`,
+      `SELECT verdict FROM captures WHERE kind='intel' AND id=? AND user_id=?`,
     ).bind(inserted.meta.last_row_id, userId)
       .first<{ verdict: string }>()
     expect(row?.verdict).toBe('smart')

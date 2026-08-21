@@ -139,7 +139,7 @@ app.post('/api/intel/:id/analyze', async (c) => withIdempotency(c, 'intel:analyz
   const id = parseValue(positiveIdSchema, c.req.param('id'))
   await parseEmptyBody(c)
   const entry = await DB.prepare(
-    `SELECT * FROM intel_entries WHERE id=? AND user_id=?`,
+    `SELECT * FROM captures WHERE kind='intel' AND id=? AND user_id=?`,
   ).bind(id, userId).first<any>()
   if (!entry) return c.json({ error: 'No such entry' }, 404)
   if (!c.env.OPENAI_API_KEY || !modelBaseURL(c)) {
@@ -174,7 +174,7 @@ app.post('/api/intel/:id/analyze', async (c) => withIdempotency(c, 'intel:analyz
   ])
   if (result.response) return result.response
   await DB.prepare(
-    `UPDATE intel_entries SET hermes_analysis=? WHERE id=? AND user_id=?`,
+    `UPDATE captures SET hermes_analysis=? WHERE kind='intel' AND id=? AND user_id=?`,
   ).bind(result.answer, id, userId).run()
   return c.json({ analysis: result.answer })
 }))

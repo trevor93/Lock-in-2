@@ -22,7 +22,7 @@ export async function hermesBriefing(DB: D1Database, userId: number, date: strin
     `SELECT * FROM honesty_flags WHERE user_id=? ORDER BY created_at DESC LIMIT 10`,
   ).bind(userId).all()).results as any[]
   const intel = (await DB.prepare(
-    `SELECT * FROM intel_entries WHERE user_id=? ORDER BY id DESC LIMIT 15`,
+    `SELECT * FROM captures WHERE kind='intel' AND user_id=? ORDER BY id DESC LIMIT 15`,
   ).bind(userId).all()).results as any[]
   const units = (await DB.prepare(
     `SELECT u.title, p.code, up.status, up.drill_report FROM units u

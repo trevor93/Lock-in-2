@@ -170,7 +170,7 @@ app.get('/api/stats', async (c) => {
      )`,
   ).bind(userId).first<any>())?.n ?? 0
   const intelCount = (await DB.prepare(
-    `SELECT COUNT(*) as n FROM intel_entries WHERE user_id=?`,
+    `SELECT COUNT(*) as n FROM captures WHERE kind='intel' AND user_id=?`,
   ).bind(userId).first<any>())?.n ?? 0
   const examsPassed = (await DB.prepare(
     `SELECT COUNT(*) as n FROM unit_progress up JOIN units u ON u.id=up.unit_id

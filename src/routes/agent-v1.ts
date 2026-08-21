@@ -72,7 +72,7 @@ app.post('/api/agent/v1/debriefs', async (c) => {
 app.post('/api/agent/v1/intel/read', async (c) => {
   await parseEmptyBody(c)
   const { results } = await c.env.DB.prepare(
-    `SELECT * FROM intel_entries WHERE user_id=?
+    `SELECT * FROM captures WHERE kind='intel' AND user_id=?
      ORDER BY log_date DESC, id DESC LIMIT 100`,
   ).bind(c.get('userId')).all()
   return c.json(results)
@@ -83,10 +83,10 @@ app.post('/api/agent/v1/intel', async (c) => withIdempotency(c, 'agent:intel', a
   const userId = c.get('userId')
   const b = await parseJson(c, agentIntelBodySchema)
   const r = await c.env.DB.prepare(
-    `INSERT INTO intel_entries
-       (user_id, log_date, domain, title, situation, my_move, outcome, verdict,
+    `INSERT INTO captures
+       (user_id, kind, log_date, domain, title, situation, my_move, outcome, verdict,
         principle_used, lesson, people, hermes_analysis)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,'intel',?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(userId, await safeDate(c.env.DB, b.log_date, userId),
     b.domain, '[HERMES] ' + b.title, b.situation || null,
     b.my_move || null, b.outcome || null, b.verdict || 'pending', b.principle_used || null,
@@ -186,13 +186,16 @@ app.post('/api/agent/v1/export', async (c) => {
   const userId = c.get('userId')
   const DB = c.env.DB
   const out: Record<string, any> = {}
-  for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks']) {
+  for (const t of ['debriefs', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks']) {
     out[t] = (await DB.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId).all()).results
   }
-  // Book 7: maxims now live in the unified captures table, not the frozen legacy
-  // `maxims` backup — export from captures so newly-created maxims are included.
+  // Book 7: maxims and intel now live in the unified captures table, not the
+  // frozen legacy tables — export from captures so newly-created rows are included.
   out['maxims'] = (await DB.prepare(
     `SELECT * FROM captures WHERE kind='maxim' AND user_id=?`,
+  ).bind(userId).all()).results
+  out['intel_entries'] = (await DB.prepare(
+    `SELECT * FROM captures WHERE kind='intel' AND user_id=?`,
   ).bind(userId).all()).results
   return c.json(out)
 })

@@ -45,7 +45,7 @@ describe('Book 5.3/6 — no client-controlled future-dated scoring', () => {
 
     // No intel row or points may exist beyond today.
     const future = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM intel_entries WHERE user_id=? AND log_date > ?`,
+      `SELECT COUNT(*) AS n FROM captures WHERE kind='intel' AND user_id=? AND log_date > ?`,
     ).bind(userId, today).first<{ n: number }>()
     expect(future?.n, 'a future-dated intel entry was written').toBe(0)
 
@@ -56,11 +56,11 @@ describe('Book 5.3/6 — no client-controlled future-dated scoring', () => {
 
     // The entry still landed (clamped to today), so the record is not lost.
     const landed = await env.DB.prepare(
-      `SELECT log_date FROM intel_entries WHERE user_id=? AND title='FUTURE FIXTURE' ORDER BY id DESC LIMIT 1`,
+      `SELECT log_date FROM captures WHERE kind='intel' AND user_id=? AND title='FUTURE FIXTURE' ORDER BY id DESC LIMIT 1`,
     ).bind(userId).first<{ log_date: string }>()
     expect(landed?.log_date).toBe(today)
 
-    await env.DB.prepare(`DELETE FROM intel_entries WHERE user_id=? AND title='FUTURE FIXTURE'`).bind(userId).run()
+    await env.DB.prepare(`DELETE FROM captures WHERE kind='intel' AND user_id=? AND title='FUTURE FIXTURE'`).bind(userId).run()
   })
 
   it('still allows honest back-dating of an intel entry', async () => {
@@ -71,10 +71,10 @@ describe('Book 5.3/6 — no client-controlled future-dated scoring', () => {
     }, baseEnv)
     expect(res.status).toBe(200)
     const landed = await env.DB.prepare(
-      `SELECT log_date FROM intel_entries WHERE user_id=? AND title='PAST FIXTURE' ORDER BY id DESC LIMIT 1`,
+      `SELECT log_date FROM captures WHERE kind='intel' AND user_id=? AND title='PAST FIXTURE' ORDER BY id DESC LIMIT 1`,
     ).bind(userId).first<{ log_date: string }>()
     expect(landed?.log_date).toBe('2026-01-05')
-    await env.DB.prepare(`DELETE FROM intel_entries WHERE user_id=? AND title='PAST FIXTURE'`).bind(userId).run()
+    await env.DB.prepare(`DELETE FROM captures WHERE kind='intel' AND user_id=? AND title='PAST FIXTURE'`).bind(userId).run()
   })
 })
 
