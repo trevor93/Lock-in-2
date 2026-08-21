@@ -3,6 +3,10 @@
 // secret, allowed origins) and what middleware attaches to the request context.
 
 export type Bindings = {
+  // Book 7 alarms — operator-set VAPID credentials; absent means push is off.
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_JWK?: string
+  VAPID_SUBJECT?: string
   DB: D1Database
   OPENAI_API_KEY: string
   OPENAI_BASE_URL: string

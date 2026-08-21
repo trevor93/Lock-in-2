@@ -187,3 +187,27 @@ export const agentMessageBodySchema = z.strictObject({
   content: requiredTrimmedText(1, 20000),
   role: hermesRoleSchema.optional(),
 })
+
+// Book 7 alarms — Web Push subscription + notification preferences.
+// The endpoint must be an https push-service URL; the key material is base64url
+// handed out by the browser, bounded so a malformed subscription is refused.
+const base64UrlText = (max: number) =>
+  z.string().trim().min(1).max(max).regex(/^[A-Za-z0-9_-]+$/)
+export const pushSubscriptionBodySchema = z.strictObject({
+  endpoint: z.string().trim().url().max(1000).refine((u) => u.startsWith('https://')),
+  p256dh: base64UrlText(200),
+  auth: base64UrlText(100),
+  device_label: optionalTrimmedText(100),
+})
+export const pushUnsubscribeBodySchema = z.strictObject({
+  endpoint: z.string().trim().url().max(1000),
+})
+const clockTime = z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/)
+export const notificationPreferencesBodySchema = z.strictObject({
+  blocks_enabled: z.boolean().optional(),
+  debrief_enabled: z.boolean().optional(),
+  review_enabled: z.boolean().optional(),
+  quiet_start: clockTime.optional(),
+  quiet_end: clockTime.optional(),
+  lead_minutes: z.number().int().min(0).max(60).optional(),
+})

@@ -45,7 +45,7 @@ describe('B7 frontend navigation integrity', () => {
 
   it('boots into the war room and every bottom-nav tab renders its view without error', async () => {
     bootFrontend(ROUTES)
-    await flush()
+    await waitFor(() => !!document.querySelector('#main-nav'))
     expect(document.querySelector('#main-nav'), 'did not reach the authenticated shell').not.toBeNull()
 
     for (const tab of TABS) {

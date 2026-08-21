@@ -830,6 +830,52 @@ Expected: both `0`.
 
 The prior application ignores the FSRS columns and reads the untouched SM-2 columns (`interval_days`/`ease`/`reps`/`lapses`), so redeploying it restores SM-2 scheduling; optionally `UPDATE review_items SET stability=NULL, difficulty=NULL, last_review=NULL WHERE kind='response'`. No user data is destroyed by applying or rolling back.
 
+### 5.13 `migrations/0017_push_notifications.sql`
+
+**Purpose**
+
+- Book 7 alarms. Creates `push_subscriptions` (one row per armed browser: the opaque push-service endpoint plus the public key material the browser hands out), `notification_preferences` (one row per owner: which alarms are on, quiet hours, lead minutes), and the append-only `push_deliveries` ledger whose `UNIQUE(user_id, kind, ref, occurs_on)` makes the minute-by-minute Cron job idempotent — a re-run inside the same minute cannot double-notify.
+- Adds only tables, indexes and triggers. It alters and deletes nothing. No notification payload and no journal text is ever stored; push messages carry no payload at all.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/alarms-push.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/alarms-push.test.ts` proves the VAPID JWT is a real, verifiable ES256 signature with the right claims, that the module fails closed when any VAPID value is missing or the subject is malformed, that quiet hours wrap past midnight correctly, that subscribe upserts (never duplicates) and unsubscribe deletes, that malformed subscriptions are refused (non-HTTPS endpoint, non-base64url key, unknown field), that preferences default and persist, that the internal job refuses a caller without the shared secret and 503s with no VAPID, that a re-run cannot double-notify, that an unreachable push service cannot abort the run, and that the delivery ledger is append-only.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS push_tables FROM sqlite_schema WHERE type='table'
+  AND name IN ('push_subscriptions','notification_preferences','push_deliveries');
+SELECT COUNT(*) AS delivery_append_only FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_push_delivery_no_update','trg_push_delivery_no_delete');
+SELECT COUNT(*) AS duplicates FROM (
+  SELECT user_id, kind, ref, occurs_on, COUNT(*) c FROM push_deliveries
+  GROUP BY user_id, kind, ref, occurs_on HAVING c > 1);
+```
+
+Expected: `push_tables` is `3`; `delivery_append_only` is `2`; `duplicates` is `0`.
+
+**Operator actions this migration unlocks**
+
+Push stays off until the VAPID secrets exist and the Cron Worker is deployed. Both are operator-only and are written out step by step in `OPERATOR_HANDOFF.md` §3 (key generation, secret names, verification, rotation) and §4 (the Cron Worker source, its variables, both cron triggers, the Cloudflare Access service-token path, and verification). Until then the application fails closed and says so: `GET /api/push/key` and the alarms job answer `503 PUSH SERVICE OFFLINE`, and the UI directs the commander to the calendar export.
+
+**Rollback**
+
+`DROP TABLE IF EXISTS push_deliveries; DROP TABLE IF EXISTS push_subscriptions; DROP TABLE IF EXISTS notification_preferences;` then redeploy the prior application, which never referenced them. The calendar `.ics` fallback never depended on push, so alarms degrade to the calendar layer rather than disappearing. No user data is destroyed by applying or rolling back.
+
 ## 6. Deploy and Verify the Pages Application
 
 

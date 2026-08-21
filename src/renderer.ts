@@ -23,6 +23,23 @@ self.addEventListener('fetch',e=>{
     }));
   }
 });
+// Book 7 alarms — Web Push. The push carries NO payload (nothing about the day
+// travels through a third-party push service), so the worker asks the origin what
+// is due and shows that. If the fetch fails (offline, or the session has expired)
+// it still shows a neutral prompt, because a push event must produce a visible
+// notification.
+self.addEventListener('push',e=>{
+  e.waitUntil((async()=>{
+    let title='WAR ROOM', body='Something is due. Open the war room.';
+    try{
+      const r=await fetch('/api/next-alarm',{credentials:'include'});
+      if(r.ok){ const d=await r.json(); if(d&&d.title){ title=d.title; body=d.body||body; } }
+    }catch(_){}
+    await self.registration.showNotification(title,{
+      body, tag:'warroom-alarm', renotify:true, icon:'/static/icon.svg', badge:'/static/icon.svg',
+    });
+  })());
+});
 self.addEventListener('notificationclick',e=>{
   e.notification.close();
   e.waitUntil(clients.matchAll({type:'window'}).then(cs=>{

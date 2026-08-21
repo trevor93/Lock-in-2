@@ -21,7 +21,7 @@ describe('B7 frontend interaction integrity', () => {
       'POST /api/auth/setup': { ok: true, csrfToken: 'fresh-csrf' },
       'POST /api/tick': MINIMAL_STATE,
     })
-    await flush()
+    await waitFor(() => !!document.querySelector('#login-pass'))
 
     const input = document.querySelector('#login-pass') as HTMLInputElement
     expect(input, 'password field missing').not.toBeNull()
@@ -33,7 +33,10 @@ describe('B7 frontend interaction integrity', () => {
     const setup = findCall(calls, 'POST', '/api/auth/setup')
     expect(setup, '/api/auth/setup was not called').toBeTruthy()
     expect((setup!.data as { password: string }).password).toBe('a-strong-new-password')
-    expect(document.querySelector('#login-screen'), 'still on the gate after setup').toBeNull()
+    expect(
+      document.querySelector('#login-screen'),
+      `still on the gate after setup; calls=${calls.map((c) => c.method + ' ' + c.url).join(' | ')}`,
+    ).toBeNull()
     expect(document.querySelector('#main-nav'), 'did not enter the war room').not.toBeNull()
   })
 
@@ -43,7 +46,7 @@ describe('B7 frontend interaction integrity', () => {
       'POST /api/auth/login': { ok: true, csrfToken: 'fresh-csrf' },
       'POST /api/tick': MINIMAL_STATE,
     })
-    await flush()
+    await waitFor(() => !!document.querySelector('#login-pass'))
 
     ;(document.querySelector('#login-pass') as HTMLInputElement).value = 'my-password'
     ;(document.querySelector('#login-screen button') as HTMLElement).click()
@@ -56,7 +59,7 @@ describe('B7 frontend interaction integrity', () => {
 
   it('the bottom nav switches the active view when a tab is clicked', async () => {
     bootFrontend(AUTHED)
-    await flush()
+    await waitFor(() => !!document.querySelector('#main-nav'))
 
     const nav = document.querySelector('#main-nav')
     expect(nav, 'nav missing').not.toBeNull()
@@ -83,7 +86,7 @@ describe('B7 frontend interaction integrity', () => {
       'POST /api/tick': { ...MINIMAL_STATE, current, blocks: [current] },
       'POST /api/blocks/42/log': { ok: true },
     })
-    await flush()
+    await waitFor(() => !!document.querySelector('[data-act="logBlock"]'))
 
     // The current-block card renders done/partial/skipped via statusBtns(); the
     // "done" button carries data-act="logBlock" data-args='[42,"done"]'.
@@ -112,15 +115,15 @@ describe('B7 frontend interaction integrity', () => {
       'GET /api/maxims': [],
       'POST /api/cards/7/review': { ok: true },
     })
-    await flush()
+    await waitFor(() => !!document.querySelector('#main-nav [data-tab="mind"]'))
 
     ;(document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement).click()
-    await flush()
+    await waitFor(() => !!document.querySelector('[data-act="flipCard"]'))
     // Grade buttons only appear once the card is flipped.
     const flip = document.querySelector('[data-act="flipCard"]') as HTMLElement
     expect(flip, 'flip card not rendered in the drill').not.toBeNull()
     flip.click()
-    await flush()
+    await waitFor(() => !!document.querySelector('[data-act="gradeCard"]'))
 
     const good = Array.from(document.querySelectorAll('[data-act="gradeCard"]'))
       .find((b) => (b.getAttribute('data-args') || '').includes(',2]')) as HTMLElement

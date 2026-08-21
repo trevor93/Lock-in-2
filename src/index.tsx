@@ -23,6 +23,7 @@ import { registerAuthRoutes } from './routes/auth'
 import { agentRoute, AGENT_V1_PATHS, authenticateAgent, agentCredentialEvent } from './agent-auth'
 import { registerAgentCredentialRoutes } from './routes/agent-credentials'
 import { registerCalendarRoutes } from './routes/calendar'
+import { registerPushRoutes } from './routes/push'
 import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -238,6 +239,9 @@ registerIntelLibraryRoutes(app)
 // ============ CALENDAR EXPORT (.ics — device-native alarms) ============
 // Calendar (.ics) route registered from ./routes/calendar (Book 7).
 registerCalendarRoutes(app)
+
+// Alarms: Web Push subscribe/preferences + the internal Cron entry (Book 7).
+registerPushRoutes(app)
 
 // COUNCIL/Hermes routes registered from ./routes/hermes (Book 7).
 registerHermesRoutes(app)

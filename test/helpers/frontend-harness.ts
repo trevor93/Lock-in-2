@@ -167,13 +167,17 @@ export const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0))
 }
 
-// Wait until a condition holds. A fixed tick count is load-sensitive (these files
-// run in parallel workers), so anything asserted after a user action polls for the
-// state it expects instead of guessing how many ticks the chain needs.
-export async function waitFor(condition: () => boolean, ticks = 80): Promise<void> {
-  for (let i = 0; i < ticks; i++) {
+// Wait until a condition holds, bounded by a wall-clock deadline. A fixed tick
+// count is load-sensitive — these files run in parallel workers, and a starved
+// worker can burn the whole budget before an already-scheduled promise chain
+// resolves, which showed up as a ~1-in-N flake. Polling to a deadline returns as
+// soon as the condition is true, so a generous bound costs nothing when the app
+// behaves and removes the flake when the machine is busy.
+export async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
     if (condition()) return
-    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 1))
   }
 }
 

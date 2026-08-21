@@ -729,7 +729,7 @@
     ctx: null,
     enabled: JSON.parse(localStorage.getItem("wr_alarm") || "true"),
     volume: Number(localStorage.getItem("wr_volume") || 0.9),
-    fired: JSON.parse(sessionStorage.getItem("wr_fired") || "{}"),
+    fired: JSON.parse(localStorage.getItem("wr_fired") || "{}"),
     init() {
       const unlock = () => {
         if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -860,7 +860,7 @@
         const key = today + "-" + b.id;
         if (b.start_time === t && !this.fired[key]) {
           this.fired[key] = 1;
-          sessionStorage.setItem("wr_fired", JSON.stringify(this.fired));
+          localStorage.setItem("wr_fired", JSON.stringify(this.fired));
           this.ring(3);
           this.notify("⚔ " + b.start_time + " — " + b.title, (b.is_non_negotiable ? "NON-NEGOTIABLE. " : "") + (b.description || "The block has started. Move."));
           this.banner(b);
@@ -873,7 +873,7 @@
             const mkey = today + "-missed-" + b.id;
             if (!this.fired[mkey]) {
               this.fired[mkey] = 1;
-              sessionStorage.setItem("wr_fired", JSON.stringify(this.fired));
+              localStorage.setItem("wr_fired", JSON.stringify(this.fired));
               this.notify("✖ CANCELED — " + b.title, "Window closed unlogged. The block is gone and the penalty is on your ledger. — Law 2: The plan is law.", "warroom-missed");
               if (FX) FX.toast("✖ “" + b.title + "” AUTO-CANCELED — PENALTY APPLIED", "bad");
               if (navigator.vibrate) navigator.vibrate([500, 120, 500]);
@@ -904,7 +904,7 @@
   }
   function viewLibrary() {
     if (S.BOOK) return viewReader();
-    return header() + '<section id="library-section" class="stagger"><p class="text-[10px] text-gray-500 mb-3">Official public-domain translations (Giles, Marriott, Long, Jowett, Common, Zimmern, Graham). The full actual books — every word, offline-cached after first read.</p><div class="card-glass p-3.5 mb-3"><h3 class="text-[10px] font-bold tracking-[.2em] text-gold mb-1"><i class="fas fa-bell"></i> ALARMS & ENGAGEMENT</h3><div class="flex items-center justify-between py-1.5"><span class="text-xs">War-horn alarm at every block start</span><button class="btn px-3 py-1 text-[11px] font-bold ' + (Alarm.enabled ? "bg-emerald-800 text-emerald-100" : "bg-gray-800 text-gray-500 border border-line") + '" data-act="alarmToggle">' + (Alarm.enabled ? "ARMED" : "OFF") + '</button></div><div class="flex items-center justify-between py-1.5"><span class="text-xs">Test the war horn</span><button class="btn px-3 py-1 text-[11px] font-bold bg-gold/20 border border-gold/50 text-gold" data-act="alarmRing">SOUND IT</button></div><div class="flex items-center justify-between py-1.5"><span class="text-xs">Push notifications</span><button class="btn px-3 py-1 text-[11px] font-bold bg-sky-900/60 border border-sky-700 text-sky-200" data-act="askNotify">ENABLE</button></div><div class="flex items-center justify-between py-1.5"><span class="text-xs pr-2">Device calendar + native alarms (rings even when app is closed)</span><a class="btn px-3 py-1 text-[11px] font-bold bg-indigo-900/60 border border-indigo-700 text-indigo-200 shrink-0" href="/calendar.ics" download>EXPORT .ICS</a></div><p class="text-[9px] text-gray-600 mt-1">Import warroom.ics into Google Calendar / iPhone Calendar once — every block becomes a repeating native event with a 2-min-before alert. That is the bulletproof layer: your phone itself becomes the war horn.</p></div><div class="sect">THE ARSENAL — ' + S.LIBRARY.length + " COMPLETE TEXTS</div>" + S.LIBRARY.map((b) => {
+    return header() + '<section id="library-section" class="stagger"><p class="text-[10px] text-gray-500 mb-3">Official public-domain translations (Giles, Marriott, Long, Jowett, Common, Zimmern, Graham). The full actual books — every word, offline-cached after first read.</p><div class="card-glass p-3.5 mb-3"><h3 class="text-[10px] font-bold tracking-[.2em] text-gold mb-1"><i class="fas fa-bell"></i> ALARMS & ENGAGEMENT</h3><div class="flex items-center justify-between py-1.5"><span class="text-xs">War-horn alarm at every block start</span><button class="btn px-3 py-1 text-[11px] font-bold ' + (Alarm.enabled ? "bg-emerald-800 text-emerald-100" : "bg-gray-800 text-gray-500 border border-line") + '" data-act="alarmToggle">' + (Alarm.enabled ? "ARMED" : "OFF") + '</button></div><div class="flex items-center justify-between py-1.5"><span class="text-xs">Test the war horn</span><button class="btn px-3 py-1 text-[11px] font-bold bg-gold/20 border border-gold/50 text-gold" data-act="alarmRing">SOUND IT</button></div><div class="flex items-center justify-between py-1.5"><span class="text-xs pr-2">Push alarms (primary — the server pushes even when the app is closed)</span><button class="btn px-3 py-1 text-[11px] font-bold bg-sky-900/60 border border-sky-700 text-sky-200 shrink-0" data-act="enablePush">ENABLE</button></div><p class="text-[9px] text-gray-600 mt-1">Honest limit: push wakes this app on Android and desktop even when it is closed. On iPhone it only rings if you add the war room to your home screen (iOS 16.4+) — a tab in Safari will not. The in-page war horn needs the app open; the calendar export is the layer that always rings.</p><div class="flex items-center justify-between py-1.5"><span class="text-xs pr-2">Device calendar + native alarms (rings even when app is closed)</span><a class="btn px-3 py-1 text-[11px] font-bold bg-indigo-900/60 border border-indigo-700 text-indigo-200 shrink-0" href="/calendar.ics" download>EXPORT .ICS</a></div><p class="text-[9px] text-gray-600 mt-1">Import warroom.ics into Google Calendar / iPhone Calendar once — every block becomes a repeating native event with a 2-min-before alert. That is the bulletproof layer: your phone itself becomes the war horn.</p></div><div class="sect">THE ARSENAL — ' + S.LIBRARY.length + " COMPLETE TEXTS</div>" + S.LIBRARY.map((b) => {
       const total = b.chapters || 0;
       const pct = total ? Math.round(b.chaptersDone / total * 100) : 0;
       const finished = total > 0 && b.chaptersDone >= total;
@@ -969,6 +969,51 @@
     },
     finishChapter: () => finishChapter()
   });
+  function urlBase64ToUint8Array(base64) {
+    const padding = "=".repeat((4 - base64.length % 4) % 4);
+    const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  async function enablePush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      toast("This browser cannot do push. Use the calendar export.", true);
+      return;
+    }
+    let key;
+    try {
+      key = (await axios.get("/api/push/key")).data.publicKey;
+    } catch (_) {
+      toast("Push is not configured on the server yet — use the calendar export.", true);
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Denied — enable notifications in browser settings.", true);
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing || await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key)
+      });
+      const raw = subscription.toJSON();
+      await api("post", "/api/push/subscribe", {
+        endpoint: raw.endpoint,
+        p256dh: raw.keys.p256dh,
+        auth: raw.keys.auth,
+        device_label: "this device"
+      });
+      FX.success && FX.success();
+      toast("Push armed. The server will wake this device.");
+    } catch (_) {
+      toast("Could not arm push — the calendar export still works.", true);
+    }
+  }
+  registerActions({ enablePush: () => enablePush() });
   function viewMind() {
     return header() + '<section id="mind-section" class="fade-in"><div class="flex gap-2 mb-3"><button class="btn flex-1 p-2 text-xs font-bold ' + (S.MIND_MODE === "cards" ? "bg-gold/20 border border-gold/50 text-gold" : "bg-panel border border-line text-gray-400") + '" data-act="setMindMode" data-args="[&quot;cards&quot;]"><i class="fas fa-layer-group mr-1"></i>DRILL (' + S.DUE.length + ' due)</button><button class="btn flex-1 p-2 text-xs font-bold ' + (S.MIND_MODE === "bank" ? "bg-gold/20 border border-gold/50 text-gold" : "bg-panel border border-line text-gray-400") + '" data-act="setMindMode" data-args="[&quot;bank&quot;]"><i class="fas fa-book-skull mr-1"></i>MAXIM BANK</button></div>' + (S.MIND_MODE === "cards" ? viewCards() : viewBank()) + "</section>";
   }
