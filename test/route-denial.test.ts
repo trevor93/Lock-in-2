@@ -12,7 +12,8 @@ import learnRoutesSource from '../src/routes/learn.ts?raw'
 import recoveryRoutesSource from '../src/routes/recovery.ts?raw'
 import cursorRoutesSource from '../src/routes/cursor.ts?raw'
 import dayRoutesSource from '../src/routes/day.ts?raw'
-const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource].join(String.fromCharCode(10))
+import economyRoutesSource from '../src/routes/economy.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,
