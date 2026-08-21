@@ -87,6 +87,42 @@ registerActions({
   dismissId:   (e, el, id) => { const t = document.getElementById(id); if (t) t.remove(); },
 });
 
+/* Book 8.7 - the interface register. The server reports the commander's chosen
+   tone in /api/state; these are the same strings src/tone.ts holds, for the
+   handful of statements the interface itself makes. */
+const TONE_LINES = {
+  no_targets: {
+    neutral: 'No targets were set last night.',
+    firm: 'No targets were set last night. Set tonight\u2019s three in the debrief.',
+    military: 'No targets on record for today. Set three tonight.',
+    compassionate: 'Last night ended without targets. It happens - set three tonight so tomorrow starts with a direction.',
+  },
+  day_open: {
+    neutral: 'The day is in progress.',
+    firm: 'The day is in progress. The mandatory set is what counts.',
+    military: 'Day in progress. Hold the mandatory set.',
+    compassionate: 'The day is in progress - the mandatory set is all that is being asked of you.',
+  },
+};
+/* Book 8.7 severity hierarchy: neutral, information, attention, warning,
+   critical. Red is reserved for genuine risk or failure - ordinary
+   incompletion is amber. */
+function severityClass(severity) {
+  switch (severity) {
+    case 'critical': return 'text-red-400 border-red-800/60';
+    case 'warning': case 'serious': return 'text-amber-400 border-amber-800/50';
+    case 'attention': case 'warn': return 'text-amber-300 border-amber-900/40';
+    case 'information': case 'info': return 'text-sky-300 border-sky-900/40';
+    default: return 'text-gray-300 border-line';
+  }
+}
+
+function toneLine(key, tone) {
+  const entry = TONE_LINES[key];
+  if (!entry) return '';
+  return entry[tone] || entry.firm;
+}
+
 /* ============ AUTH GATE ============ */
 export function renderLogin(isSetup) {
   FX.killSplash && FX.killSplash();
@@ -267,7 +303,7 @@ export function viewNow() {
       <p class="text-xs text-gray-300 leading-relaxed">${nl2br(s.yesterdayTargets)}</p>
     </div>`:`
     <div class="card p-3 mb-3 border-amber-800/50">
-      <p class="text-xs text-amber-400"><i class="fas fa-triangle-exclamation"></i> No targets set last night. You woke up without orders — Law 4 violated. Set tonight's targets in the Debrief tab.</p>
+      <p class="text-xs text-amber-400"><i class="fas fa-triangle-exclamation"></i> ${S.STATE.tone ? toneLine('no_targets', S.STATE.tone) : 'No targets were set last night. Set tonight\u2019s three in the debrief.'} (Law 4)</p>
     </div>`}
 
     ${c?`

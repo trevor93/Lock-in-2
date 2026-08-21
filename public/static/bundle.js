@@ -1769,6 +1769,25 @@
       if (t) t.remove();
     }
   });
+  const TONE_LINES = {
+    no_targets: {
+      neutral: "No targets were set last night.",
+      firm: "No targets were set last night. Set tonight’s three in the debrief.",
+      military: "No targets on record for today. Set three tonight.",
+      compassionate: "Last night ended without targets. It happens - set three tonight so tomorrow starts with a direction."
+    },
+    day_open: {
+      neutral: "The day is in progress.",
+      firm: "The day is in progress. The mandatory set is what counts.",
+      military: "Day in progress. Hold the mandatory set.",
+      compassionate: "The day is in progress - the mandatory set is all that is being asked of you."
+    }
+  };
+  function toneLine(key, tone) {
+    const entry = TONE_LINES[key];
+    if (!entry) return "";
+    return entry[tone] || entry.firm;
+  }
   function renderLogin(isSetup) {
     FX.killSplash && FX.killSplash();
     app().innerHTML = `
@@ -1961,7 +1980,7 @@
       <p class="text-xs text-gray-300 leading-relaxed">${nl2br(s.yesterdayTargets)}</p>
     </div>` : `
     <div class="card p-3 mb-3 border-amber-800/50">
-      <p class="text-xs text-amber-400"><i class="fas fa-triangle-exclamation"></i> No targets set last night. You woke up without orders — Law 4 violated. Set tonight's targets in the Debrief tab.</p>
+      <p class="text-xs text-amber-400"><i class="fas fa-triangle-exclamation"></i> ${S.STATE.tone ? toneLine("no_targets", S.STATE.tone) : "No targets were set last night. Set tonight’s three in the debrief."} (Law 4)</p>
     </div>`}
 
     ${c ? `

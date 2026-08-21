@@ -239,3 +239,8 @@ export const missCauseBodySchema = z.strictObject({
   note: optionalTrimmedText(1000),
   date: optionalDate,
 })
+
+// Book 8.7 - the interface register (Hermes is governed separately by Book 15).
+export const toneBodySchema = z.strictObject({
+  tone: z.enum(['neutral', 'firm', 'military', 'compassionate']),
+})

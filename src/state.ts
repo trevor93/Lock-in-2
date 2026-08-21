@@ -6,6 +6,7 @@
 import { blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
 import { isMandatory, needsAnchors, ANCHOR_TARGET } from './ratchet'
+import { normaliseTone } from './tone'
 import { computeStreak, trailingMedian } from './streak'
 import { addDays, isoWeekKey } from './time'
 
@@ -49,6 +50,10 @@ export async function buildState(DB: D1Database, userId: number, date: string, t
   ).bind(userId).all()).results
 
   // delta scoring vs trailing 14-day median + appeal availability + active load reductions
+  // Book 8.7: the interface register the commander chose (default firm).
+  const toneRow = await DB.prepare(
+    `SELECT value FROM settings WHERE user_id=? AND key='tone' LIMIT 1`,
+  ).bind(userId).first<{ value: string }>().catch(() => null)
   const median = await trailingMedian(DB, userId, date)
   const weekKey = isoWeekKey(date)
   const appealUsed = await DB.prepare(
@@ -82,6 +87,7 @@ export async function buildState(DB: D1Database, userId: number, date: string, t
     dueCards: dueCards?.n ?? 0, dueTongue: (dueTongue as any)?.n ?? 0, activeUnits,
     median, delta: median === null ? null : adh.pct - median,
     appealAvailable: !appealUsed, loadReductions,
+    tone: normaliseTone(toneRow?.value),
     // Book 8.1 — the ratchet, derived from the blocks already loaded (no extra query).
     // needsAnchors tells TODAY to ask him to name his three anchors instead of
     // scoring a day he never agreed to.

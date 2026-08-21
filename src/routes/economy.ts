@@ -4,16 +4,31 @@
 // explanation counts). Reward/law writes are idempotent.
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
+import { normaliseTone, TONES, DEFAULT_TONE } from '../tone'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency, requestId, auditEvent } from '../request-support'
 import { safeDate, userNow } from '../clock'
 import { addDays } from '../time'
-import { blocksForDate } from '../repositories'
+import { blocksForDate, getSetting, setSetting } from '../repositories'
 import { computeStreak } from '../streak'
 import { dayAdherence } from '../scoring'
-import { lawCheckBodySchema, positiveIdSchema } from '../schemas'
+import { lawCheckBodySchema, positiveIdSchema, toneBodySchema } from '../schemas'
 
 export function registerEconomyRoutes(app: Hono<{ Bindings: Bindings; Variables: Variables }>) {
+
+// Book 8.7 - the interface register. neutral | firm | military | compassionate,
+// defaulting to firm. Military may be cold; it may never be abusive. This governs the
+// INTERFACE only: Book 15 governs Hermes, and Hermes stays cold and exact regardless.
+app.get('/api/tone', async (c) => {
+  const value = await getSetting(c.env.DB, 'tone', c.get('userId'))
+  return c.json({ tone: normaliseTone(value), options: TONES, default: DEFAULT_TONE })
+})
+
+app.post('/api/tone', async (c) => {
+  const { tone } = await parseJson(c, toneBodySchema)
+  await setSetting(c.env.DB, 'tone', tone, c.get('userId'))
+  return c.json({ ok: true, tone })
+})
 // ============ LAWS ============
 app.get('/api/laws', async (c) => {
   const userId = c.get('userId')
