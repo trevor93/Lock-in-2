@@ -5,7 +5,9 @@ import appSource from '../src/index.tsx?raw'
 // Routes relocated into route modules (Book 7) are scanned too, so the
 // exhaustive denial gate keeps covering every route wherever it now lives.
 import agentV1Source from '../src/routes/agent-v1.ts?raw'
-const allRouteSources = [appSource, agentV1Source].join(String.fromCharCode(10))
+import hermesRoutesSource from '../src/routes/hermes.ts?raw'
+import intelLibrarySource from '../src/routes/intel-library.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,
