@@ -68,6 +68,45 @@ async function api(method, url, data) {
   }
 }
 
+/* ============ EVENT DELEGATION (Book 7) ============
+   Inline onclick in generated HTML forces script-src 'unsafe-inline'. Instead one
+   delegated listener maps data-act -> a registered handler, invoked as
+   (event, el, ...args) with args carried as JSON in data-args. Each module
+   registers its own handlers, so no handler needs to be a window.* global. */
+const ACTIONS = {};
+function registerActions(map) { Object.assign(ACTIONS, map); }
+const actArgs = (arr) => esc(JSON.stringify(arr));   // JSON stays valid inside a "double-quoted" attr
+function _dispatchAct(e, attr, el) {
+  const fn = ACTIONS[el.getAttribute(attr)];
+  if (!fn) return;
+  let args = [];
+  const raw = el.getAttribute('data-args');
+  if (raw) { try { args = JSON.parse(raw); } catch (_) { args = []; } }
+  fn(e, el, ...args);
+}
+document.addEventListener('click', (e) => {
+  const el = e.target && e.target.closest && e.target.closest('[data-act]');
+  if (el) _dispatchAct(e, 'data-act', el);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const el = e.target && e.target.closest && e.target.closest('[data-act-enter]');
+  if (el) _dispatchAct(e, 'data-act-enter', el);
+});
+registerActions({
+  doLogin:     (e, el, isSetup) => doLogin(isSetup),
+  ackFlag:     (e, el, id) => ackFlag(id),
+  appealBlock: (e, el, id, date, title) => appealBlock(id, date, title),
+  logBlock:    (e, el, id, status) => logBlock(id, status, e),
+  runCatchup:  () => runCatchup(),
+  answerLR:    (e, el, id, v) => answerLR(id, v),
+  loadLaws:    () => loadLaws(),
+  checkLaw:    (e, el, id, kept) => checkLaw(id, kept),
+  logRecovery: () => logRecovery(),
+  setTab:      (e, el, tab) => { TAB = tab; render(); },
+  dismissId:   (e, el, id) => { const t = document.getElementById(id); if (t) t.remove(); },
+});
+
 /* ============ AUTH GATE ============ */
 function renderLogin(isSetup) {
   FX.killSplash && FX.killSplash();
@@ -80,8 +119,8 @@ function renderLogin(isSetup) {
     </div>
     <div class="card-lux p-5">
       <input id="login-pass" type="password" placeholder="${isSetup?'New password (min 8 chars)':'Password'}" autocomplete="${isSetup?'new-password':'current-password'}"
-        class="w-full bg-ink border border-line rounded-lg px-3 py-3 text-sm mb-3" onkeydown="if(event.key==='Enter')doLogin(${isSetup?'true':'false'})">
-      <button class="btn w-full p-3 bg-gold/15 border border-gold/50 text-gold font-bold text-sm" onclick="doLogin(${isSetup?'true':'false'})">
+        class="w-full bg-ink border border-line rounded-lg px-3 py-3 text-sm mb-3" data-act-enter="doLogin" data-args="${actArgs([!!isSetup])}">
+      <button class="btn w-full p-3 bg-gold/15 border border-gold/50 text-gold font-bold text-sm" data-act="doLogin" data-args="${actArgs([!!isSetup])}">
         <i class="fas fa-key mr-1"></i>${isSetup?'SEAL THE GATE':'ENTER'}
       </button>
       <p class="text-[10px] text-gray-600 mt-3 text-center">${isSetup?'This password protects everything — the whole command post sits behind it. There is no recovery. Write it somewhere real.':'The war room admits its commander only.'}</p>
@@ -190,7 +229,7 @@ function flagsPanel() {
     ${STATE.flags.map(f=>`
       <article class="card sev-${f.severity} p-3 mb-2">
         <p class="text-xs leading-relaxed text-gray-300">${esc(f.message)}</p>
-        <button class="btn mt-2 text-[11px] px-3 py-1.5 bg-gray-800 text-gray-300 border border-line" onclick="ackFlag(${f.id})">
+        <button class="btn mt-2 text-[11px] px-3 py-1.5 bg-gray-800 text-gray-300 border border-line" data-act="ackFlag" data-args="${actArgs([f.id])}">
           <i class="fas fa-check mr-1"></i>ACKNOWLEDGED — I OWN IT
         </button>
       </article>`).join('')}
@@ -206,11 +245,11 @@ function statusBtns(b, compact=false) {
     return `<span class="pill" style="background:rgba(153,27,27,.25);color:#f87171;border:1px solid rgba(220,38,38,.45);letter-spacing:.12em">
       <i class="fas fa-ban text-[9px]"></i>CANCELED</span>${canAppeal?`
     <button class="btn px-2 py-1 text-[9px] bg-gray-800/60 border border-gold/40 text-gold ml-1" title="Use this week's appeal token"
-      onclick="appealBlock(${b.id},'${STATE.date}','${esc(b.title).replace(/'/g,'&#39;')}')"><i class="fas fa-gavel"></i></button>`:''}`;
+      data-act="appealBlock" data-args="${actArgs([b.id, STATE.date, b.title])}"><i class="fas fa-gavel"></i></button>`:''}`;
   }
   const mk = (val, ic, cls, active) => `
     <button class="btn ${compact?'px-2.5 py-1.5 text-[11px]':'px-3 py-2 text-xs'} ${active?cls:'bg-gray-800/60 text-gray-500 border border-line'}"
-      onclick="logBlock(${b.id},'${st===val?'pending':val}',event)"><i class="fas ${ic}"></i></button>`;
+      data-act="logBlock" data-args="${actArgs([b.id, st===val?'pending':val])}"><i class="fas ${ic}"></i></button>`;
   return `<div class="flex gap-1.5">
     ${mk('done','fa-check','bg-emerald-700 text-white', st==='done')}
     ${mk('partial','fa-star-half-stroke','bg-amber-600 text-white', st==='partial')}
@@ -243,7 +282,7 @@ function viewNow() {
     <div class="card-lux p-4 mb-3 border-gold/40" id="catchup-door">
       <h3 class="text-[11px] font-bold tracking-[.2em] gold-text mb-1"><i class="fas fa-door-open"></i> THERE IS A WAY BACK IN</h3>
       <p class="text-xs text-gray-400 leading-relaxed mb-3">A few days have gone dark. That is data, not a verdict. Run the re-entry protocol — it forgives the backlog and gives you one action.</p>
-      <button class="btn w-full p-2.5 bg-gold/15 border border-gold/50 text-gold font-bold text-xs" onclick="runCatchup()"><i class="fas fa-compass mr-1"></i>RUN /catchup</button>
+      <button class="btn w-full p-2.5 bg-gold/15 border border-gold/50 text-gold font-bold text-xs" data-act="runCatchup"><i class="fas fa-compass mr-1"></i>RUN /catchup</button>
     </div>`:''}
     ${s.yesterdayTargets?`
     <div class="card p-3 mb-3 border-gold/30">
@@ -311,7 +350,7 @@ function viewNow() {
       <p class="text-[10px] text-gray-400 mb-1.5">Two misses in a row — the plan was wrong somewhere. Why?</p>
       <div class="flex flex-wrap gap-1.5">
         ${[['wrong_time','WRONG TIME'],['too_long','TOO LONG'],['wrong_prereq','WRONG PREREQ'],['dont_want_it','DON’T WANT IT']].map(([v,l])=>`
-        <button class="btn px-2 py-1.5 text-[10px] bg-gray-800/60 border border-line text-gray-300" onclick="answerLR(${lr.id},'${v}')">${l}</button>`).join('')}
+        <button class="btn px-2 py-1.5 text-[10px] bg-gray-800/60 border border-line text-gray-300" data-act="answerLR" data-args="${actArgs([lr.id, v])}">${l}</button>`).join('')}
       </div>`}
     </div>`).join(''):''}
 
@@ -319,7 +358,7 @@ function viewNow() {
     <div class="card p-3 mb-3">
       <h3 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2"><i class="fas fa-chess-knight text-rose-400"></i> ACTIVE FRONTS</h3>
       ${s.activeUnits.map(u=>`
-        <button class="w-full text-left flex items-center gap-2 py-1.5 border-b border-line/50 last:border-0" onclick="TAB='campaign';render()">
+        <button class="w-full text-left flex items-center gap-2 py-1.5 border-b border-line/50 last:border-0" data-act="setTab" data-args="${actArgs(['campaign'])}">
           <span class="pill ${u.track==='strategy'?'bg-rose-950 text-rose-300':'bg-indigo-950 text-indigo-300'}">${u.code}</span>
           <span class="text-xs flex-1">${esc(u.title)}</span>
           <span class="text-[9px] text-gray-500">${u.status.replace('_',' ').toUpperCase()}</span>
@@ -327,7 +366,7 @@ function viewNow() {
     </div>`:''}
 
     ${s.dueCards>0?`
-    <button class="btn w-full p-3 bg-gold/10 border border-gold/40 text-gold text-sm font-bold" onclick="TAB='mind';render()">
+    <button class="btn w-full p-3 bg-gold/10 border border-gold/40 text-gold text-sm font-bold" data-act="setTab" data-args="${actArgs(['mind'])}">
       <i class="fas fa-layer-group mr-1"></i> ${s.dueCards} FLASHCARD${s.dueCards>1?'S':''} DUE — DRILL THE PRINCIPLES
     </button>`:''}
   </section>`;
@@ -369,7 +408,7 @@ function viewToday() {
       </article>`;
     }).join('')}
     </div>
-    <div id="laws-panel" class="mt-4">${LAWS_CACHE?renderLaws():'<button class="btn w-full p-3 bg-panel border border-line text-sm" onclick="loadLaws()"><i class="fas fa-scale-balanced mr-1 text-gold"></i> CHECK THE 7 LAWS (tonight)</button>'}</div>
+    <div id="laws-panel" class="mt-4">${LAWS_CACHE?renderLaws():'<button class="btn w-full p-3 bg-panel border border-line text-sm" data-act="loadLaws"><i class="fas fa-scale-balanced mr-1 text-gold"></i> CHECK THE 7 LAWS (tonight)</button>'}</div>
   </section>`;
 }
 function dowLabel(){ return ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'][new Date().getDay()]; }
@@ -386,8 +425,8 @@ function renderLaws() {
           <p class="text-[10px] text-gray-500 leading-relaxed">${esc(l.detail)}</p>
         </div>
         <div class="flex gap-1.5">
-          <button class="btn px-2.5 py-1.5 text-[11px] ${l.kept===1?'bg-emerald-700 text-white':'bg-gray-800/60 text-gray-500 border border-line'}" onclick="checkLaw(${l.id},true)"><i class="fas fa-check"></i></button>
-          <button class="btn px-2.5 py-1.5 text-[11px] ${l.kept===0?'bg-red-800 text-white':'bg-gray-800/60 text-gray-500 border border-line'}" onclick="checkLaw(${l.id},false)"><i class="fas fa-xmark"></i></button>
+          <button class="btn px-2.5 py-1.5 text-[11px] ${l.kept===1?'bg-emerald-700 text-white':'bg-gray-800/60 text-gray-500 border border-line'}" data-act="checkLaw" data-args="${actArgs([l.id, true])}"><i class="fas fa-check"></i></button>
+          <button class="btn px-2.5 py-1.5 text-[11px] ${l.kept===0?'bg-red-800 text-white':'bg-gray-800/60 text-gray-500 border border-line'}" data-act="checkLaw" data-args="${actArgs([l.id, false])}"><i class="fas fa-xmark"></i></button>
         </div>
       </div>
     </article>`).join('')}`;
@@ -443,14 +482,14 @@ async function runCatchup() {
     '<div class="max-w-lg mx-auto py-4">' +
       '<div class="flex items-center justify-between mb-3">' +
         '<h2 class="font-engraved gold-text text-lg font-bold">⚔ RE-ENTRY</h2>' +
-        '<button class="text-gray-500 text-xl" onclick="document.getElementById(\'catchup-overlay\').remove()">✕</button>' +
+        '<button class="text-gray-500 text-xl" data-act="dismissId" data-args="[&quot;catchup-overlay&quot;]">✕</button>' +
       '</div>' +
       '<p class="text-[10px] text-gray-500 mb-3">' + (p.days_absent || 0) + ' day(s) dark · trigger: ' + esc(p.trigger || 'manual') + '</p>' +
       '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-sky-400 mb-1">1 · WHAT WAS MISSED</h3><ul class="text-xs space-y-0.5">' + missed + '</ul></div>' +
       '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1">2 · LIKELY MECHANISM</h3><p class="text-xs text-gray-300">' + esc(p.mechanism || '') + ' — a structural cause, not a character failure.</p></div>' +
       '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-red-400 mb-1">3 · WHAT NOT TO DO NOW</h3><ul class="text-xs text-gray-300 space-y-0.5 list-disc pl-4">' + doNot + '</ul></div>' +
       '<div class="card p-3 mb-2 border-gold/30"><h3 class="text-[10px] font-bold tracking-widest text-gold mb-1">4 · MINIMUM VIABLE RECOVERY</h3><p class="text-xs text-gray-300 mb-2">' + esc(p.minimum_viable_recovery || '') + '</p>' +
-        '<button class="btn w-full p-2.5 bg-jade/15 border border-jade/50 text-jade font-bold text-xs" onclick="logRecovery()"><i class="fas fa-check mr-1"></i>LOG MY ONE ACTION</button></div>' +
+        '<button class="btn w-full p-2.5 bg-jade/15 border border-jade/50 text-jade font-bold text-xs" data-act="logRecovery"><i class="fas fa-check mr-1"></i>LOG MY ONE ACTION</button></div>' +
       '<div class="card p-3 mb-2"><h3 class="text-[10px] font-bold tracking-widest text-indigo-300 mb-1">5 · ONE STRUCTURAL PATCH</h3><p class="text-xs text-gray-300"><b>' + esc((p.structural_patch || {}).dimension || '') + ':</b> ' + esc((p.structural_patch || {}).suggestion || '') + '</p></div>' +
       '<div class="card p-3 mb-2 border-gold/30"><h3 class="text-[10px] font-bold tracking-widest text-gold mb-1">6 · TOMORROW’S KEYSTONE</h3>' +
         '<p class="text-xs text-white font-semibold">' + esc(k.action || '') + ' · ' + esc(k.start_time || '') + '</p>' +

@@ -71,4 +71,30 @@ describe('B7 frontend interaction integrity', () => {
     const activeAfter = document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement
     expect(activeAfter.className, 'MIND did not become the active tab').toContain('active')
   })
+
+  it('clicking a block status button logs it to /api/blocks/:id/log with the right status (data-args encoding)', async () => {
+    const current = {
+      id: 42, title: 'Deep Work', category: 'deepwork',
+      start_time: '09:00', end_time: '10:30', log_status: 'pending',
+      is_non_negotiable: 0, points: 10,
+    }
+    const { calls } = bootFrontend({
+      'GET /api/auth/status': { setup: true, authed: true, csrfToken: 'test-csrf' },
+      'POST /api/tick': { ...MINIMAL_STATE, current, blocks: [current] },
+      'POST /api/blocks/42/log': { ok: true },
+    })
+    await flush()
+
+    // The current-block card renders done/partial/skipped via statusBtns(); the
+    // "done" button carries data-act="logBlock" data-args='[42,"done"]'.
+    const buttons = Array.from(document.querySelectorAll('[data-act="logBlock"]')) as HTMLElement[]
+    const done = buttons.find((b) => (b.getAttribute('data-args') || '').includes('done'))
+    expect(done, 'the done button did not render').toBeTruthy()
+    done!.click()
+    await flush()
+
+    const logged = findCall(calls, 'POST', '/api/blocks/42/log')
+    expect(logged, '/api/blocks/42/log was not called').toBeTruthy()
+    expect((logged!.data as { status: string }).status).toBe('done')
+  })
 })
