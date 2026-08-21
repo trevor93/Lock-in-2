@@ -249,8 +249,12 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
 // computeStreak/trailingMedian extracted to ./streak (Book 7).
 
 // ============ SAME-DAY ENFORCEMENT (real-time honesty — no free passes) ============
-// A block whose end_time + grace has passed with no log is AUTO-MARKED 'missed':
-// instant penalty, instant flag, window closed. The day bleeds while you watch.
+// A block whose end_time + grace passes with no log has its window closed at once -
+// that behaviour stays. What it BECOMES changed with Book 8.3: the state is
+// `unreported`, a DATA state, not a verdict. A block is never auto-cancelled merely
+// because its window passed, and unreported carries a prompt, not a penalty, so no
+// points move here. The commander is asked what actually happened, and the cause he
+// records (Book 8.4) decides what follows.
 export async function runSameDayEnforcement(DB: D1Database, userId: number, date: string, time: string) {
   const start = await getSetting(DB, 'start_date', userId)
   if (start && date < start) return
@@ -258,6 +262,7 @@ export async function runSameDayEnforcement(DB: D1Database, userId: number, date
   const [nh, nm] = time.split(':').map(Number)
   const nowMin = nh * 60 + nm
   const blocks = await blocksForDate(DB, userId, date)
+  const mandatoryIds = new Set(penalisedBlocks(blocks).map((b: any) => b.id))
   for (const b of blocks) {
     // 'pending' is NOT a real log — toggling a block back to pending after the
     // window closes must NOT let it escape the cancellation (honesty loophole).
@@ -270,17 +275,18 @@ export async function runSameDayEnforcement(DB: D1Database, userId: number, date
       `INSERT INTO block_logs (user_id, block_id, log_date, status, note, completed_at)
        VALUES (?,?,?,?,?,datetime('now'))
        ON CONFLICT(block_id, log_date) DO UPDATE SET
-         status='missed', note=excluded.note, completed_at=excluded.completed_at
-       WHERE block_logs.user_id=excluded.user_id AND block_logs.status='pending'`
-    ).bind(userId, b.id, date, 'missed', `AUTO-CANCELED: window closed unlogged at ${time} (grace ${grace}m).`).run()
-    const nn = !!b.is_non_negotiable
+         status='unreported', note=excluded.note, completed_at=excluded.completed_at
+       WHERE block_logs.user_id=excluded.user_id AND block_logs.status IN ('pending','planned')`
+    ).bind(userId, b.id, date, 'unreported', `Window closed without a status at ${time} (grace ${grace}m).`).run()
     const w = b.weight ?? 1
-    // CONTEXT blocks (weight 0) are unscored AND unpenalized — canceled silently.
+    // CONTEXT blocks (weight 0) are unscored and unprompted.
     if (w === 0) continue
-    const penalty = nn ? -15 : -5
-    await addFlag(DB, userId, date, 'missed_live', nn ? 'critical' : 'warn',
-      `[Block #${b.id}] ${nn ? 'NON-NEGOTIABLE ' : ''}MISSED — CANCELED: "${b.title}" (${b.start_time}–${b.end_time}) ended unlogged. The window is closed. ${penalty} pts. One appeal token per week can reopen a window — at the cost of a written, permanent reason.`,
-      penalty, 'block', b.id)
+    // Book 8.1: only the mandatory set is asked about at all. Book 8.3: the prompt
+    // carries NO penalty - the cause he records (Book 8.4) decides what follows.
+    if (!mandatoryIds.has(b.id)) continue
+    await addFlag(DB, userId, date, 'unreported_block', 'attention',
+      `[Block #${b.id}] UNREPORTED: "${b.title}" (${b.start_time}-${b.end_time}). This block passed without a status. Choose what actually happened, and record the cause before rescheduling.`,
+      0, 'block', b.id)
   }
 }
 

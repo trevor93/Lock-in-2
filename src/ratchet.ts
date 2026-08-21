@@ -13,6 +13,7 @@
 // application asks him to name his anchors instead of silently unscoring his day.
 
 import { addDays } from './time'
+import { hasLanded, isPartial, isExcusedFromScoring } from './block-status'
 
 /** Book 8.1: week one is three anchors. */
 export const ANCHOR_TARGET = 3
@@ -66,7 +67,8 @@ export function needsAnchors(blocks: RatchetBlock[]): boolean {
 export function heldCleanly(blocks: RatchetBlock[]): boolean {
   const mandatory = blocks.filter(isMandatory)
   if (!mandatory.length) return false
-  return mandatory.every((b) => b.log_status === 'done' || b.log_status === 'partial')
+  return mandatory.every((b) =>
+    hasLanded(b.log_status) || isPartial(b.log_status) || isExcusedFromScoring(b.log_status))
 }
 
 export type RatchetState = {
@@ -127,7 +129,8 @@ export async function consecutiveMisses(
     const blocks = await loadBlocks(date)
     const block = blocks.find((b) => b.id === blockId)
     if (!block) continue                            // not scheduled that day
-    if (block.log_status === 'done' || block.log_status === 'partial') break
+    if (hasLanded(block.log_status) || isPartial(block.log_status)
+        || isExcusedFromScoring(block.log_status)) break
     misses++
   }
   return misses

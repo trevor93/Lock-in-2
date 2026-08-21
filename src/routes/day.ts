@@ -132,6 +132,20 @@ app.post('/api/blocks/:id/log', async (c) => withIdempotency(c, 'block:log', asy
   const prev = await DB.prepare(
     `SELECT * FROM block_logs WHERE block_id=? AND log_date=? AND user_id=?`,
   ).bind(id, date, userId).first<any>()
+  // Book 8.3/8.4: a window that closed with no status leaves the block
+  // `unreported` - a data state carrying a prompt, not a verdict. It can be
+  // resolved, but the cause comes first: "Record the cause before rescheduling."
+  if (prev && prev.status === 'unreported') {
+    const diagnosed = await DB.prepare(
+      `SELECT 1 AS x FROM block_miss_causes WHERE user_id=? AND block_id=? AND log_date=?`,
+    ).bind(userId, id, date).first<{ x: number }>()
+    if (!diagnosed) {
+      return c.json({
+        error: 'CAUSE REQUIRED. This block passed without a status. Record what caused the miss (POST /api/blocks/' + id + '/cause) before setting a status.',
+        needsCause: true,
+      }, 409)
+    }
+  }
   // THE WINDOW RULE: a block auto-canceled by the enforcement engine is CLOSED.
   // The only exit is the weekly appeal token (which costs a permanent written reason).
   if (prev && prev.status === 'missed') {

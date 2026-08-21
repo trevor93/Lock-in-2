@@ -18,6 +18,7 @@ import responsesCutover from '../migrations/0015_responses_cutover.sql?raw'
 import sm2ToFsrsMigration from '../migrations/0016_sm2_to_fsrs.sql?raw'
 import pushNotifications from '../migrations/0017_push_notifications.sql?raw'
 import ratchet from '../migrations/0018_ratchet.sql?raw'
+import blockStatuses from '../migrations/0019_block_statuses_and_causes.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -206,4 +207,5 @@ beforeAll(async () => {
   await apply(sm2ToFsrsMigration)
   await apply(pushNotifications)
   await apply(ratchet)
+  await apply(blockStatuses)
 })

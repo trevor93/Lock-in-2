@@ -23,7 +23,19 @@ export const requiredTrimmedText = (min: number, max: number) =>
   z.string().trim().min(min).max(max)
 export const optionalDate = dateSchema.optional().nullable()
 export const gradeSchema = z.number().int().min(0).max(3)
-export const blockStatusSchema = z.enum(['pending', 'done', 'partial', 'skipped'])
+// Book 8.3 - ten honest states. The legacy trio (pending/done/skipped) is kept
+// as synonyms so historical rows and older clients keep working unchanged.
+export const blockStatusSchema = z.enum([
+  'planned', 'active', 'completed', 'completed_late', 'partial', 'rescheduled',
+  'intentionally_canceled', 'displaced_by_priority', 'missed', 'unreported',
+  'pending', 'done', 'skipped',
+])
+// Book 8.4 - every miss names a cause before it can be rescheduled.
+export const missCauseSchema = z.enum([
+  'unrealistic_duration', 'overpacked_schedule', 'low_energy', 'interruption',
+  'unclear_next_action', 'avoidance', 'insufficient_preparation', 'wrong_priority',
+  'forgotten_log', 'emergency', 'technology_failure',
+])
 export const loadReductionReasonSchema = z.enum([
   'wrong_time', 'too_long', 'wrong_prereq', 'dont_want_it',
 ])
@@ -219,4 +231,11 @@ export const ratchetPromoteBodySchema = z.strictObject({
 export const ratchetDemoteBodySchema = z.strictObject({
   block_id: positiveIdSchema.or(z.number().int().positive()),
   reason: optionalTrimmedText(500),
+})
+
+// Book 8.4 - recording a miss diagnosis (and rescheduling only after it).
+export const missCauseBodySchema = z.strictObject({
+  cause: missCauseSchema,
+  note: optionalTrimmedText(1000),
+  date: optionalDate,
 })
