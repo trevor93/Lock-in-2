@@ -791,6 +791,45 @@ Expected: `orphan_sr` is `0`; `treviews_backup` is `1`; at cutover time `sr_rows
 
 `DROP TABLE tongue_reviews; ALTER TABLE tongue_reviews_pre0015_backup RENAME TO tongue_reviews;` then redeploy the prior application, which reads `responses`/`response_srs`/`tongue_exams` (all untouched). The `review_items.item_id` remap is reversible via `captures.legacy_id`. No user data is destroyed by applying or rolling back.
 
+### 5.12 `migrations/0016_sm2_to_fsrs.sql`
+
+**Purpose**
+
+- Book 7 spaced repetition, **SM-2 -> FSRS**. Backfills the FSRS memory columns (`stability`, `difficulty`) onto every `review_items(kind='response')` row from its SM-2 columns, using the exact mapping the application applies in `src/fsrs.ts` (`sm2ToFsrs`): `stability` = the current interval (0.5 if never scheduled); `difficulty` = 2.5 at ease 2.5, +6.25 per ease-point below it, +0.3 per lapse, clamped to [1,10]. `last_review` stays NULL so the first FSRS review treats the card as reviewed on time.
+- Purely additive (fills previously-NULL columns only); deletes nothing. After it, the tongue review route schedules with FSRS (Stability/Difficulty to a 90% target retention) instead of the SM-2 ease multiplier.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/fsrs.test.ts test/fsrs-wiring.test.ts test/tongue-review.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/fsrs.test.ts` proves the scheduler's properties (retrievability decay, interval grows with stability / shrinks as retention rises, recall strengthens, lapse never strengthens, difficulty in range, monotonic SM-2 mapping). `test/fsrs-wiring.test.ts` proves 0016 left no response review_item without FSRS state and a review records stability/difficulty/last_review and schedules forward. `test/tongue-review.test.ts` proves the live drill flow.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only. Applies only after `0015`.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS missing_fsrs FROM review_items
+  WHERE kind='response' AND (stability IS NULL OR difficulty IS NULL);
+SELECT COUNT(*) AS out_of_range FROM review_items
+  WHERE kind='response' AND (difficulty < 1 OR difficulty > 10 OR stability <= 0);
+```
+
+Expected: both `0`.
+
+**Rollback**
+
+The prior application ignores the FSRS columns and reads the untouched SM-2 columns (`interval_days`/`ease`/`reps`/`lapses`), so redeploying it restores SM-2 scheduling; optionally `UPDATE review_items SET stability=NULL, difficulty=NULL, last_review=NULL WHERE kind='response'`. No user data is destroyed by applying or rolling back.
+
 ## 6. Deploy and Verify the Pages Application
 
 

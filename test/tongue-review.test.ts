@@ -49,9 +49,11 @@ function post(path: string, s: { cookie: string; csrf: string }, body: unknown) 
 
 // Simulate the passage of time by making the card due in the past. Book 7: the
 // SR state now lives in review_items (kind='response', item_id = the capture id).
+// last_review is backdated too, so FSRS sees real elapsed time between reviews.
 async function makeDue(userId: number, responseId: number) {
   await env.DB.prepare(
-    `UPDATE review_items SET due_date='2000-01-01' WHERE kind='response' AND item_id=? AND user_id=?`,
+    `UPDATE review_items SET due_date='2000-01-01', last_review='2000-01-01'
+     WHERE kind='response' AND item_id=? AND user_id=?`,
   ).bind(responseId, userId).run()
 }
 

@@ -15,6 +15,14 @@ export function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+// Whole days from one civil date to another (positive when `to` is later).
+// Noon-UTC anchored like addDays, so it never slips across a day boundary.
+export function daysBetween(fromDateStr: string, toDateStr: string): number {
+  const a = new Date(fromDateStr + 'T12:00:00Z').getTime()
+  const b = new Date(toDateStr + 'T12:00:00Z').getTime()
+  return Math.round((b - a) / 86400000)
+}
+
 export function isoWeekKey(dateStr: string): string {
   const d = new Date(dateStr + 'T12:00:00Z')
   const day = (d.getUTCDay() + 6) % 7

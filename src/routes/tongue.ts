@@ -7,8 +7,9 @@ import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency } from '../request-support'
 import { safeDate, userNow } from '../clock'
-import { addDays } from '../time'
+import { addDays, daysBetween } from '../time'
 import { addFlag } from '../enforcement'
+import { fsrsReview, sm2ToFsrs } from '../fsrs'
 import { tongueBodySchema, tongueReviewBodySchema, tongueExamBodySchema, positiveIdSchema, responseCategorySchema } from '../schemas'
 
 export function registerTongueRoutes(app: Hono<{ Bindings: Bindings; Variables: Variables }>) {
@@ -136,23 +137,29 @@ app.post('/api/tongue/:id/review', async (c) => withIdempotency(c, 'tongue:revie
   if (s.due_date > today) {
     return c.json({ error: 'RESPONSE NOT DUE. Review transitions follow the schedule.' }, 409)
   }
-  let { interval_days, ease, reps, lapses, total_reviews, correct_reviews } = s
+  // FSRS scheduling (Book 7). Stability/Difficulty drive the interval; the SM-2
+  // counters (reps/lapses/total/correct) are retained for the mastery ladder and
+  // stats. Grades 0..3 map to FSRS ratings 1..4 inside fsrsReview.
+  let { reps, lapses, total_reviews, correct_reviews } = s
   total_reviews++
-  if (grade === 0) { lapses++; reps = 0; interval_days = 0; ease = Math.max(1.3, ease - 0.2) }
-  else {
-    reps++; correct_reviews++
-    ease = Math.max(1.3, ease + (grade === 3 ? 0.1 : grade === 1 ? -0.15 : 0))
-    if (reps === 1) interval_days = 1
-    else if (reps === 2) interval_days = 3
-    else interval_days = Math.round(interval_days * ease * (grade === 1 ? 0.8 : grade === 3 ? 1.3 : 1))
-  }
-  const due = addDays(today, Math.max(interval_days, grade === 0 ? 0 : 1))
+  if (grade === 0) { lapses++; reps = 0 } else { reps++; correct_reviews++ }
+  // Prior memory state: the stored FSRS state, or a one-time seed from the SM-2
+  // columns for any card not yet migrated (migration 0016 pre-seeds; this is the
+  // safety net).
+  const prior = (s.stability != null && s.difficulty != null)
+    ? { stability: s.stability, difficulty: s.difficulty }
+    : sm2ToFsrs({ interval_days: s.interval_days, ease: s.ease, lapses: s.lapses })
+  // Days since last seen; treat a never-FSRS-reviewed card as if reviewed on time.
+  const elapsed = s.last_review ? daysBetween(s.last_review, today) : (s.interval_days || 0)
+  const { state, interval } = fsrsReview(prior, grade, elapsed)
+  const interval_days = interval
+  const due = addDays(today, interval)
   const mastery = tongueMastery({ correct_reviews, interval_days })
   const prevMastery = s.mastery
   await DB.prepare(
-    `UPDATE review_items SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=?
+    `UPDATE review_items SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=?, stability=?, difficulty=?, last_review=?
      WHERE item_id=? AND user_id=? AND kind='response'`
-  ).bind(interval_days, ease, reps, lapses, due, mastery, total_reviews, correct_reviews, mode || 'recall', id, userId).run()
+  ).bind(interval_days, s.ease, reps, lapses, due, mastery, total_reviews, correct_reviews, mode || 'recall', state.stability, state.difficulty, today, id, userId).run()
   await DB.prepare(
     `INSERT INTO tongue_reviews (user_id, response_id, review_date, mode, grade)
      VALUES (?,?,?,?,?)`,

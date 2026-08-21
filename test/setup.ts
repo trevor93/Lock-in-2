@@ -15,6 +15,7 @@ import unifyCaptures from '../migrations/0012_unify_captures.sql?raw'
 import maximsCutover from '../migrations/0013_maxims_cutover.sql?raw'
 import intelCutover from '../migrations/0014_intel_cutover.sql?raw'
 import responsesCutover from '../migrations/0015_responses_cutover.sql?raw'
+import sm2ToFsrsMigration from '../migrations/0016_sm2_to_fsrs.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -200,4 +201,5 @@ beforeAll(async () => {
   await apply(maximsCutover)
   await apply(intelCutover)
   await apply(responsesCutover)
+  await apply(sm2ToFsrsMigration)
 })
