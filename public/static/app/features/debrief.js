@@ -155,17 +155,17 @@ export function viewStats(){
   const sleepDays=s.days.filter(d=>d.sleep!=null);
   const avgSleep=sleepDays.length?(sleepDays.reduce((a,d)=>a+d.sleep,0)/sleepDays.length).toFixed(1):'—';
   const catName={morning:'Morning',workout:'Exercise',deepwork:'Deep Work',study:'University',meal:'Meals',strategy:'Strategy',philosophy:'Philosophy',entertainment:'Entertainment',skincare:'Skincare',admin:'Admin',social:'Social',review:'Review',sleep:'Sleep',flex:'Recovery',rest:'Rest'};
-  const rank = FX.rank(S.STATE.points);
   return header()+
   '<section id="stats-section" class="stagger">'+
+    // Book 8.5: the rank ladder is cut. What replaces it is the thing the ladder
+    // was hiding behind a title - the ledger itself, and whether the mandatory set
+    // is holding. Both are facts, not a second rendering of points.
     '<div class="card-lux p-4 mb-3 flex items-center gap-4">'+
-      FX.ring(rank.prog, 84, 7, '', '')+
+      FX.ring(avg, 84, 7, avg+'%', 'ADHERENCE')+
       '<div class="flex-1">'+
-        '<p class="text-[9px] text-gray-500 font-bold tracking-[.2em]">CURRENT RANK</p>'+
-        '<p class="font-engraved font-bold text-lg gold-text"><i class="fas '+rank.icon+' mr-1"></i>'+rank.name+'</p>'+
-        (rank.next
-          ?'<p class="text-[10px] text-gray-500 mt-0.5">'+(rank.nextAt-Math.max(S.STATE.points,0))+' pts to <span class="text-gold font-bold">'+rank.next+'</span> · '+rank.prog+'% there</p>'
-          :'<p class="text-[10px] text-gold mt-0.5">MAXIMUM RANK ACHIEVED</p>')+
+        '<p class="text-[9px] text-gray-500 font-bold tracking-[.2em]">THE LEDGER</p>'+
+        '<p class="font-engraved font-bold text-lg gold-text">'+Math.max(S.STATE.points,0)+' PTS</p>'+
+        '<p class="text-[10px] text-gray-500 mt-0.5">Fourteen-day weighted adherence on the left. No rank title: it only re-rendered these numbers.</p>'+
       '</div>'+
     '</div>'+
     (s.alternativeExplanations?(function(){var ae=s.alternativeExplanations;var rate=ae.total?Math.round(ae.nonePlausible/ae.total*100):0;return '<div class="card p-3 mb-3 border-amber-800/40">'+'<h3 class="text-[10px] font-bold tracking-widest text-amber-400 mb-1"><i class="fas fa-scale-balanced mr-1"></i>THE BRAKE — alternative explanations</h3>'+'<p class="text-xs text-gray-300">You logged <b>'+ae.total+'</b> alternative explanations on heated captures. <b class="'+(rate>=50?'text-red-400':'text-gray-300')+'">'+ae.nonePlausible+'</b> were \"none plausible\" ('+rate+'%).</p>'+'<p class="text-[10px] text-gray-500 mt-1">A rising none-plausible rate is the paranoia tell (Law 23). Low is good — it means you keep considering the charitable reading.</p>'+'</div>';})():'')+

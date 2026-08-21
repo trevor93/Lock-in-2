@@ -96,17 +96,9 @@ export const FX = {
     [6500, 'WARLORD',        'fa-crown'],
     [10000,'SOVEREIGN',      'fa-dragon'],
   ],
-  rank(points) {
-    const p = Math.max(points, 0);
-    let cur = this.RANKS[0], next = null;
-    for (let i=0;i<this.RANKS.length;i++){
-      if (p >= this.RANKS[i][0]) { cur = this.RANKS[i]; next = this.RANKS[i+1] || null; }
-    }
-    const prog = next ? Math.round(((p-cur[0])/(next[0]-cur[0]))*100) : 100;
-    return { name:cur[1], icon:cur[2], next: next?next[1]:null, nextAt: next?next[0]:null, prog };
-  },
-
-  // ── Streak flame tier class ──
+  // Book 8.5: the rank ladder is CUT - it was a second rendering of points the
+  // commander can already see. It may return only when it is derived from
+  // calibration and mastery rather than from a running points total.
   flameClass(streak) {
     if (streak >= 90) return 'flame-90';
     if (streak >= 30) return 'flame-30';

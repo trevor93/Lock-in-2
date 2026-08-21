@@ -8,11 +8,23 @@
 // ensureUnlocks/ensureCards) to avoid a circular import.
 import { getSetting, blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
+import { boundedPenalty, boundNote } from './scoring-limits'
 import { penalisedBlocks, consecutiveMisses, DEMOTE_AFTER_MISSES } from './ratchet'
+import { hasLanded, isPartial, isExcusedFromScoring } from './block-status'
 import { addDays } from './time'
 import { computeStreak, trailingMedian } from './streak'
 import { userNow } from './clock'
 import { ensureUnlocks, ensureCards } from './curriculum'
+
+
+/**
+ * Book 8.3: a block did not land unless it completed (on time or late) or partly
+ * completed, or it was moved/displaced and so is not owed here at all. Every miss
+ * check goes through this, so a new status can never silently read as a failure.
+ */
+function didNotLand(status?: string | null): boolean {
+  return !(hasLanded(status) || isPartial(status) || isExcusedFromScoring(status))
+}
 
 export async function flagExists(
   DB: D1Database,
@@ -54,10 +66,26 @@ export async function addFlag(
      VALUES (?,?,?,?,?,?,?)`
   ).bind(userId, date, type, severity, message, refType ?? null, refId ?? null).run()
   if (penalty !== 0 && (ins.meta as any).changes > 0) {
-    await DB.prepare(
-      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
-       VALUES (?,?,?,?,?,?)`,
-    ).bind(userId, date, penalty, message, 'flag', refId ?? null).run()
+    // Book 8.5: "A hard cap on daily penalties" and "a floor on the ledger so it
+    // cannot spiral." The flag is always recorded in full - the record never softens -
+    // but what it COSTS is bounded, so one bad day cannot compound into a rout and the
+    // balance cannot fall into a hole he can never climb out of.
+    const spent = await DB.prepare(
+      `SELECT COALESCE(SUM(points),0) AS p FROM points_ledger
+       WHERE user_id=? AND log_date=? AND points < 0`,
+    ).bind(userId, date).first<{ p: number }>()
+    const balance = await DB.prepare(
+      `SELECT COALESCE(SUM(points),0) AS p FROM points_ledger WHERE user_id=?`,
+    ).bind(userId).first<{ p: number }>()
+    const bounded = boundedPenalty(penalty, spent?.p ?? 0, balance?.p ?? 0)
+    if (bounded.penalty !== 0) {
+      await DB.prepare(
+        `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
+         VALUES (?,?,?,?,?,?)`,
+      ).bind(userId, date, bounded.penalty,
+        message + boundNote(bounded.cappedByDay, bounded.cappedByFloor),
+        'flag', refId ?? null).run()
+    }
   }
   return (ins.meta as any).changes > 0
 }
@@ -131,7 +159,7 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
   const adh = dayAdherence(yBlocks)
   if (!alreadyFinal) {
     for (const b of penalisedBlocks(yBlocks)) {
-      if (b.log_status !== 'done' && b.log_status !== 'partial' && b.log_status !== 'missed') {
+      if (didNotLand(b.log_status) && b.log_status !== 'missed') {
         const skipped = b.log_status === 'skipped'
         await addFlag(DB, userId, y1, 'missed_block', skipped ? 'warn' : 'serious',
           `[Block #${b.id}] MANDATORY ${skipped ? 'SKIPPED' : 'UNLOGGED'}: "${b.title}" (${y1}). ${skipped ? 'You recorded what happened — that is the honest path. -5 pts.' : 'This block passed without a status. Choose what actually happened. -10 pts.'}`,
@@ -139,49 +167,33 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
       }
     }
 
-    // 2b. RATCHET DEMOTION (Book 8.1). A mandatory block that missed three times
-    //     running is not holding: it returns to the deck. This REMOVES consequence,
-    //     so it carries no penalty of its own — only a record and a plain statement.
+    // 2b. RATCHET DEMOTION (Book 8.1) is DECIDED here and APPLIED after the load
+    //     reduction below. Both rules answer the third consecutive miss, so the
+    //     demotion must not pull the block out of the mandatory set before load
+    //     reduction has been evaluated for the same day.
+    const toDemote: Array<{ id: number; title: string; misses: number }> = []
     for (const b of penalisedBlocks(yBlocks)) {
       if (b.ratchet_tier !== 'mandatory') continue
       const misses = await consecutiveMisses(
         DB, userId, b.id, y1, (d) => blocksForDate(DB, userId, d),
       )
-      if (misses >= DEMOTE_AFTER_MISSES) {
-        const moved = await DB.prepare(
-          `UPDATE schedule_blocks SET ratchet_tier='deck'
-           WHERE id=? AND user_id=? AND ratchet_tier='mandatory'`,
-        ).bind(b.id, userId).run()
-        if (Number((moved.meta as any).changes) === 1) {
-          await DB.prepare(
-            `INSERT INTO ratchet_events (user_id, block_id, event, occurred_on, reason)
-             VALUES (?,?,'demoted',?,?)`,
-          ).bind(userId, b.id, y1,
-            `Missed ${misses} scheduled days running. Returned to the deck so the mandatory set stays holdable.`).run()
-          await DB.prepare(
-            `INSERT INTO ratchet_state (user_id, hold_started_on, last_demotion_on, updated_at)
-             VALUES (?,?,?,datetime('now'))
-             ON CONFLICT(user_id) DO UPDATE SET
-               hold_started_on=excluded.hold_started_on,
-               last_demotion_on=excluded.last_demotion_on, updated_at=datetime('now')`,
-          ).bind(userId, y1, y1).run()
-          await addFlag(DB, userId, y1, 'ratchet_demotion', 'info',
-            `[Block #${b.id}] RETURNED TO THE DECK: "${b.title}" missed ${misses} scheduled days running. Three similar misses suggest a scheduling problem, not a will problem. The mandatory set is smaller now — hold it, then take it back.`,
-            0, 'block', b.id)
-        }
-      }
+      if (misses >= DEMOTE_AFTER_MISSES) toDemote.push({ id: b.id, title: b.title, misses })
     }
 
-    // 3. LOAD REDUCTION (never-miss-twice INVERTED — review Tier-1 #3).
-    // Two straight misses = the schedule was wrong, not just the will.
-    // Response: HALVE the block for 3 days + demand the WHY. No extra penalty stack.
-    if (y2 >= startDate) {
+    // 3. LOAD REDUCTION. Book 8.5 is explicit: "Load reduction on the third
+    //    consecutive miss." The second miss already draws the Book 8.4 diagnosis
+    //    prompt; the third says the plan itself is wrong, so the block is HALVED
+    //    for 3 days and the why is demanded. It never stacks an extra penalty.
+    const y3 = addDays(today, -3)
+    if (y3 >= startDate) {
       const y2Blocks = await blocksForDate(DB, userId, y2)
-      const missY2 = new Set(penalisedBlocks(y2Blocks).filter((b: any) => b.log_status !== 'done' && b.log_status !== 'partial').map((b: any) => b.id))
+      const y3Blocks = await blocksForDate(DB, userId, y3)
+      const missY3 = new Set(penalisedBlocks(y3Blocks).filter((b: any) => didNotLand(b.log_status)).map((b: any) => b.id))
+      const missY2 = new Set(penalisedBlocks(y2Blocks).filter((b: any) => didNotLand(b.log_status)).map((b: any) => b.id))
       for (const b of penalisedBlocks(yBlocks)) {
-        if (missY2.has(b.id) && b.log_status !== 'done' && b.log_status !== 'partial') {
+        if (missY2.has(b.id) && missY3.has(b.id) && didNotLand(b.log_status)) {
           const created = await addFlag(DB, userId, y1, 'load_reduction', 'serious',
-            `[Block #${b.id}] TWO MISSES IN A ROW: "${b.title}" (${y2}, ${y1}). The block is now UNDER LOAD REDUCTION — half duration for 3 days. A plan that keeps breaking is a bad plan or a hidden refusal. Answer the why: wrong time? too long? wrong prerequisite? or you don't actually want it?`,
+            `[Block #${b.id}] THREE MISSES IN A ROW: "${b.title}" (${y3}, ${y2}, ${y1}). The block is now UNDER LOAD REDUCTION — half duration for 3 days. A plan that keeps breaking is a bad plan or a hidden refusal. Answer the why: wrong time? too long? wrong prerequisite? or you don't actually want it?`,
             0, 'block', b.id)
           if (created) {
             await DB.prepare(
@@ -191,6 +203,32 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
           }
         }
       }
+    }
+
+    // 2b (applied). A mandatory block that missed three scheduled days running is
+    // not holding, so it returns to the deck. This REMOVES consequence: it carries
+    // no penalty of its own, only a record and a plain statement.
+    for (const d of toDemote) {
+      const moved = await DB.prepare(
+        `UPDATE schedule_blocks SET ratchet_tier='deck'
+         WHERE id=? AND user_id=? AND ratchet_tier='mandatory'`,
+      ).bind(d.id, userId).run()
+      if (Number((moved.meta as any).changes) !== 1) continue
+      await DB.prepare(
+        `INSERT INTO ratchet_events (user_id, block_id, event, occurred_on, reason)
+         VALUES (?,?,'demoted',?,?)`,
+      ).bind(userId, d.id, y1,
+        `Missed ${d.misses} scheduled days running. Returned to the deck so the mandatory set stays holdable.`).run()
+      await DB.prepare(
+        `INSERT INTO ratchet_state (user_id, hold_started_on, last_demotion_on, updated_at)
+         VALUES (?,?,?,datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET
+           hold_started_on=excluded.hold_started_on,
+           last_demotion_on=excluded.last_demotion_on, updated_at=datetime('now')`,
+      ).bind(userId, y1, y1).run()
+      await addFlag(DB, userId, y1, 'ratchet_demotion', 'info',
+        `[Block #${d.id}] RETURNED TO THE DECK: "${d.title}" missed ${d.misses} scheduled days running. Three similar misses suggest a scheduling problem, not a will problem. The mandatory set is smaller now - hold it, then take it back.`,
+        0, 'block', d.id)
     }
 
     // 3.5 TONGUE NEGLECT — drills piling up unreviewed means the armory is rotting

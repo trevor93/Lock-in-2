@@ -1,6 +1,7 @@
 // Book 7 refactor — the re-entry routes (Book 8.2/8.6): Minimum Viable Recovery
 // and the deterministic /catchup protocol (its taxonomy + helpers travel here).
 import { Hono } from 'hono'
+import { hasLanded, isPartial, isExcusedFromScoring } from '../block-status'
 import type { Bindings, Variables } from '../env'
 import { parseJson } from '../validation'
 import { requestId, auditEvent } from '../request-support'
@@ -50,7 +51,7 @@ async function inferMechanism(
   if (blocks.length >= 6) return 'overpacked schedule'
   const coreMissed = blocks.some((b: any) =>
     (b.is_non_negotiable || (b.weight ?? 1) >= 3) &&
-    b.log_status !== 'done' && b.log_status !== 'partial')
+    !(hasLanded(b.log_status) || isPartial(b.log_status) || isExcusedFromScoring(b.log_status)))
   if (coreMissed) return 'unclear next action'
   return 'low energy'
 }
@@ -67,7 +68,7 @@ async function buildMissed(
     const blocks = await blocksForDate(DB, userId, d)
     const scored = blocks.filter((b: any) => (b.weight ?? 1) > 0)
     const unlogged = scored.filter((b: any) =>
-      b.log_status !== 'done' && b.log_status !== 'partial').length
+      !(hasLanded(b.log_status) || isPartial(b.log_status) || isExcusedFromScoring(b.log_status))).length
     const deb = await DB.prepare(
       `SELECT 1 AS d FROM debriefs WHERE user_id=? AND log_date=?`,
     ).bind(userId, d).first<{ d: number }>()

@@ -170,7 +170,6 @@ export function shell(content) {
 export function header() {
   const s = S.STATE;
   const flagCount = s.flags.length;
-  const rank = FX.rank(s.points);
   return `
   <header class="mb-3">
     <div class="flex items-center justify-between mb-2.5">
@@ -179,8 +178,7 @@ export function header() {
         <p class="text-[10px] text-gray-500 tracking-wide">${new Date().toDateString()}</p>
       </div>
       <div class="text-right">
-        <span class="rank-plate"><i class="fas ${rank.icon}"></i> ${rank.name}</span>
-        ${rank.next?`<div class="text-[8px] text-gray-500 mt-1 font-semibold tracking-wider">${rank.nextAt - Math.max(s.points,0)} PTS → ${rank.next}</div>`:''}
+        <span class="rank-plate"><i class="fas fa-coins"></i> ${Math.max(s.points,0)} PTS</span>
       </div>
     </div>
     <div class="grid grid-cols-3 gap-2 text-center">
