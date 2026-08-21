@@ -28,6 +28,7 @@ import { registerRecoveryRoutes } from './routes/recovery'
 import { registerCursorRoutes } from './routes/cursor'
 import { registerDayRoutes } from './routes/day'
 import { registerEconomyRoutes } from './routes/economy'
+import { registerAuthRoutes } from './routes/auth'
 import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -218,132 +219,13 @@ const agentCredentialBodySchema = z.strictObject({
 // userNow/safeDate extracted to ./clock (Book 7).
 
 // ============ AUTH (durable users + hashed, revocable sessions) ============
-const SESSION_DAYS = 30
+// Session helpers (SESSION_DAYS, sessionCookie, findSession, sessionValid,
+// revokePresentedSession, issueSession, ownerUser) live in ./auth (imported).
 
-// Crypto primitives extracted to ./crypto (Book 7).
-function sessionCookie(c: any, token: string, maxAge = SESSION_DAYS * 24 * 3600): void {
-  setCookie(c, 'wr_session', token, {
-    httpOnly: true,
-    sameSite: 'Lax',
-    secure: true,
-    path: '/',
-    maxAge,
-  })
-}
-async function findSession(c: any): Promise<SessionRecord | null> {
-  const raw = getCookie(c, 'wr_session')
-  if (!raw) return null
-  const tokenHash = await sha256(raw)
-  return (await c.env.DB.prepare(
-    `SELECT id, user_id FROM sessions
-     WHERE token_hash=? AND revoked_at IS NULL
-       AND unixepoch(expires_at) > unixepoch('now')`,
-  ).bind(tokenHash).first()) as SessionRecord | null
-}
-async function sessionValid(c: any): Promise<boolean> {
-  const session = await findSession(c)
-  if (!session) return false
-  c.set('userId', session.user_id)
-  return true
-}
-async function revokePresentedSession(c: any): Promise<void> {
-  const raw = getCookie(c, 'wr_session')
-  if (!raw) return
-  await c.env.DB.prepare(
-    `UPDATE sessions SET revoked_at=COALESCE(revoked_at, datetime('now')) WHERE token_hash=?`,
-  ).bind(await sha256(raw)).run()
-}
-async function issueSession(c: any, userId: number, rotatedFromId?: number): Promise<string> {
-  const token = randHex(32)
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000).toISOString()
-  await c.env.DB.prepare(
-    `INSERT INTO sessions (user_id, token_hash, expires_at, rotated_from_id)
-     VALUES (?,?,?,?)`,
-  ).bind(userId, await sha256(token), expiresAt, rotatedFromId ?? null).run()
-  sessionCookie(c, token)
-  return csrfToken(token)
-}
-async function ownerUser(DB: D1Database): Promise<{ id: number; password_hash: string; password_salt: string; failed_login_count: number; locked_until: string | null } | null> {
-  return DB.prepare(
-    `SELECT id, password_hash, password_salt, failed_login_count, locked_until
-     FROM users WHERE role='owner' ORDER BY id LIMIT 1`,
-  ).first()
-}
 
-async function claimUnownedData(DB: D1Database, userId: number): Promise<void> {
-  const tables = [
-    'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
-    'flashcards', 'card_reviews', 'honesty_flags', 'points_ledger',
-    'reward_redemptions', 'law_checks', 'settings', 'intel_entries',
-    'book_progress', 'hermes_messages', 'responses', 'response_srs',
-    'tongue_reviews', 'tongue_exams', 'day_summary', 'predictions',
-    'appeals', 'load_reductions',
-  ]
-  await DB.batch(tables.map((table) =>
-    DB.prepare(`UPDATE ${table} SET user_id=? WHERE user_id IS NULL`).bind(userId),
-  ))
-}
 
-// -- auth endpoints (the ONLY unauthenticated API surface) --
-app.get('/api/auth/status', async (c) => {
-  const hasOwner = !!(await ownerUser(c.env.DB))
-  const authed = hasOwner ? await sessionValid(c) : false
-  const rawSession = authed ? getCookie(c, 'wr_session') : undefined
-  return c.json({
-    setup: hasOwner,
-    authed,
-    csrfToken: rawSession ? await csrfToken(rawSession) : undefined,
-  })
-})
-app.post('/api/auth/setup', async (c) => {
-  const DB = c.env.DB
-  if (await ownerUser(DB)) return c.json({ error: 'Already set up. Log in.' }, 400)
-  const { password } = await parseJson(c, passwordBodySchema)
-  if (!password || password.length < 8) return c.json({ error: 'Password must be at least 8 characters. This gate protects everything.' }, 400)
-  const salt = randHex(16)
-  const hash = await pbkdf2(password, salt)
-  const created = await DB.prepare(
-    `INSERT INTO users (password_hash, password_salt, role) VALUES (?,?,'owner')`,
-  ).bind(hash, salt).run()
-  const userId = Number(created.meta.last_row_id)
-  await claimUnownedData(DB, userId)
-  const csrfToken = await issueSession(c, userId)
-  return c.json({ ok: true, csrfToken })
-})
-app.post('/api/auth/login', async (c) => {
-  const DB = c.env.DB
-  const owner = await ownerUser(DB)
-  if (!owner) return c.json({ error: 'Not set up yet.', setup: false }, 400)
-  if (owner.locked_until && new Date(owner.locked_until).getTime() > Date.now()) {
-    return c.json({ error: 'GATE SEALED. Too many failed attempts — wait 15 minutes. Patience is also discipline.' }, 429)
-  }
-  const { password } = await parseJson(c, passwordBodySchema)
-  const attempt = await pbkdf2(password || '', owner.password_salt)
-  if (!timingSafeEq(attempt, owner.password_hash)) {
-    const failures = owner.failed_login_count + 1
-    await DB.prepare(
-      `UPDATE users SET failed_login_count=?, locked_until=CASE WHEN ?>=5 THEN datetime('now','+15 minutes') ELSE NULL END, updated_at=datetime('now') WHERE id=?`,
-    ).bind(failures, failures, owner.id).run()
-    return c.json({ error: 'Wrong password.' }, 401)
-  }
-
-  const presented = await findSession(c)
-  await claimUnownedData(DB, owner.id)
-  await DB.prepare(
-    `UPDATE sessions SET revoked_at=COALESCE(revoked_at, datetime('now')) WHERE user_id=? AND revoked_at IS NULL`,
-  ).bind(owner.id).run()
-  await DB.prepare(
-    `UPDATE users SET failed_login_count=0, locked_until=NULL, updated_at=datetime('now') WHERE id=?`,
-  ).bind(owner.id).run()
-  const csrfToken = await issueSession(c, owner.id, presented?.id)
-  return c.json({ ok: true, csrfToken })
-})
-app.post('/api/auth/logout', async (c) => {
-  await parseEmptyBody(c)
-  await revokePresentedSession(c)
-  deleteCookie(c, 'wr_session', { path: '/' })
-  return c.json({ ok: true })
-})
+// Auth routes (the only unauthenticated API surface) registered from ./routes/auth (Book 7).
+registerAuthRoutes(app)
 
 type AgentCredentialRecord = {
   id: number
