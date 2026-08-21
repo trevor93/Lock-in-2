@@ -15,7 +15,8 @@ import dayRoutesSource from '../src/routes/day.ts?raw'
 import economyRoutesSource from '../src/routes/economy.ts?raw'
 import authRoutesSource from '../src/routes/auth.ts?raw'
 import agentCredRoutesSource from '../src/routes/agent-credentials.ts?raw'
-const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource].join(String.fromCharCode(10))
+import calendarRoutesSource from '../src/routes/calendar.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource, calendarRoutesSource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,
