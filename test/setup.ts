@@ -14,6 +14,7 @@ import chapterCursor from '../migrations/0011_chapter_cursor.sql?raw'
 import unifyCaptures from '../migrations/0012_unify_captures.sql?raw'
 import maximsCutover from '../migrations/0013_maxims_cutover.sql?raw'
 import intelCutover from '../migrations/0014_intel_cutover.sql?raw'
+import responsesCutover from '../migrations/0015_responses_cutover.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -198,4 +199,5 @@ beforeAll(async () => {
   await apply(unifyCaptures)
   await apply(maximsCutover)
   await apply(intelCutover)
+  await apply(responsesCutover)
 })

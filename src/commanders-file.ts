@@ -81,8 +81,8 @@ export async function continuityBrief(DB: D1Database, userId: number, date: stri
     `SELECT COUNT(*) AS n FROM flashcards WHERE user_id=? AND due_date <= ?`,
   ).bind(userId, date).first<{ n: number }>())?.n ?? 0
   const dueTongue = (await DB.prepare(
-    `SELECT COUNT(*) AS n FROM response_srs s JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-     WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`,
+    `SELECT COUNT(*) AS n FROM review_items s JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+     WHERE s.kind='response' AND s.user_id=? AND r.archived=0 AND s.due_date <= ?`,
   ).bind(userId, date).first<{ n: number }>().catch(() => ({ n: 0 })))?.n ?? 0
 
   const lastDebrief = await DB.prepare(

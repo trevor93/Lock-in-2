@@ -47,10 +47,11 @@ function post(path: string, s: { cookie: string; csrf: string }, body: unknown) 
   }, baseEnv)
 }
 
-// Simulate the passage of time by making the card due in the past.
+// Simulate the passage of time by making the card due in the past. Book 7: the
+// SR state now lives in review_items (kind='response', item_id = the capture id).
 async function makeDue(userId: number, responseId: number) {
   await env.DB.prepare(
-    `UPDATE response_srs SET due_date='2000-01-01' WHERE response_id=? AND user_id=?`,
+    `UPDATE review_items SET due_date='2000-01-01' WHERE kind='response' AND item_id=? AND user_id=?`,
   ).bind(responseId, userId).run()
 }
 
@@ -102,7 +103,7 @@ describe('B7 Tongue review scheduling', () => {
     const s = await login()
     const id = await capture(s)
     await env.DB.prepare(
-      `UPDATE response_srs SET due_date='2999-01-01' WHERE response_id=? AND user_id=?`,
+      `UPDATE review_items SET due_date='2999-01-01' WHERE kind='response' AND item_id=? AND user_id=?`,
     ).bind(id, s.userId).run()
     const res = await post(`/api/tongue/${id}/review`, s, { grade: 2, mode: 'recall' })
     expect(res.status).toBe(409)

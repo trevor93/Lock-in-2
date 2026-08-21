@@ -494,14 +494,14 @@ describe('Book 5.4 legal state transitions', () => {
   it('rejects tongue reviews before due and after archival', async () => {
     const { headers, userId } = await authenticatedContext()
     const response = await env.DB.prepare(
-      `INSERT INTO responses
-         (user_id, situation, trigger_q, response, category)
-       VALUES (?,'Transition test','What is legal?','Only the due transition.','wit')`,
+      `INSERT INTO captures
+         (user_id, kind, situation, trigger_q, response, category)
+       VALUES (?,'response','Transition test','What is legal?','Only the due transition.','wit')`,
     ).bind(userId).run()
     const responseId = Number(response.meta.last_row_id)
     await env.DB.prepare(
-      `INSERT INTO response_srs (user_id, response_id, due_date)
-       VALUES (?,?,'2999-12-31')`,
+      `INSERT INTO review_items (user_id, kind, item_id, due_date)
+       VALUES (?,'response',?,'2999-12-31')`,
     ).bind(userId, responseId).run()
     const path = `/api/tongue/${responseId}/review`
 

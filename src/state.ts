@@ -34,9 +34,9 @@ export async function buildState(DB: D1Database, userId: number, date: string, t
     `SELECT COUNT(*) as n FROM flashcards WHERE user_id=? AND due_date <= ?`,
   ).bind(userId, date).first<{ n: number }>()
   const dueTongue = await DB.prepare(
-    `SELECT COUNT(*) as n FROM response_srs s
-     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-     WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`
+    `SELECT COUNT(*) as n FROM review_items s
+     JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+     WHERE s.kind='response' AND s.user_id=? AND r.archived=0 AND s.due_date <= ?`
   ).bind(userId, date).first<{ n: number }>().catch(() => ({ n: 0 }))
 
   // active units per track

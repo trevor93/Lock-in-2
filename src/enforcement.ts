@@ -161,9 +161,9 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
     // 3.5 TONGUE NEGLECT — drills piling up unreviewed means the armory is rotting
     try {
       const overdue = await DB.prepare(
-        `SELECT COUNT(*) n FROM response_srs s
-         JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-         WHERE s.user_id=? AND r.archived=0 AND s.due_date <= ?`
+        `SELECT COUNT(*) n FROM review_items s
+         JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+         WHERE s.kind='response' AND s.user_id=? AND r.archived=0 AND s.due_date <= ?`
       ).bind(userId, addDays(today, -3)).first<any>()
       if ((overdue?.n ?? 0) >= 5) {
         await addFlag(DB, userId, y1, 'tongue_neglect', 'serious',

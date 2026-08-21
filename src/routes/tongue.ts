@@ -32,16 +32,16 @@ app.post('/api/tongue', async (c) => withIdempotency(c, 'tongue:capture', async 
     await parseJson(c, tongueBodySchema)
   const today = (await userNow(DB, userId)).date
   const r = await DB.prepare(
-    `INSERT INTO responses
-       (user_id, situation, trigger_q, response, why_works, source, category)
-     VALUES (?,?,?,?,?,?,?)`
+    `INSERT INTO captures
+       (user_id, kind, situation, trigger_q, response, why_works, source, category)
+     VALUES (?,'response',?,?,?,?,?,?)`
   ).bind(userId, situation.trim(), trigger_q.trim(), response.trim(), (why_works || '').trim() || null, (source || '').trim() || null, category || 'wit').run()
   const rid = r.meta.last_row_id
   // Atomic (Book 6): the SRS seeding and the capture reward both hang off the
   // new response id and must commit together.
   await DB.batch([
     DB.prepare(
-      `INSERT INTO response_srs (user_id, response_id, due_date) VALUES (?,?,?)`,
+      `INSERT INTO review_items (user_id, kind, item_id, due_date) VALUES (?,'response',?,?)`,
     ).bind(userId, rid, today),
     DB.prepare(
       `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
@@ -63,8 +63,8 @@ app.get('/api/tongue', async (c) => {
     ? undefined
     : parseValue(z.string().trim().min(1).max(200), c.req.query('q'))
   let sql = `SELECT r.*, s.mastery, s.due_date, s.reps, s.lapses, s.interval_days, s.total_reviews, s.correct_reviews
-             FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
-             WHERE r.user_id=? AND r.archived=0`
+             FROM captures r JOIN review_items s ON s.item_id=r.id AND s.user_id=r.user_id AND s.kind='response'
+             WHERE r.kind='response' AND r.user_id=? AND r.archived=0`
   const binds: any[] = [userId]
   if (cat && cat !== 'all') { sql += ` AND r.category=?`; binds.push(cat) }
   if (q) { sql += ` AND (r.situation LIKE ? OR r.trigger_q LIKE ? OR r.response LIKE ?)`; binds.push(`%${q}%`, `%${q}%`, `%${q}%`) }
@@ -79,8 +79,8 @@ app.put('/api/tongue/:id', async (c) => {
   const { situation, trigger_q, response, why_works, source, category } =
     await parseJson(c, tongueBodySchema)
   const updated = await DB.prepare(
-    `UPDATE responses SET situation=?, trigger_q=?, response=?, why_works=?, source=?, category=?
-     WHERE id=? AND user_id=?`,
+    `UPDATE captures SET situation=?, trigger_q=?, response=?, why_works=?, source=?, category=?
+     WHERE kind='response' AND id=? AND user_id=?`,
   ).bind(situation, trigger_q, response, why_works || null, source || null, category || 'wit', id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
@@ -89,7 +89,7 @@ app.delete('/api/tongue/:id', async (c) => {
   const id = parseValue(positiveIdSchema, c.req.param('id'))
   await parseEmptyBody(c)
   const updated = await c.env.DB.prepare(
-    `UPDATE responses SET archived=1 WHERE id=? AND user_id=?`,
+    `UPDATE captures SET archived=1 WHERE kind='response' AND id=? AND user_id=?`,
   ).bind(id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
@@ -103,8 +103,8 @@ app.get('/api/tongue/due', async (c) => {
   const date = await safeDate(DB, c.req.query('date'), userId)
   const { results } = await DB.prepare(
     `SELECT r.*, s.mastery, s.due_date, s.reps, s.lapses, s.interval_days, s.total_reviews, s.correct_reviews, s.last_mode
-     FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
-     WHERE r.user_id=? AND r.archived=0 AND s.due_date <= ? ORDER BY s.due_date LIMIT 20`
+     FROM captures r JOIN review_items s ON s.item_id=r.id AND s.user_id=r.user_id AND s.kind='response'
+     WHERE r.kind='response' AND r.user_id=? AND r.archived=0 AND s.due_date <= ? ORDER BY s.due_date LIMIT 20`
   ).bind(userId, date).all()
   const MODES = ['recall', 'cloze', 'first_letters', 'reverse', 'delivery']
   const out = (results as any[]).map((r: any) => {
@@ -124,9 +124,9 @@ app.post('/api/tongue/:id/review', async (c) => withIdempotency(c, 'tongue:revie
   const id = parseValue(positiveIdSchema, c.req.param('id'))
   const { grade, mode, date } = await parseJson(c, tongueReviewBodySchema)
   const s = await DB.prepare(
-    `SELECT s.*, r.archived FROM response_srs s
-     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-     WHERE s.response_id=? AND s.user_id=?`,
+    `SELECT s.*, r.archived FROM review_items s
+     JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+     WHERE s.item_id=? AND s.user_id=? AND s.kind='response'`,
   ).bind(id, userId).first<any>()
   if (!s) return c.json({ error: 'no such response' }, 404)
   const today = await safeDate(DB, date, userId)
@@ -150,8 +150,8 @@ app.post('/api/tongue/:id/review', async (c) => withIdempotency(c, 'tongue:revie
   const mastery = tongueMastery({ correct_reviews, interval_days })
   const prevMastery = s.mastery
   await DB.prepare(
-    `UPDATE response_srs SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=?
-     WHERE response_id=? AND user_id=?`
+    `UPDATE review_items SET interval_days=?, ease=?, reps=?, lapses=?, due_date=?, mastery=?, total_reviews=?, correct_reviews=?, last_mode=?
+     WHERE item_id=? AND user_id=? AND kind='response'`
   ).bind(interval_days, ease, reps, lapses, due, mastery, total_reviews, correct_reviews, mode || 'recall', id, userId).run()
   await DB.prepare(
     `INSERT INTO tongue_reviews (user_id, response_id, review_date, mode, grade)
@@ -164,7 +164,7 @@ app.post('/api/tongue/:id/review', async (c) => withIdempotency(c, 'tongue:revie
     if (bonus[mastery]) {
       promoted = mastery
       const r = await DB.prepare(
-        `SELECT trigger_q FROM responses WHERE id=? AND user_id=?`,
+        `SELECT trigger_q FROM captures WHERE kind='response' AND id=? AND user_id=?`,
       ).bind(id, userId).first<any>()
       await DB.prepare(
         `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
@@ -181,8 +181,8 @@ app.get('/api/tongue/exam', async (c) => {
   const userId = c.get('userId')
   const { results } = await DB.prepare(
     `SELECT r.id, r.situation, r.trigger_q, r.response, r.category, s.mastery
-     FROM responses r JOIN response_srs s ON s.response_id=r.id AND s.user_id=r.user_id
-     WHERE r.user_id=? AND r.archived=0 AND s.total_reviews > 0 ORDER BY RANDOM() LIMIT 10`
+     FROM captures r JOIN review_items s ON s.item_id=r.id AND s.user_id=r.user_id AND s.kind='response'
+     WHERE r.kind='response' AND r.user_id=? AND r.archived=0 AND s.total_reviews > 0 ORDER BY RANDOM() LIMIT 10`
   ).bind(userId).all()
   return c.json(results)
 })
@@ -194,8 +194,8 @@ app.post('/api/tongue/exam/submit', async (c) => withIdempotency(c, 'tongue:exam
   const pct = total ? Math.round((correct / total) * 100) : 0
   const passed = pct >= 80 ? 1 : 0
   await DB.prepare(
-    `INSERT INTO tongue_exams (user_id, exam_date, total, correct, score_pct, passed)
-     VALUES (?,?,?,?,?,?)`,
+    `INSERT INTO exams (user_id, kind, exam_date, total, correct, score_pct, passed)
+     VALUES (?,'tongue',?,?,?,?,?)`,
   ).bind(userId, today, total, correct, pct, passed).run()
   if (passed) {
     await DB.prepare(
@@ -215,32 +215,32 @@ app.get('/api/tongue/stats', async (c) => {
   const userId = c.get('userId')
   const date = await safeDate(DB, c.req.query('date'), userId)
   const byMastery = (await DB.prepare(
-    `SELECT s.mastery, COUNT(*) n FROM response_srs s
-     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-     WHERE r.user_id=? AND r.archived=0 GROUP BY s.mastery`
+    `SELECT s.mastery, COUNT(*) n FROM review_items s
+     JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+     WHERE s.kind='response' AND r.user_id=? AND r.archived=0 GROUP BY s.mastery`
   ).bind(userId).all()).results
   const totals = await DB.prepare(
-    `SELECT COUNT(*) total FROM responses WHERE user_id=? AND archived=0`,
+    `SELECT COUNT(*) total FROM captures WHERE kind='response' AND user_id=? AND archived=0`,
   ).bind(userId).first<any>()
   const due = await DB.prepare(
-    `SELECT COUNT(*) n FROM response_srs s
-     JOIN responses r ON r.id=s.response_id AND r.user_id=s.user_id
-     WHERE r.user_id=? AND r.archived=0 AND s.due_date<=?`,
+    `SELECT COUNT(*) n FROM review_items s
+     JOIN captures r ON r.id=s.item_id AND r.user_id=s.user_id AND r.kind='response'
+     WHERE s.kind='response' AND r.user_id=? AND r.archived=0 AND s.due_date<=?`,
   ).bind(userId, date).first<any>()
   const reviews7 = await DB.prepare(
     `SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN grade>=2 THEN 1 ELSE 0 END),0) solid
      FROM tongue_reviews WHERE user_id=? AND review_date >= ?`,
   ).bind(userId, addDays(date, -7)).first<any>()
   const exams = (await DB.prepare(
-    `SELECT * FROM tongue_exams WHERE user_id=? ORDER BY created_at DESC LIMIT 8`,
+    `SELECT * FROM exams WHERE kind='tongue' AND user_id=? ORDER BY created_at DESC LIMIT 8`,
   ).bind(userId).all()).results
   const captured7 = await DB.prepare(
-    `SELECT COUNT(*) n FROM responses
-     WHERE user_id=? AND archived=0 AND created_at >= datetime(?, '-7 days')`,
+    `SELECT COUNT(*) n FROM captures
+     WHERE kind='response' AND user_id=? AND archived=0 AND created_at >= datetime(?, '-7 days')`,
   ).bind(userId, date + ' 00:00:00').first<any>()
   const byCat = (await DB.prepare(
-    `SELECT category, COUNT(*) n FROM responses
-     WHERE user_id=? AND archived=0 GROUP BY category ORDER BY n DESC`,
+    `SELECT category, COUNT(*) n FROM captures
+     WHERE kind='response' AND user_id=? AND archived=0 GROUP BY category ORDER BY n DESC`,
   ).bind(userId).all()).results
   const lastExam = (exams as any[])[0] || null
   const weekExamDone = lastExam && (lastExam as any).exam_date >= addDays(date, -6)

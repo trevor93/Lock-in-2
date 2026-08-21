@@ -750,6 +750,47 @@ Expected: `captures_alt_triggers` is `2`; at cutover time `intel_captures` equal
 
 `DROP TRIGGER IF EXISTS trg_captures_alt_gate_insert; DROP TRIGGER IF EXISTS trg_captures_alt_gate_update;` then redeploy the prior application, which reads and writes `intel_entries` (untouched, triggers intact). No user data is destroyed by applying or rolling back.
 
+### 5.11 `migrations/0015_responses_cutover.sql`
+
+**Purpose**
+
+- Book 7 table unification, **responses cutover** — completes the unification. Response content moves to `captures(kind='response')` and spaced-repetition state to `review_items(kind='response')`; the tongue exam log moves to `exams(kind='tongue')` (a two-statement route switch, no schema change). Because 0012 backfilled `review_items` with `item_id` = the *legacy* response id, this migration remaps `review_items(kind='response').item_id` onto the new `captures.id` with a collision-proof two-phase update, and recreates `tongue_reviews` **without** its `responses` foreign key (D1 enforces FKs; new reviews log a capture id) — it is a date-aggregated log, backed up verbatim into `tongue_reviews_pre0015_backup` first.
+- `responses` and `response_srs` are left FROZEN (never written) as backups; `tongue_exams` likewise. The tongue routes, `state`, `enforcement`, and the commander's-file now read/write through `captures` + `review_items` + `exams`. SM-2 scheduling is preserved on `review_items` (its FSRS columns stay NULL until the FSRS runtime switch).
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/responses-cutover.test.ts test/tongue-review.test.ts test/legal-state-transitions.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/responses-cutover.test.ts` proves the response SR rows remap onto real response captures (no orphans) with count parity, the `tongue_reviews` backup is retained and the responses FK is gone (a review can be logged against a capture id), and capture/exam writes land in `captures`/`review_items`/`exams` while `responses`/`response_srs`/`tongue_exams` stay frozen. `test/tongue-review.test.ts` proves the drill queue and scheduling still work through `review_items`.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only. Applies only after `0012`.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS orphan_sr FROM review_items ri
+  LEFT JOIN captures c ON c.id=ri.item_id AND c.kind='response'
+  WHERE ri.kind='response' AND c.id IS NULL;
+SELECT COUNT(*) AS treviews_backup FROM sqlite_schema WHERE type='table' AND name='tongue_reviews_pre0015_backup';
+SELECT (SELECT COUNT(*) FROM review_items WHERE kind='response') AS sr_rows,
+       (SELECT COUNT(*) FROM response_srs) AS legacy_sr;
+```
+
+Expected: `orphan_sr` is `0`; `treviews_backup` is `1`; at cutover time `sr_rows` equals `legacy_sr`.
+
+**Rollback**
+
+`DROP TABLE tongue_reviews; ALTER TABLE tongue_reviews_pre0015_backup RENAME TO tongue_reviews;` then redeploy the prior application, which reads `responses`/`response_srs`/`tongue_exams` (all untouched). The `review_items.item_id` remap is reversible via `captures.legacy_id`. No user data is destroyed by applying or rolling back.
+
 ## 6. Deploy and Verify the Pages Application
 
 
