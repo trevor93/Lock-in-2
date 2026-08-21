@@ -1,24 +1,15 @@
 import { Hono } from 'hono'
-import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
-import { z } from 'zod'
 import { setSecurityHeaders } from './security-headers'
 import { addDays, dowOf, isoWeekKey } from './time'
 import { dayAdherence } from './scoring'
 import type { Bindings, Variables } from './env'
-import { bufToHex, randHex, sha256, csrfToken, pbkdf2, timingSafeEq } from './crypto'
+import { csrfToken, timingSafeEq } from './crypto'
 import { MANIFEST, SERVICE_WORKER, SHELL_HTML } from './renderer'
 import { getSetting, setSetting, blocksForDate } from './repositories'
-import { computeStreak } from './streak'
-import { type ChapterCursor, readChapterCursor } from './cursor'
-import { hermesBriefing, continuityBrief } from './commanders-file'
-import { callModel, fencedModelData, EXTERNAL_MESSAGE_PREFIX, modelAudit, modelBaseURL } from './ai'
-import { flagExists, addFlag, writeDaySummary, runEnforcement } from './enforcement'
 import { userNow, safeDate } from './clock'
-import { type SessionRecord, sessionCookie, findSession, sessionValid, revokePresentedSession, issueSession, ownerUser } from './auth'
-import { isNonePlausible, altGate, recordAltExplanation, requestId, auditEvent, withIdempotency } from './request-support'
-import { ensureUnlocks, ensureCards } from './curriculum'
-import { buildState } from './state'
+import { sessionCookie, findSession, sessionValid, revokePresentedSession, issueSession, ownerUser } from './auth'
 import { registerAgentV1Routes } from './routes/agent-v1'
 import { registerHermesRoutes } from './routes/hermes'
 import { registerIntelLibraryRoutes } from './routes/intel-library'
@@ -32,7 +23,7 @@ import { registerAuthRoutes } from './routes/auth'
 import { agentRoute, AGENT_V1_PATHS, authenticateAgent, agentCredentialEvent } from './agent-auth'
 import { registerAgentCredentialRoutes } from './routes/agent-credentials'
 import { registerCalendarRoutes } from './routes/calendar'
-import { RequestValidationError, validationFailed, parseJson, parseEmptyBody, parseValue } from './validation'
+import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
 
@@ -141,79 +132,8 @@ app.onError((error, c) => {
 // Request-time support (alt-gate, request-id, audit, idempotency) extracted to ./request-support (Book 7).
 
 // Schemas extracted to ./schemas (Book 7).
-import {
-  positiveIdSchema,
-  chapterIndexSchema,
-  dateSchema,
-  timeSchema,
-  optionalText,
-  optionalTrimmedText,
-  requiredTrimmedText,
-  optionalDate,
-  gradeSchema,
-  blockStatusSchema,
-  loadReductionReasonSchema,
-  predictionOutcomeSchema,
-  responseCategorySchema,
-  tongueModeSchema,
-  intelDomainSchema,
-  intelVerdictSchema,
-  bookStatusSchema,
-  hermesRoleSchema,
-  passwordBodySchema,
-  tickBodySchema,
-  recoveryBodySchema,
-  catchupBodySchema,
-  blockLogBodySchema,
-  appealBodySchema,
-  loadReductionBodySchema,
-  predictionBodySchema,
-  predictionResolutionBodySchema,
-  debriefBodySchema,
-  unitStepBodySchema,
-  maximBodySchema,
-  myWordsBodySchema,
-  cardReviewBodySchema,
-  tongueBodySchema,
-  tongueReviewBodySchema,
-  tongueExamBodySchema,
-  lawCheckBodySchema,
-  captureHeatSchema,
-  intelBodySchema,
-  agentIntelBodySchema,
-  intelVerdictBodySchema,
-  bookProgressBodySchema,
-  MODEL_USER_INPUT_CHARS,
-  MODEL_TOTAL_INPUT_CHARS,
-  hermesBodySchema,
-  councilBodySchema,
-  agentDebriefBodySchema,
-  agentBlockLogBodySchema,
-  agentMessageBodySchema,
-} from './schemas'
 
-const AGENT_SCOPES = [
-  'briefing:read',
-  'blocks:read',
-  'blocks:write',
-  'debriefs:read',
-  'debriefs:write',
-  'intel:read',
-  'intel:write',
-  'hermes:write',
-  'export:read',
-] as const
-const DEFAULT_AGENT_SCOPES = AGENT_SCOPES.filter(
-  (scope) => scope !== 'export:read',
-)
-const agentScopeSchema = z.enum(AGENT_SCOPES)
-const agentCredentialBodySchema = z.strictObject({
-  deviceLabel: requiredTrimmedText(1, 100),
-  scopes: z.array(agentScopeSchema).min(1).max(AGENT_SCOPES.length)
-    .refine((scopes) => new Set(scopes).size === scopes.length)
-    .optional(),
-  expiresInDays: z.number().int().min(1).max(365).optional(),
-})
+// Agent scopes + credential body schema live in ./agent-auth (imported).
 
 // ============ SERVER CLOCK (single source of truth) ============
 // The commander's timezone is captured ONCE (settings.timezone). After that the
@@ -230,216 +150,6 @@ const agentCredentialBodySchema = z.strictObject({
 // Auth routes (the only unauthenticated API surface) registered from ./routes/auth (Book 7).
 registerAuthRoutes(app)
 
-type AgentCredentialRecord = {
-  id: number
-  user_id: number
-  scopes: string
-  expires_at: string
-  revoked_at: string | null
-  rate_window_started_at: string | null
-  rate_window_count: number
-}
-
-const AGENT_RATE_LIMIT = 60
-const AGENT_RATE_WINDOW_SECONDS = 60
-
-function coarseNetwork(value: string | undefined): string | null {
-  if (!value) return null
-  const ipv4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (ipv4) {
-    const octets = ipv4.slice(1).map(Number)
-    return octets.every((octet) => octet >= 0 && octet <= 255)
-      ? `${octets[0]}.${octets[1]}.${octets[2]}.0/24`
-      : null
-  }
-
-  const halves = value.toLowerCase().split('::')
-  if (halves.length > 2) return null
-  const left = halves[0] ? halves[0].split(':') : []
-  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : []
-  if (halves.length === 1 && left.length !== 8) return null
-  const missing = 8 - left.length - right.length
-  if (missing < (halves.length === 2 ? 1 : 0)) return null
-  const groups = [
-    ...left,
-    ...Array(missing).fill('0'),
-    ...right,
-  ]
-  if (
-    groups.length !== 8 ||
-    groups.some((group) => !/^[a-f0-9]{1,4}$/.test(group))
-  ) return null
-  return `${groups.slice(0, 3).map((group) =>
-    Number.parseInt(group, 16).toString(16)).join(':')}::/48`
-}
-
-function agentRequestMetadata(c: any): {
-  method: string
-  country: string | null
-  network: string | null
-} {
-  const country = c.req.header('cf-ipcountry')?.trim().toUpperCase() || null
-  return {
-    method: c.req.method.toUpperCase(),
-    country: country && /^[A-Z]{2}$/.test(country) ? country : null,
-    network: coarseNetwork(c.req.header('cf-connecting-ip')),
-  }
-}
-
-async function agentCredentialEvent(
-  c: any,
-  credentialId: number,
-  userId: number,
-  eventType: 'issued' | 'used' | 'revoked' | 'scope_denied' | 'rate_limited',
-  route?: string,
-): Promise<void> {
-  const metadata = agentRequestMetadata(c)
-  await c.env.DB.prepare(
-    `INSERT INTO agent_credential_events
-       (user_id, credential_id, event_type, request_method, request_route,
-        request_country, request_network)
-     VALUES (?,?,?,?,?,?,?)`,
-  ).bind(
-    userId,
-    credentialId,
-    eventType,
-    route ? metadata.method : null,
-    route ?? null,
-    route ? metadata.country : null,
-    route ? metadata.network : null,
-  ).run()
-}
-
-async function consumeAgentRateLimit(
-  c: any,
-  credential: AgentCredentialRecord,
-): Promise<boolean> {
-  const consumed = await c.env.DB.prepare(
-    `UPDATE agent_credentials
-     SET rate_window_started_at=CASE
-           WHEN rate_window_started_at IS NULL
-             OR unixepoch(rate_window_started_at) <=
-                unixepoch('now') - ?
-           THEN datetime('now')
-           ELSE rate_window_started_at
-         END,
-         rate_window_count=CASE
-           WHEN rate_window_started_at IS NULL
-             OR unixepoch(rate_window_started_at) <=
-                unixepoch('now') - ?
-           THEN 1
-           ELSE rate_window_count + 1
-         END
-     WHERE id=? AND revoked_at IS NULL
-       AND (
-         rate_window_started_at IS NULL
-         OR unixepoch(rate_window_started_at) <= unixepoch('now') - ?
-         OR rate_window_count < ?
-       )`,
-  ).bind(
-    AGENT_RATE_WINDOW_SECONDS,
-    AGENT_RATE_WINDOW_SECONDS,
-    credential.id,
-    AGENT_RATE_WINDOW_SECONDS,
-    AGENT_RATE_LIMIT,
-  ).run()
-  return Number((consumed.meta as any).changes) === 1
-}
-
-async function authenticateAgent(c: any): Promise<Response | null> {
-  const raw = c.req.header('x-agent-token') || ''
-  if (!raw || !raw.startsWith('wr_agent_v1_')) {
-    return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
-  }
-  const tokenHash = await sha256(raw)
-  const credential = await c.env.DB.prepare(
-    `SELECT id, user_id, scopes, expires_at, revoked_at,
-            rate_window_started_at, rate_window_count
-     FROM agent_credentials
-     WHERE token_hash=? AND revoked_at IS NULL
-       AND unixepoch(expires_at) > unixepoch('now')`,
-  ).bind(tokenHash).first() as AgentCredentialRecord | null
-  if (!credential) return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
-  const route = c.get('agentRoute')
-  if (!(await consumeAgentRateLimit(c, credential))) {
-    await agentCredentialEvent(
-      c, credential.id, credential.user_id, 'rate_limited', route,
-    )
-    c.header('Retry-After', String(AGENT_RATE_WINDOW_SECONDS))
-    return c.json({ error: 'AGENT RATE LIMIT EXCEEDED' }, 429)
-  }
-  let scopes: string[]
-  try {
-    scopes = JSON.parse(credential.scopes)
-  } catch (_) {
-    return c.json({ error: 'INVALID AGENT CREDENTIAL' }, 401)
-  }
-  c.set('userId', credential.user_id)
-  c.set('agentCredentialId', credential.id)
-  c.set('agentScopes', scopes)
-  const metadata = agentRequestMetadata(c)
-  await c.env.DB.prepare(
-    `UPDATE agent_credentials
-     SET last_used_at=datetime('now'), last_request_method=?,
-         last_request_route=?, last_request_country=?, last_request_network=?
-     WHERE id=? AND revoked_at IS NULL`,
-  ).bind(
-    metadata.method, route, metadata.country, metadata.network, credential.id,
-  ).run()
-  await agentCredentialEvent(c, credential.id, credential.user_id, 'used', route)
-  return null
-}
-
-function agentRoute(
-  method: string,
-  path: string,
-): { route: string; scope: typeof AGENT_SCOPES[number] } | null {
-  const routes: Record<string, {
-    route: string
-    scope: typeof AGENT_SCOPES[number]
-  }> = {
-    'POST /api/agent/v1/briefing': {
-      route: 'briefing:read', scope: 'briefing:read',
-    },
-    'POST /api/agent/v1/pending': {
-      route: 'blocks:read', scope: 'blocks:read',
-    },
-    'POST /api/agent/v1/debriefs': {
-      route: 'debriefs:read', scope: 'debriefs:read',
-    },
-    'POST /api/agent/v1/debrief': {
-      route: 'debriefs:write', scope: 'debriefs:write',
-    },
-    'POST /api/agent/v1/intel/read': {
-      route: 'intel:read', scope: 'intel:read',
-    },
-    'POST /api/agent/v1/intel': {
-      route: 'intel:write', scope: 'intel:write',
-    },
-    'POST /api/agent/v1/block-log': {
-      route: 'blocks:write', scope: 'blocks:write',
-    },
-    'POST /api/agent/v1/message': {
-      route: 'hermes:message', scope: 'hermes:write',
-    },
-    'POST /api/agent/v1/export': {
-      route: 'export:read', scope: 'export:read',
-    },
-  }
-  return routes[`${method.toUpperCase()} ${path}`] ?? null
-}
-
-const AGENT_V1_PATHS = new Set([
-  '/api/agent/v1/briefing',
-  '/api/agent/v1/pending',
-  '/api/agent/v1/debriefs',
-  '/api/agent/v1/debrief',
-  '/api/agent/v1/intel/read',
-  '/api/agent/v1/intel',
-  '/api/agent/v1/block-log',
-  '/api/agent/v1/message',
-  '/api/agent/v1/export',
-])
 
 // -- global API guard --
 // /api/auth/*                   → open (it IS the gate)

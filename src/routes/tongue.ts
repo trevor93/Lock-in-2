@@ -1,6 +1,7 @@
 // Book 7 refactor — THE TONGUE routes (wise-response armory + memorization).
 // Capture, list/edit/delete, the SM-2 drill queue and review, the weekly exam,
 // and stats. Idempotency on capture/review/exam; the neglect flag via ../enforcement.
+import { z } from 'zod'
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
@@ -8,7 +9,7 @@ import { withIdempotency } from '../request-support'
 import { safeDate, userNow } from '../clock'
 import { addDays } from '../time'
 import { addFlag } from '../enforcement'
-import { tongueBodySchema, tongueReviewBodySchema, tongueExamBodySchema, positiveIdSchema } from '../schemas'
+import { tongueBodySchema, tongueReviewBodySchema, tongueExamBodySchema, positiveIdSchema, responseCategorySchema } from '../schemas'
 
 export function registerTongueRoutes(app: Hono<{ Bindings: Bindings; Variables: Variables }>) {
 // ============ THE TONGUE — WISE-RESPONSE ARMORY + SUPREME MEMORIZATION ============

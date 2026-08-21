@@ -17,7 +17,7 @@ export function isNonePlausible(text: string): boolean {
 // The brake, in application form (the DB trigger is the backstop). A capture
 // whose heat is anything other than calm requires a non-empty
 // alternative_explanation. Returns an error Response to send, or null to pass.
-export function altGate(c: any, heat: string | undefined, alt: string | undefined): Response | null {
+export function altGate(c: any, heat: string | undefined, alt: string | null | undefined): Response | null {
   if (heat && heat !== 'calm' && !(alt && alt.trim())) {
     return c.json({ error: 'ALTERNATIVE EXPLANATION REQUIRED' }, 400)
   }

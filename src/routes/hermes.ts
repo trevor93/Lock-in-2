@@ -4,7 +4,7 @@
 // build the fenced prompt in the fixed trust order and persist the result.
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
-import { parseJson, parseValue } from '../validation'
+import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency, requestId } from '../request-support'
 import { safeDate } from '../clock'
 import { randHex } from '../crypto'

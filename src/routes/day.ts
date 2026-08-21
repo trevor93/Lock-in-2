@@ -5,7 +5,7 @@
 // ../enforcement; scoring/clock/validation from their modules.
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
-import { parseJson, parseValue, parseEmptyBody } from '../validation'
+import { parseJson, parseValue, parseEmptyBody, RequestValidationError } from '../validation'
 import { withIdempotency } from '../request-support'
 import { safeDate, userNow } from '../clock'
 import { addDays, isoWeekKey } from '../time'
