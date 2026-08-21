@@ -459,10 +459,12 @@ describe('Book 5.4 legal state transitions', () => {
 
   it('rejects flashcard reviews before the card is due', async () => {
     const { headers, userId } = await authenticatedContext()
+    // Book 7: maxims live in the unified captures table; the flashcards FK now
+    // targets captures(id), so seed the maxim there and link the card to it.
     const maxim = await env.DB.prepare(
-      `INSERT INTO maxims
-         (user_id, source, principle, naive_reading, master_reading)
-       VALUES (?,'Transition test','Review only when due','naive','master')`,
+      `INSERT INTO captures
+         (user_id, kind, source, principle, naive_reading, master_reading)
+       VALUES (?,'maxim','Transition test','Review only when due','naive','master')`,
     ).bind(userId).run()
     const maximId = Number(maxim.meta.last_row_id)
     await env.DB.prepare(

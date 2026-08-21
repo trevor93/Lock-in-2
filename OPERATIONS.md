@@ -673,6 +673,44 @@ Expected: the three `*_table` counts are each `1`; `captures_rows` equals `legac
 
 Drop the three shadow tables only — `DROP TABLE IF EXISTS exams; DROP TABLE IF EXISTS review_items; DROP TABLE IF EXISTS captures;` — leaving every legacy source table and row untouched. The prior application never referenced the shadows, so it continues to work unchanged. No user data is deleted by applying or rolling back this migration.
 
+### 5.9 `migrations/0013_maxims_cutover.sql`
+
+**Purpose**
+
+- Book 7 table unification, **maxims cutover**. After 0012 backfilled every maxim into `captures(kind='maxim')`, this repoints the `flashcards` spaced-repetition rows from `maxims(id)` onto `captures(id)`. Because D1 **enforces** foreign keys, the declared `flashcards.maxim_id REFERENCES maxims(id)` cannot be re-pointed by `UPDATE`; the table is recreated with the FK targeting `captures(id)` and its rows copied with `maxim_id` remapped via `captures.legacy_id`.
+- **Data safety**: `flashcards` is the sole home of maxim SR state (interval/ease/due/reps/lapses), so the whole table is first copied verbatim into the retained `flashcards_pre0013_backup`. The copy into the new table is a JOIN on `captures`, and 0012 backfilled every maxim, so no row is lost. The `maxims` table is left untouched as a second backup. The application (learn/curriculum/export routes) now reads and writes maxims through `captures`; the `maxims` table is frozen (never written), retained for rollback.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/maxims-cutover.test.ts test/legal-state-transitions.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/maxims-cutover.test.ts` proves the pre-migration backup is retained with full parity, `flashcards` row count is unchanged (no SR state lost), every flashcard remaps onto a real `kind='maxim'` capture (no orphans), the new FK rejects a non-existent capture, and the maxim routes read/write `captures` while the card queue still surfaces a new maxim.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Apply**
+
+Apply pending migrations after the Section 5 preflight; record filenames and status only. Applies only after `0012`.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS backup_table FROM sqlite_schema WHERE type='table' AND name='flashcards_pre0013_backup';
+SELECT (SELECT COUNT(*) FROM flashcards) AS cards, (SELECT COUNT(*) FROM flashcards_pre0013_backup) AS backup;
+SELECT COUNT(*) AS orphans FROM flashcards f LEFT JOIN captures c ON c.id=f.maxim_id AND c.kind='maxim' WHERE c.id IS NULL;
+```
+
+Expected: `backup_table` is `1`; `cards` equals `backup`; `orphans` is `0`.
+
+**Rollback**
+
+`DROP TABLE flashcards; ALTER TABLE flashcards_pre0013_backup RENAME TO flashcards;` then redeploy the prior application (which reads maxims from the `maxims` table). The `maxims` rows were never modified, and the backup restores the original SR state exactly. No user data is destroyed by applying or rolling back.
+
 ## 6. Deploy and Verify the Pages Application
 
 

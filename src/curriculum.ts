@@ -39,7 +39,7 @@ export async function ensureUnlocks(DB: D1Database, userId: number) {
 export async function ensureCards(DB: D1Database, userId: number) {
   await DB.prepare(
     `INSERT OR IGNORE INTO flashcards (user_id, maxim_id)
-     SELECT ?, id FROM maxims
-     WHERE user_id=? AND id NOT IN (SELECT maxim_id FROM flashcards WHERE user_id=?)`,
+     SELECT ?, id FROM captures
+     WHERE kind='maxim' AND user_id=? AND id NOT IN (SELECT maxim_id FROM flashcards WHERE user_id=?)`,
   ).bind(userId, userId, userId).run()
 }

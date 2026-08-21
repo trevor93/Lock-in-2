@@ -129,7 +129,8 @@ app.post('/api/units/:id/step', async (c) => withIdempotency(c, 'unit:step', asy
 // ============ MAXIMS + FLASHCARDS ============
 app.get('/api/maxims', async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT * FROM maxims WHERE user_id=? ORDER BY source, id`,
+    `SELECT id, source, principle, naive_reading, master_reading, my_words, unit_id, created_by_user
+     FROM captures WHERE kind='maxim' AND user_id=? ORDER BY source, id`,
   ).bind(c.get('userId')).all()
   return c.json(results)
 })
@@ -137,9 +138,9 @@ app.post('/api/maxims', async (c) => {
   const userId = c.get('userId')
   const b = await parseJson(c, maximBodySchema)
   const r = await c.env.DB.prepare(
-    `INSERT INTO maxims
-       (user_id, source, principle, naive_reading, master_reading, my_words, created_by_user)
-     VALUES (?,?,?,?,?,?,1)`
+    `INSERT INTO captures
+       (user_id, kind, source, principle, naive_reading, master_reading, my_words, created_by_user)
+     VALUES (?,'maxim',?,?,?,?,?,1)`
   ).bind(userId, b.source, b.principle, b.naive_reading || '(write it)', b.master_reading || '(write it)', b.my_words || null).run()
   await c.env.DB.prepare(
     `INSERT INTO flashcards (user_id, maxim_id) VALUES (?,?)`,
@@ -150,7 +151,7 @@ app.post('/api/maxims/:id/my-words', async (c) => {
   const id = parseValue(positiveIdSchema, c.req.param('id'))
   const body = await parseJson(c, myWordsBodySchema)
   const updated = await c.env.DB.prepare(
-    `UPDATE maxims SET my_words=? WHERE id=? AND user_id=?`,
+    `UPDATE captures SET my_words=? WHERE kind='maxim' AND id=? AND user_id=?`,
   ).bind(myWordsOrNull(body), id, c.get('userId')).run()
   if ((updated.meta as any).changes === 0) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true })
@@ -167,7 +168,7 @@ app.get('/api/cards/due', async (c) => {
   const date = await safeDate(DB, c.req.query('date'), userId)
   const { results } = await DB.prepare(
     `SELECT f.*, m.source, m.principle, m.naive_reading, m.master_reading, m.my_words
-     FROM flashcards f JOIN maxims m ON m.id=f.maxim_id AND m.user_id=f.user_id
+     FROM flashcards f JOIN captures m ON m.id=f.maxim_id AND m.user_id=f.user_id AND m.kind='maxim'
      WHERE f.user_id=? AND f.due_date <= ? ORDER BY f.due_date LIMIT 15`
   ).bind(userId, date).all()
   return c.json(results)

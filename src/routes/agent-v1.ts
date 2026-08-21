@@ -186,9 +186,14 @@ app.post('/api/agent/v1/export', async (c) => {
   const userId = c.get('userId')
   const DB = c.env.DB
   const out: Record<string, any> = {}
-  for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks', 'maxims']) {
+  for (const t of ['debriefs', 'intel_entries', 'honesty_flags', 'points_ledger', 'unit_progress', 'book_progress', 'law_checks']) {
     out[t] = (await DB.prepare(`SELECT * FROM ${t} WHERE user_id=?`).bind(userId).all()).results
   }
+  // Book 7: maxims now live in the unified captures table, not the frozen legacy
+  // `maxims` backup — export from captures so newly-created maxims are included.
+  out['maxims'] = (await DB.prepare(
+    `SELECT * FROM captures WHERE kind='maxim' AND user_id=?`,
+  ).bind(userId).all()).results
   return c.json(out)
 })
 }

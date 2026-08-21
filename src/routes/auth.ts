@@ -18,6 +18,10 @@ async function claimUnownedData(DB: D1Database, userId: number): Promise<void> {
     'book_progress', 'hermes_messages', 'responses', 'response_srs',
     'tongue_reviews', 'tongue_exams', 'day_summary', 'predictions',
     'appeals', 'load_reductions',
+    // Book 7 unified tables — must be claimed too, else a rollback-era unowned
+    // row backfilled into captures would never adopt the owner and would vanish
+    // from the owner-filtered reads.
+    'captures', 'review_items', 'exams',
   ]
   await DB.batch(tables.map((table) =>
     DB.prepare(`UPDATE ${table} SET user_id=? WHERE user_id IS NULL`).bind(userId),
