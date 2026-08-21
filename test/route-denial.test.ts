@@ -7,7 +7,8 @@ import appSource from '../src/index.tsx?raw'
 import agentV1Source from '../src/routes/agent-v1.ts?raw'
 import hermesRoutesSource from '../src/routes/hermes.ts?raw'
 import intelLibrarySource from '../src/routes/intel-library.ts?raw'
-const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource].join(String.fromCharCode(10))
+import tongueRoutesSource from '../src/routes/tongue.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,
