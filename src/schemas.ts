@@ -247,3 +247,23 @@ export const missCauseBodySchema = z.strictObject({
 export const toneBodySchema = z.strictObject({
   tone: z.enum(['neutral', 'firm', 'military', 'compassionate']),
 })
+
+// Book 10.1 - measured reading. The client reports what it observed; the server
+// decides what it means. word_count is the chapter being displayed, so a verdict
+// is always about THIS text.
+export const readingOpenBodySchema = z.strictObject({
+  book_id: requiredTrimmedText(1, 100),
+  chapter_idx: z.number().int().nonnegative().max(1000),
+  word_count: z.number().int().nonnegative().max(500000),
+  edition_id: optionalTrimmedText(200),
+  unit_id: z.number().int().positive().optional(),
+})
+export const readingProgressBodySchema = z.strictObject({
+  session_id: z.number().int().positive(),
+  scroll_pct: z.number().int().min(0).max(100),
+  elapsed_ms: z.number().int().min(0).max(600000),
+  anchor: optionalTrimmedText(200),
+})
+export const readingCloseBodySchema = z.strictObject({
+  session_id: z.number().int().positive(),
+})

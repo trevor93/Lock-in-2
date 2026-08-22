@@ -154,6 +154,15 @@ describe('Book 5.4 legal state transitions', () => {
       `INSERT INTO unit_progress (user_id, unit_id, status)
        VALUES (?,?,'active')`,
     ).bind(userId, unitId).run()
+    // Book 10.1: reading_done is now earned by a MEASURED session, never asserted.
+    // This test is about transition ORDER, so give the unit the honest precondition
+    // (a plausible reading session) and then check the ordering rules.
+    await env.DB.prepare(
+      `INSERT INTO reading_sessions
+         (user_id, book_id, chapter_idx, unit_id, word_count, dwell_seconds,
+          max_scroll_pct, plausible, closed_at)
+       VALUES (?,'art_of_war',1,?,600,300,100,1,datetime('now'))`,
+    ).bind(userId, unitId).run()
 
     const skippedReading = await post(
       `/api/units/${unitId}/step`,

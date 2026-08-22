@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency } from '../request-support'
+import { readingVerdict } from '../reading'
 import { safeDate, userNow } from '../clock'
 import { addDays } from '../time'
 import { addFlag } from '../enforcement'
@@ -51,6 +52,35 @@ app.post('/api/units/:id/step', async (c) => withIdempotency(c, 'unit:step', asy
   if (up.status === 'complete') {
     return c.json({ error: 'UNIT COMPLETE. Terminal records cannot be rewritten.' }, 409)
   }
+  // Book 10.1: "reading_done is dwell time plus traversal, never a button." The
+  // step may still be requested, but it is only granted when a MEASURED reading
+  // session for this unit passed the application's own plausibility test. There is
+  // no endpoint anywhere that lets a client simply declare a chapter read.
+  if (step === 'reading') {
+    const measured = await DB.prepare(
+      `SELECT dwell_seconds, max_scroll_pct, word_count FROM reading_sessions
+       WHERE user_id=? AND unit_id=? AND plausible=1
+       ORDER BY dwell_seconds DESC LIMIT 1`,
+    ).bind(userId, id).first<any>()
+    if (!measured) {
+      const best = await DB.prepare(
+        `SELECT dwell_seconds, max_scroll_pct, word_count FROM reading_sessions
+         WHERE user_id=? AND unit_id=? ORDER BY dwell_seconds DESC LIMIT 1`,
+      ).bind(userId, id).first<any>()
+      const verdict = best ? readingVerdict(best) : null
+      return c.json({
+        error: 'READING NOT RECORDED. Reading is measured, not clicked: open the chapter and read it through.',
+        reason: verdict ? verdict.reason : 'No reading session has been opened for this unit yet.',
+        needsReading: true,
+        ...(verdict ? {
+          dwellSeconds: verdict.dwellSeconds,
+          requiredSeconds: verdict.requiredSeconds,
+          scrollPct: verdict.scrollPct,
+        } : {}),
+      }, 409)
+    }
+  }
+
   const allowedUnitSteps: Record<string, string[]> = unit.is_exam
     ? { active: ['complete'] }
     : {
