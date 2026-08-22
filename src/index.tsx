@@ -28,6 +28,7 @@ import { registerRatchetRoutes } from './routes/ratchet'
 import { registerMissCauseRoutes } from './routes/miss-cause'
 import { registerReadingRoutes } from './routes/reading'
 import { registerMasteryRoutes } from './routes/mastery'
+import { registerPrincipleRoutes } from './routes/principles'
 import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -258,6 +259,9 @@ registerReadingRoutes(app)
 
 // The mastery ladder, adversarial grading, and knowledge calibration (Book 10.2-10.4).
 registerMasteryRoutes(app)
+
+// Concepts, the immune table, Greene-as-hypotheses, and the principle graph (Book 10.6-10.10).
+registerPrincipleRoutes(app)
 
 // COUNCIL/Hermes routes registered from ./routes/hermes (Book 7).
 registerHermesRoutes(app)

@@ -312,3 +312,6 @@ export const clozeBodySchema = z.strictObject({
   same_session: z.boolean().optional(),
   used_source: z.boolean().optional(),
 })
+
+// Book 10 - curriculum slugs (principles, concepts, graph nodes).
+export const slugParamSchema = z.string().trim().min(1).max(100).regex(/^[a-z0-9_:-]+$/)
