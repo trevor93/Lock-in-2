@@ -108,6 +108,11 @@ app.post('/api/rewards/:id/redeem', async (c) => withIdempotency(c, 'reward:rede
 // changelog visible inside the application — the operator must be able to see
 // when the rules of his own game changed." Static, honest, newest first.
 const SCORING_CHANGELOG: Array<{ date: string; change: string }> = [
+  { date: '2026-08-22', change: 'Reading is measured, not clicked (Book 10.1). The +20 for a unit\u2019s reading now requires a recorded session: enough dwell for the words at a plausible pace, and traversal to the end of the chapter. Slow reading is always fine; an abandoned tab earns nothing.' },
+  { date: '2026-08-22', change: 'No lesson closes without R0 (Book 10.4): a same-session retrieval with the source closed. An open-book answer is recorded but does not satisfy it.' },
+  { date: '2026-08-22', change: 'Mastery levels are now evidence-gated (Book 10.2). Self-scoring is never a gate: it is recorded only so calibration can be measured. Integrated status requires a rubric mean of 2.5 across nine dimensions with none at zero.' },
+  { date: '2026-08-22', change: 'Knowledge calibration is reported beside decision calibration (Book 10.3) as a second Brier score, with overconfidence named as a specific pattern. It never costs points.' },
+
   { date: '2026-08-22', change: 'The ratchet (Book 8.1): the mandatory day is three anchors and everything else is a deck. Only the mandatory set is scored or penalised — deck blocks are logged and earn points but never cost you. A block is promoted from the deck after a clean seven-day hold, and a mandatory block that misses three scheduled days running returns to the deck automatically, at no point cost.' },
   { date: '2026-08-22', change: 'A window that closes with no status now leaves the block UNREPORTED — a data state with a prompt and no penalty (Book 8.3). It is never auto-cancelled. Consequence follows the cause you record (Book 8.4), so a forgotten log is repaired as completed_late for free, a genuine displacement or emergency costs nothing, and a real miss costs 5.' },
   { date: '2026-08-22', change: 'Hard limits on the ledger (Book 8.5): a single day can now cost at most 30 points, and the balance can never fall below 0. Flags are still recorded in full — only the cost is bounded, and the ledger line says which limit applied.' },

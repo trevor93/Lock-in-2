@@ -24,12 +24,12 @@ somewhere the repository does not control.
 
 | Area | Repository status | Needs you |
 |---|---|---|
-| Migrations `0012`–`0019` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
+| Migrations `0012`–`0023` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
 | Web Push (alarms) | endpoints, service-worker handler, subscribe flow, delivery ledger, tests | VAPID secrets (§3) + Cron Worker (§4) |
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
-| Everything else in Books 5–9 | source + local tests green | deploy (§5) |
+| Everything else in Books 5–10 | source + local tests green | deploy (§5) |
 
-Current local gate at handoff time: **301 server tests + 25 DOM tests green,
+Current local gate at handoff time: **342 server tests + 25 DOM tests green,
 `npx tsc --noEmit` clean, `npm run build` clean.**
 
 ---
@@ -53,7 +53,7 @@ reference.
 
 ---
 
-## 2. Apply migrations 0012–0019 to production D1
+## 2. Apply migrations 0012–0023 to production D1
 
 ### 2.1 The backup gate (mandatory, blocking)
 
@@ -63,7 +63,7 @@ it is destructive and needs its own explicit approval.
 
 ### 2.2 What these migrations do
 
-They must be applied **in filename order**. All eight are additive or preserve a full
+They must be applied **in filename order**. All twelve are additive or preserve a full
 backup table; none deletes user data.
 
 - `0012_unify_captures.sql` — creates `captures`, `review_items`, `exams` and backfills
@@ -90,6 +90,17 @@ backup table; none deletes user data.
   asks him to name his anchors. See `OPERATIONS.md` §5.14.
 - `0019_block_statuses_and_causes.sql` — Books 8.3/8.4: the append-only
   `block_miss_causes` ledger, one diagnosis per block per day. See §5.15.
+- `0020_learning_sources_reading.sql` — Book 10.1/10.5: measured reading
+  (`reading_sessions` + append-only `reading_events`) and source provenance
+  (`sources`, `source_editions`, `source_sections`, `section_variants`). See §5.16.
+- `0021_mastery_rubric_calibration.sql` — Books 10.2/10.3/10.4: the append-only
+  `mastery_evidence` trail, the derived `mastery` cache, `retrieval_attempts` and
+  `calibration_events`, plus nullable confidence columns on `review_items`. See §5.17.
+- `0022_principles_graph.sql` and `0023_immune_table_seed.sql` — Books 10.6-10.10:
+  the concept model, the immune table, Machiavelli framings, Greene as UNREAD
+  non-examinable hypotheses, and the cross-book principle graph with its
+  contradiction edges. CURRICULUM ROWS ONLY — neither touches personal data.
+  See §5.18.
 
 ### 2.3 Apply
 
@@ -123,15 +134,22 @@ SELECT COUNT(*) AS push_tables FROM sqlite_schema WHERE type='table'
 SELECT COUNT(*) AS tier_column FROM pragma_table_info('schedule_blocks') WHERE name='ratchet_tier';
 SELECT COUNT(*) AS mandatory FROM schedule_blocks WHERE ratchet_tier='mandatory';
 SELECT COUNT(*) AS causes_table FROM sqlite_schema WHERE type='table' AND name='block_miss_causes';
+-- the learning engine
+SELECT COUNT(*) AS learning_tables FROM sqlite_schema WHERE type='table'
+  AND name IN ('reading_sessions','reading_events','sources','source_editions','source_sections',
+               'section_variants','mastery_evidence','mastery','retrieval_attempts','calibration_events',
+               'concepts','concept_components','principles','principle_frames','hypotheses',
+               'graph_nodes','graph_edges');
+SELECT COUNT(*) AS examinable_hypotheses FROM hypotheses WHERE examinable <> 0;
 ```
 
 Expected: `captures_rows` equals `legacy_rows`; `unowned`, `orphan_cards`, `orphan_sr` and
 `missing_fsrs` are all `0`; `cards` equals `backup`; `alt_triggers` is `2`;
-`push_tables` is `3`; `tier_column` and `causes_table` are each `1`; `mandatory` is at most `3` (a `0` is valid and means the app will ask him to name his anchors).
+`push_tables` is `3`; `tier_column` and `causes_table` are each `1`; `mandatory` is at most `3` (a `0` is valid and means the app will ask him to name his anchors); `learning_tables` is `17`; `examinable_hypotheses` is `0`.
 
 ### 2.5 Rollback
 
-Each migration's rollback is in `OPERATIONS.md` §5.8–§5.15. In every case the legacy
+Each migration's rollback is in `OPERATIONS.md` §5.8–§5.18. In every case the legacy
 tables and their rows survive, so an application rollback is enough; you never need to
 restore the D1 backup to undo these.
 

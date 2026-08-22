@@ -948,6 +948,115 @@ Expected: `causes_table` is `1`; `causes_append_only` is `2`. The status breakdo
 
 `DROP TABLE IF EXISTS block_miss_causes;` then redeploy the prior application. Any `unreported` rows written meanwhile are read by the prior application as an unrecognised status, which it treats as not-yet-landed — the same as an empty log — so nothing is lost and no penalty is invented. No user data is destroyed either way.
 
+### 5.16 `migrations/0020_learning_sources_reading.sql`
+
+**Purpose**
+
+- Book 10.1 and 10.5. Adds `reading_sessions` plus the append-only `reading_events` traversal record (which is also the section-level position record), and the source-provenance tables `sources`, `source_editions`, `source_sections` and `section_variants`.
+- `source_editions.translation_status` is CHECK-constrained to `public_domain | official | licensed | unknown`, so a translation cannot be labelled "official" unless it genuinely is; `completeness` is CHECK-constrained so a partial work is labelled explicitly. `section_variants` stores a rival rendering where editions disagree, so the disagreement is displayed rather than silently resolved.
+- Additive: new tables only. Nothing is altered or deleted.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/measured-reading.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/measured-reading.test.ts` proves the dwell/traversal/pace rules, that no endpoint lets a client declare a chapter read, that the traversal record is append-only, that the curriculum gate refuses `reading` until a measured session passed, and that the provenance CHECKs and variant storage behave.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS reading_tables FROM sqlite_schema WHERE type='table'
+  AND name IN ('reading_sessions','reading_events','sources','source_editions','source_sections','section_variants');
+SELECT COUNT(*) AS reading_append_only FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_reading_events_no_update','trg_reading_events_no_delete');
+```
+
+Expected: `reading_tables` is `6`; `reading_append_only` is `2`.
+
+**Rollback**
+
+Drop the six tables. The prior application never referenced them; unit reading reverts to the previous button-driven step. No user data is destroyed either way.
+
+### 5.17 `migrations/0021_mastery_rubric_calibration.sql`
+
+**Purpose**
+
+- Books 10.2, 10.3 and 10.4. Adds the append-only `mastery_evidence` trail (nine rubric dimensions per row), the derived `mastery` cache no client writes, `retrieval_attempts` (R0 and free recall), and `calibration_events` (the knowledge Brier's source). Adds three nullable confidence columns to `review_items`.
+- Additive: new tables plus nullable columns. Existing review rows simply have no confidence recorded yet.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/mastery-calibration.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/mastery-calibration.test.ts` proves the ladder's declared bars, that self-scoring gates nothing in either direction, that integrated needs a 2.5 mean with no zero, deterministic cloze that never returns its answers, free-recall diffing, the named calibration patterns carrying no penalty language, the append-only evidence trail, and the R0 gate.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS mastery_tables FROM sqlite_schema WHERE type='table'
+  AND name IN ('mastery_evidence','mastery','retrieval_attempts','calibration_events');
+SELECT COUNT(*) AS evidence_append_only FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_mastery_evidence_no_update','trg_mastery_evidence_no_delete');
+SELECT COUNT(*) AS confidence_columns FROM pragma_table_info('review_items')
+  WHERE name IN ('confidence_before','confidence_after','last_calibration_error');
+```
+
+Expected: `mastery_tables` is `4`; `evidence_append_only` is `2`; `confidence_columns` is `3`.
+
+**Rollback**
+
+Drop the four tables; the added `review_items` columns are nullable and ignored by the prior application. Mastery reverts to the previous unit-status model. No user data is destroyed either way.
+
+### 5.18 `migrations/0022_principles_graph.sql` and `0023_immune_table_seed.sql`
+
+**Purpose**
+
+- Books 10.6 to 10.10. `0022` adds `concepts` + `concept_components` (the concept model, including 將's five virtues and the `lowest_of_components` score rule), `principles` (the Book 10.9 immune table's six columns plus the cost of staying naive), `principle_frames` (Book 10.7's five required framing fields), `hypotheses` (Book 10.8's ten fields, with `examinable` CHECK-constrained to 0 and `defensive_only` to 1), and `graph_nodes` + `graph_edges` (Book 10.10, including `contradicts` edges). It also seeds the thirty-one named nodes, ethos/logos/pathos with their strong-use and corrupt-use columns, the Five Factors with their corrections, and the Chapter II correction.
+- `0023` seeds the fourteen immune-table principles Book 10.9 lists, the Machiavelli framings, one Greene hypothesis flagged UNREAD, and the graph edges including the contradictions whose notes state what selects one principle over its reversal.
+- **These are curriculum rows, not personal records.** No row in either file touches the commander's own data.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/principle-graph.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/principle-graph.test.ts` proves each factor is taught with a range and its named distortion, that 將 is scored on the lowest of five with the weakest virtue reported, that outward-facing 將 framings are struck, that the Chapter II oversimplification is recorded as struck, that a master reading is never returned without its naive twin and the cost, that every Machiavelli principle carries all five framing fields with a stated break condition, that a hypothesis cannot be made examinable, that every named graph node exists, and that contradiction edges carry the real question.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS curriculum_tables FROM sqlite_schema WHERE type='table'
+  AND name IN ('concepts','concept_components','principles','principle_frames','hypotheses','graph_nodes','graph_edges');
+SELECT (SELECT COUNT(*) FROM graph_nodes) AS nodes,
+       (SELECT COUNT(*) FROM principles) AS principles,
+       (SELECT COUNT(*) FROM graph_edges WHERE kind='contradicts') AS contradictions;
+SELECT COUNT(*) AS examinable_hypotheses FROM hypotheses WHERE examinable <> 0;
+```
+
+Expected: `curriculum_tables` is `7`; `nodes` is at least `34`; `principles` is at least `14`; `contradictions` is at least `3`; `examinable_hypotheses` is `0` and cannot be otherwise.
+
+**Rollback**
+
+Drop the seven tables (order: `graph_edges`, `graph_nodes`, `hypotheses`, `principle_frames`, `principles`, `concept_components`, `concepts`) then redeploy the prior application. Only curriculum rows are lost, and they are re-seeded by re-applying the migrations. No personal record is involved.
+
 ## 6. Deploy and Verify the Pages Application
 
 
