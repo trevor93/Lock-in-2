@@ -108,6 +108,13 @@ app.post('/api/rewards/:id/redeem', async (c) => withIdempotency(c, 'reward:rede
 // changelog visible inside the application — the operator must be able to see
 // when the rules of his own game changed." Static, honest, newest first.
 const SCORING_CHANGELOG: Array<{ date: string; change: string }> = [
+  { date: '2026-08-22', change: 'The ratchet (Book 8.1): the mandatory day is three anchors and everything else is a deck. Only the mandatory set is scored or penalised — deck blocks are logged and earn points but never cost you. A block is promoted from the deck after a clean seven-day hold, and a mandatory block that misses three scheduled days running returns to the deck automatically, at no point cost.' },
+  { date: '2026-08-22', change: 'A window that closes with no status now leaves the block UNREPORTED — a data state with a prompt and no penalty (Book 8.3). It is never auto-cancelled. Consequence follows the cause you record (Book 8.4), so a forgotten log is repaired as completed_late for free, a genuine displacement or emergency costs nothing, and a real miss costs 5.' },
+  { date: '2026-08-22', change: 'Hard limits on the ledger (Book 8.5): a single day can now cost at most 30 points, and the balance can never fall below 0. Flags are still recorded in full — only the cost is bounded, and the ledger line says which limit applied.' },
+  { date: '2026-08-22', change: 'Load reduction now lands on the THIRD consecutive miss rather than the second (Book 8.5); the second miss draws the cause prompt instead. Load reduction still costs no points.' },
+  { date: '2026-08-22', change: 'The rank ladder is cut (Book 8.5). It only re-rendered points you could already see. It may return if it is ever derived from calibration and mastery instead.' },
+  { date: '2026-08-22', change: 'Completed-late and partially-completed blocks now score correctly everywhere, and a block moved or displaced by a higher priority leaves the day\u2019s denominator instead of counting against you (Book 8.3/8.4).' },
+
   { date: '2026-08-20', change: 'Minimum Viable Recovery: on a declared breach day, one logged restoring action makes the day survive the streak — survival, never a victory.' },
   { date: '2026-08-20', change: 'Alternative-explanation brake: a capture logged with non-calm heat now requires a written alternative explanation; a rising "none plausible" count is surfaced as the paranoia tell.' },
   { date: '2026-08-20', change: 'Duplicate delivery of the same request (retries, double-taps) can no longer create a second consequence; enforcement run twice awards once.' },

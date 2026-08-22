@@ -876,6 +876,78 @@ Push stays off until the VAPID secrets exist and the Cron Worker is deployed. Bo
 
 `DROP TABLE IF EXISTS push_deliveries; DROP TABLE IF EXISTS push_subscriptions; DROP TABLE IF EXISTS notification_preferences;` then redeploy the prior application, which never referenced them. The calendar `.ics` fallback never depended on push, so alarms degrade to the calendar layer rather than disappearing. No user data is destroyed by applying or rolling back.
 
+### 5.14 `migrations/0018_ratchet.sql`
+
+**Purpose**
+
+- Book 8.1, the ratchet. Adds `schedule_blocks.ratchet_tier` (`'mandatory' | 'deck'`, default `deck`), the `ratchet_state` row per owner, and the append-only `ratchet_events` history with its guards.
+- **Seeding invents nothing.** The mandatory set is seeded from the commander's own prior declarations, in order: blocks he already nominated as Minimum-Viable-Day CORE (`is_mvd = 1`), else blocks he already marked non-negotiable — capped at the three anchors Book 8.1 specifies, earliest first. If he declared neither, the set is left EMPTY and the application asks him to name his anchors rather than guessing.
+- Additive: one column with a safe default plus two tables. No row is altered or deleted; every block keeps its weight, points and history.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/ratchet.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/ratchet.test.ts` proves consequence covers the mandatory set only, the transition fallback while no anchor exists, that a promotion past three anchors requires a clean seven-day hold, that demotion by choice is always allowed and recorded, the append-only history, the `/api/state` summary, and an end-to-end demotion after three straight misses that costs no points.
+- [ ] Every pre-existing personal-table row count is unchanged.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS tier_column FROM pragma_table_info('schedule_blocks') WHERE name='ratchet_tier';
+SELECT ratchet_tier, COUNT(*) AS blocks FROM schedule_blocks GROUP BY ratchet_tier;
+SELECT COUNT(*) AS mandatory FROM schedule_blocks WHERE ratchet_tier='mandatory';
+SELECT COUNT(*) AS events_append_only FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_ratchet_events_no_update','trg_ratchet_events_no_delete');
+```
+
+Expected: `tier_column` is `1`; `mandatory` is at most `3`; `events_append_only` is `2`. A `mandatory` count of `0` is valid and means the application will ask the commander to name his anchors.
+
+**Rollback**
+
+`DROP TABLE IF EXISTS ratchet_events; DROP TABLE IF EXISTS ratchet_state;` then redeploy the prior application, which ignores `ratchet_tier` (leaving the column is harmless). Scoring reverts to the prior non-negotiable rule. No user data is destroyed either way.
+
+### 5.15 `migrations/0019_block_statuses_and_causes.sql`
+
+**Purpose**
+
+- Books 8.3 and 8.4. Adds the append-only `block_miss_causes` ledger — one diagnosis per block per day (UNIQUE index as the arbiter) — recording the cause, the dimension the correction acts on, and his own note.
+- No schema change is needed for the ten block statuses: `block_logs.status` is free text, and the application now writes `unreported` where it used to write `missed` at a window close. Historical rows keep their meaning (`pending ≡ planned`, `done ≡ completed`, `skipped ≡ intentionally_canceled`).
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/miss-diagnosis.test.ts test/scoring-limits.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/miss-diagnosis.test.ts` proves the status semantics, that a displaced block cannot drag adherence down, that the window close writes `unreported` with a zero-point prompt, that a status cannot be set on an unreported block until the cause is recorded, that a repaired log and a genuine displacement cost nothing, that a real miss costs 5 with a correction that never insults him, that repeated avoidance opens an investigation costing no points, and that the ledger is append-only and one-per-day.
+- [ ] `test/scoring-limits.test.ts` proves the daily penalty cap and ledger floor, and that load reduction lands on the third consecutive miss.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS causes_table FROM sqlite_schema WHERE type='table' AND name='block_miss_causes';
+SELECT COUNT(*) AS causes_append_only FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_miss_causes_no_update','trg_miss_causes_no_delete');
+SELECT status, COUNT(*) AS rows FROM block_logs GROUP BY status ORDER BY rows DESC;
+```
+
+Expected: `causes_table` is `1`; `causes_append_only` is `2`. The status breakdown is informational: `unreported` rows begin appearing only after this application is deployed.
+
+**Rollback**
+
+`DROP TABLE IF EXISTS block_miss_causes;` then redeploy the prior application. Any `unreported` rows written meanwhile are read by the prior application as an unrecognised status, which it treats as not-yet-landed — the same as an empty log — so nothing is lost and no penalty is invented. No user data is destroyed either way.
+
 ## 6. Deploy and Verify the Pages Application
 
 
