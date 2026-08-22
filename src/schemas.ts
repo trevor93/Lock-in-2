@@ -47,11 +47,14 @@ export const responseCategorySchema = z.enum([
 export const tongueModeSchema = z.enum([
   'recall', 'cloze', 'first_letters', 'reverse', 'delivery',
 ])
+// Book 9 - the sixteen domains collapse to six. Both are accepted: new captures
+// use the six, historical rows keep their legacy value and are grouped under the
+// domain they now belong to (see src/intel-domains.ts). Nothing becomes unfindable.
 export const intelDomainSchema = z.enum([
-  'loyalty', 'family', 'friends', 'network', 'community', 'neighbours',
-  'classmates', 'women_relationships', 'money', 'hustle', 'society',
-  'manipulation_spotted', 'clever_move', 'dumb_move', 'workaround',
-  'wisdom', 'other',
+  'people', 'network', 'intimacy', 'money', 'tactics', 'wisdom',
+  'loyalty', 'family', 'friends', 'community', 'neighbours', 'classmates',
+  'women_relationships', 'hustle', 'society', 'manipulation_spotted',
+  'clever_move', 'dumb_move', 'workaround', 'other',
 ])
 export const intelVerdictSchema = z.enum(['smart', 'dumb', 'neutral', 'pending'])
 export const bookStatusSchema = z.enum(['unread', 'reading', 'done'])

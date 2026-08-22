@@ -84,6 +84,7 @@ registerActions({
   checkLaw:    (e, el, id, kept) => checkLaw(id, kept),
   logRecovery: () => logRecovery(),
   setTab:      (e, el, tab) => { S.TAB = tab; render(); },
+  setSub:      (e, el, tab, face) => { S.SUB[tab] = face; render(); },
   dismissId:   (e, el, id) => { const t = document.getElementById(id); if (t) t.remove(); },
 });
 
@@ -169,23 +170,43 @@ export async function loadState() {
 
 export function tabBadge(id) {
   const s = S.STATE; if (!s) return 0;
-  if (id==='now')  return s.flags.length;
-  if (id==='mind') return s.dueCards||0;
-  if (id==='tongue') return s.dueTongue||0;
-  if (id==='debrief') return s.debriefDoneToday ? 0 : (new Date().getHours()>=20 ? 1 : 0);
+  // The five tabs carry the counts their old tabs carried.
+  if (id==='today') return s.flags.length;
+  if (id==='practice') return (s.dueCards||0) + (s.dueTongue||0);
+  if (id==='review') return s.debriefDoneToday ? 0 : (new Date().getHours()>=20 ? 1 : 0);
   return 0;
 }
+
+// The segmented control inside a tab. Each face is what used to be its own
+// tab; the commander still reaches everything, one level in instead of across
+// nine bottom-bar targets.
+export const SEGMENTS = {
+  today:    [['now','NOW'], ['schedule','SCHEDULE']],
+  learn:    [['campaign','CAMPAIGN'], ['books','BOOKS']],
+  practice: [['cards','CARDS'], ['maxims','MAXIMS'], ['tongue','TONGUE']],
+  review:   [['debrief','DEBRIEF'], ['stats','STATS']],
+  more:     [['council','COUNCIL'], ['intel','INTEL'], ['settings','SETTINGS']],
+};
+
+export function segments(tab) {
+  const faces = SEGMENTS[tab] || [];
+  if (faces.length < 2) return '';
+  const active = S.SUB[tab];
+  return '<div class="flex gap-1.5 mb-3" id="tab-segments">' + faces.map(function(f){
+    const on = f[0] === active;
+    return '<button class="btn flex-1 p-2 text-[11px] font-bold ' +
+      (on ? 'bg-gold/20 border border-gold/50 text-gold' : 'bg-panel border border-line text-gray-400') +
+      '" data-act="setSub" data-args="' + actArgs([tab, f[0]]) + '" data-seg="' + f[0] + '">' + f[1] + '</button>';
+  }).join('') + '</div>';
+}
 export function shell(content) {
+  // Book 9: "Nine tabs collapse to five: TODAY, LEARN, PRACTICE, REVIEW, MORE."
   const tabs = [
-    ['now','fa-crosshairs','NOW'],
-    ['today','fa-calendar-day','DAY'],
-    ['campaign','fa-chess-board','WAR'],
-    ['library','fa-book-bookmark','BOOKS'],
-    ['council','fa-user-secret','COUNCIL'],
-    ['mind','fa-brain','MIND'],
-    ['tongue','fa-comment-dots','TONGUE'],
-    ['debrief','fa-pen-nib','LOG'],
-    ['stats','fa-chart-line','STATS'],
+    ['today','fa-crosshairs','TODAY'],
+    ['learn','fa-chess-board','LEARN'],
+    ['practice','fa-brain','PRACTICE'],
+    ['review','fa-chart-line','REVIEW'],
+    ['more','fa-ellipsis','MORE'],
   ];
   const markup = `
     <main id="app-main" class="max-w-lg mx-auto px-3 pt-3 pb-28">${content}</main>
@@ -466,9 +487,13 @@ export async function appealBlock(blockId, blockDate, title){
 
 /* render dispatcher — extended by app2.js */
 export function render() {
-  if (S.TAB==='now') shell(viewNow());
-  else if (S.TAB==='today') shell(viewToday());
-  else renderExtra(S.TAB);
+  // Book 9: five tabs, each with its faces. TODAY answers one question - what is
+  // the most valuable action right now - and its second face is the schedule.
+  if (S.TAB==='today') {
+    shell(segments('today') + (S.SUB.today==='schedule' ? viewToday() : viewNow()));
+  } else {
+    renderExtra(S.TAB);
+  }
 }
 
 /* ============ /catchup — the re-entry door (Book 8.6) ============ */

@@ -7,6 +7,7 @@ import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, RequestValidationError } from '../validation'
 import { withIdempotency, requestId, altGate, recordAltExplanation, auditEvent } from '../request-support'
 import { safeDate, userNow } from '../clock'
+import { collapseDomain, DOMAINS, DOMAIN_LABELS } from '../intel-domains'
 import {
   intelBodySchema, intelVerdictBodySchema, intelDomainSchema,
   bookProgressBodySchema, positiveIdSchema, chapterIndexSchema,
@@ -21,14 +22,26 @@ app.get('/api/intel', async (c) => {
     : parseValue(intelDomainSchema, c.req.query('domain'))
   const q = domain
     ? c.env.DB.prepare(
-      `SELECT * FROM captures WHERE kind='intel' AND user_id=? AND domain=?
+      `SELECT * FROM captures WHERE kind='intel' AND user_id=?
        ORDER BY log_date DESC, id DESC LIMIT 100`,
-    ).bind(userId, domain)
+    ).bind(userId)
     : c.env.DB.prepare(
       `SELECT * FROM captures WHERE kind='intel' AND user_id=? ORDER BY log_date DESC, id DESC LIMIT 100`,
     ).bind(userId)
-  return c.json((await q.all()).results)
+  // Book 9: every row reports which of the six domains it belongs to, so a legacy
+  // value stays findable, and a domain filter matches on that collapsed group rather
+  // than on the exact stored string.
+  const rows = ((await q.all()).results as any[])
+    .map((r) => ({ ...r, domain_group: collapseDomain(r.domain) }))
+  const filtered = domain
+    ? rows.filter((r) => r.domain_group === collapseDomain(domain))
+    : rows
+  return c.json(filtered)
 })
+
+// The six domains and their labels (Book 9).
+app.get('/api/intel/domains', (c) =>
+  c.json(DOMAINS.map((d) => ({ domain: d, label: DOMAIN_LABELS[d] }))))
 
 app.post('/api/intel', async (c) => withIdempotency(c, 'intel:file', async () => {
   const DB = c.env.DB

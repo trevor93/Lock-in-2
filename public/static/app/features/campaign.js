@@ -1,6 +1,6 @@
 import { S } from '../core/store.js'
 import { FX } from '../core/fx.js'
-import { api, header, loadState, render, shell, toast, todayStr } from '../core/shell.js'
+import { api, header, loadState, render, shell, toast, todayStr, segments } from '../core/shell.js'
 import { registerActions } from '../core/events.js'
 import { esc, nl2br } from '../core/sanitize.js'
 import { viewCouncil } from './council.js'
@@ -14,21 +14,38 @@ import { loadTongue, viewTongue } from './tongue.js'
 // state moved to core/store.js: OPEN_UNIT, CARD_IDX, CARD_FLIP, MIND_MODE
 
 export const renderExtra = async function(tab){
-  if (tab==='campaign'){ if(!S.CAMPAIGN) S.CAMPAIGN=(await axios.get('/api/campaign')).data; shell(viewCampaign()); }
-  else if (tab==='library'){ if(!S.LIBRARY) await loadLibrary(); shell(viewLibrary()); }
-  else if (tab==='council'){
+  // Book 9: the five tabs. Each face is what used to be its own tab, so every
+  // surface the commander had is still reachable - one level in, not nine across.
+  const face = S.SUB[tab];
+  if (tab==='learn'){
+    if (face==='books'){ if(!S.LIBRARY) await loadLibrary(); shell(segments(tab) + viewLibrary()); }
+    else { if(!S.CAMPAIGN) S.CAMPAIGN=(await axios.get('/api/campaign')).data; shell(segments(tab) + viewCampaign()); }
+  }
+  else if (tab==='practice'){
+    if (face==='tongue'){ await loadTongue(); shell(segments(tab) + viewTongue()); }
+    else {
+      if(!S.DUE) S.DUE=(await axios.get('/api/cards/due?date='+todayStr())).data;
+      if(!S.MAXIMS) S.MAXIMS=(await axios.get('/api/maxims')).data;
+      S.MIND_MODE = (face==='maxims') ? 'bank' : 'cards';
+      shell(segments(tab) + viewMind());
+    }
+  }
+  else if (tab==='review'){
+    if (face==='stats'){
+      S.STATS=(await axios.get('/api/stats?date='+todayStr())).data;
+      try{ S.STATS.changelog=(await axios.get('/api/changelog')).data; }catch(_){ S.STATS.changelog=[]; }
+      shell(segments(tab) + viewStats());
+    } else {
+      if(!S.DEBRIEFS) S.DEBRIEFS=(await axios.get('/api/debriefs')).data;
+      shell(segments(tab) + viewDebrief());
+    }
+  }
+  else if (tab==='more'){
     if(!S.INTEL) S.INTEL=(await axios.get('/api/intel')).data;
     if(!S.HERMES_HIST) S.HERMES_HIST=(await axios.get('/api/hermes/history')).data;
-    shell(viewCouncil());
+    if (face==='settings'){ if(!S.LIBRARY) await loadLibrary(); shell(segments(tab) + viewLibrary()); }
+    else { S.COUNCIL_MODE = (face==='intel') ? 'intel' : 'hermes'; shell(segments(tab) + viewCouncil()); }
   }
-  else if (tab==='mind'){
-    if(!S.DUE) S.DUE=(await axios.get('/api/cards/due?date='+todayStr())).data;
-    if(!S.MAXIMS) S.MAXIMS=(await axios.get('/api/maxims')).data;
-    shell(viewMind());
-  }
-  else if (tab==='tongue'){ await loadTongue(); shell(viewTongue()); }
-  else if (tab==='debrief'){ if(!S.DEBRIEFS) S.DEBRIEFS=(await axios.get('/api/debriefs')).data; shell(viewDebrief()); }
-  else if (tab==='stats'){ S.STATS=(await axios.get('/api/stats?date='+todayStr())).data; try{ S.STATS.changelog=(await axios.get('/api/changelog')).data; }catch(_){ S.STATS.changelog=[]; } shell(viewStats()); }
 };
 
 /* ============ CAMPAIGN ============ */

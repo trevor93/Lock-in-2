@@ -4,8 +4,16 @@
 // shared state without any of it becoming a window.* global. Modules do `S.TAB = x`
 // / `if (S.STATE)` instead of the old bare `TAB` / `STATE`.
 export const S = {
-  // navigation + session
-  TAB: 'now',
+  // navigation + session. Book 9 collapses nine tabs to five; SUB remembers
+  // which face of a tab is showing, so nothing that used to be a tab is lost.
+  TAB: 'today',
+  SUB: {
+    today: 'now',        // now | schedule
+    learn: 'campaign',   // campaign | books
+    practice: 'cards',   // cards | maxims | tongue
+    review: 'debrief',   // debrief | stats
+    more: 'council',     // council | intel | settings
+  },
   STATE: null,
   CSRF_TOKEN: null,
   TZ_SENT: false,

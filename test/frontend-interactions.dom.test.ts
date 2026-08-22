@@ -63,16 +63,15 @@ describe('B7 frontend interaction integrity', () => {
 
     const nav = document.querySelector('#main-nav')
     expect(nav, 'nav missing').not.toBeNull()
-    const mind = nav!.querySelector('[data-tab="mind"]') as HTMLElement
-    expect(mind, 'the MIND tab is missing').not.toBeNull()
+    // Book 9: five tabs. TODAY is the initial one; PRACTICE holds the old MIND drill.
+    const practice = nav!.querySelector('[data-tab="practice"]') as HTMLElement
+    expect(practice, 'the PRACTICE tab is missing').not.toBeNull()
+    expect((nav!.querySelector('[data-tab="today"]') as HTMLElement).className).toContain('active')
+    practice.click()
+    await waitFor(() => (document.querySelector('#main-nav [data-tab="practice"]') as HTMLElement)?.className.includes('active'))
 
-    // "now" is the initial tab; clicking MIND must re-render to that tab as active.
-    expect((nav!.querySelector('[data-tab="now"]') as HTMLElement).className).toContain('active')
-    mind.click()
-    await waitFor(() => (document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement)?.className.includes('active'))
-
-    const activeAfter = document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement
-    expect(activeAfter.className, 'MIND did not become the active tab').toContain('active')
+    const activeAfter = document.querySelector('#main-nav [data-tab="practice"]') as HTMLElement
+    expect(activeAfter.className, 'PRACTICE did not become the active tab').toContain('active')
   })
 
   it('clicking a block status button logs it to /api/blocks/:id/log with the right status (data-args encoding)', async () => {
@@ -115,9 +114,9 @@ describe('B7 frontend interaction integrity', () => {
       'GET /api/maxims': [],
       'POST /api/cards/7/review': { ok: true },
     })
-    await waitFor(() => !!document.querySelector('#main-nav [data-tab="mind"]'))
+    await waitFor(() => !!document.querySelector('#main-nav [data-tab="practice"]'))
 
-    ;(document.querySelector('#main-nav [data-tab="mind"]') as HTMLElement).click()
+    ;(document.querySelector('#main-nav [data-tab="practice"]') as HTMLElement).click()
     await waitFor(() => !!document.querySelector('[data-act="flipCard"]'))
     // Grade buttons only appear once the card is flipped.
     const flip = document.querySelector('[data-act="flipCard"]') as HTMLElement

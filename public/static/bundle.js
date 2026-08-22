@@ -342,8 +342,21 @@
     }
   };
   const S = {
-    // navigation + session
-    TAB: "now",
+    // navigation + session. Book 9 collapses nine tabs to five; SUB remembers
+    // which face of a tab is showing, so nothing that used to be a tab is lost.
+    TAB: "today",
+    SUB: {
+      today: "now",
+      // now | schedule
+      learn: "campaign",
+      // campaign | books
+      practice: "cards",
+      // cards | maxims | tongue
+      review: "debrief",
+      // debrief | stats
+      more: "council"
+      // council | intel | settings
+    },
     STATE: null,
     CSRF_TOKEN: null,
     TZ_SENT: false,
@@ -1568,34 +1581,48 @@
     tgExamAnswer: (e, el, ok) => tgExamAnswer(ok)
   });
   const renderExtra = async function(tab) {
-    if (tab === "campaign") {
-      if (!S.CAMPAIGN) S.CAMPAIGN = (await axios.get("/api/campaign")).data;
-      shell(viewCampaign());
-    } else if (tab === "library") {
-      if (!S.LIBRARY) await loadLibrary();
-      shell(viewLibrary());
-    } else if (tab === "council") {
+    const face = S.SUB[tab];
+    if (tab === "learn") {
+      if (face === "books") {
+        if (!S.LIBRARY) await loadLibrary();
+        shell(segments(tab) + viewLibrary());
+      } else {
+        if (!S.CAMPAIGN) S.CAMPAIGN = (await axios.get("/api/campaign")).data;
+        shell(segments(tab) + viewCampaign());
+      }
+    } else if (tab === "practice") {
+      if (face === "tongue") {
+        await loadTongue();
+        shell(segments(tab) + viewTongue());
+      } else {
+        if (!S.DUE) S.DUE = (await axios.get("/api/cards/due?date=" + todayStr())).data;
+        if (!S.MAXIMS) S.MAXIMS = (await axios.get("/api/maxims")).data;
+        S.MIND_MODE = face === "maxims" ? "bank" : "cards";
+        shell(segments(tab) + viewMind());
+      }
+    } else if (tab === "review") {
+      if (face === "stats") {
+        S.STATS = (await axios.get("/api/stats?date=" + todayStr())).data;
+        try {
+          S.STATS.changelog = (await axios.get("/api/changelog")).data;
+        } catch (_) {
+          S.STATS.changelog = [];
+        }
+        shell(segments(tab) + viewStats());
+      } else {
+        if (!S.DEBRIEFS) S.DEBRIEFS = (await axios.get("/api/debriefs")).data;
+        shell(segments(tab) + viewDebrief());
+      }
+    } else if (tab === "more") {
       if (!S.INTEL) S.INTEL = (await axios.get("/api/intel")).data;
       if (!S.HERMES_HIST) S.HERMES_HIST = (await axios.get("/api/hermes/history")).data;
-      shell(viewCouncil());
-    } else if (tab === "mind") {
-      if (!S.DUE) S.DUE = (await axios.get("/api/cards/due?date=" + todayStr())).data;
-      if (!S.MAXIMS) S.MAXIMS = (await axios.get("/api/maxims")).data;
-      shell(viewMind());
-    } else if (tab === "tongue") {
-      await loadTongue();
-      shell(viewTongue());
-    } else if (tab === "debrief") {
-      if (!S.DEBRIEFS) S.DEBRIEFS = (await axios.get("/api/debriefs")).data;
-      shell(viewDebrief());
-    } else if (tab === "stats") {
-      S.STATS = (await axios.get("/api/stats?date=" + todayStr())).data;
-      try {
-        S.STATS.changelog = (await axios.get("/api/changelog")).data;
-      } catch (_) {
-        S.STATS.changelog = [];
+      if (face === "settings") {
+        if (!S.LIBRARY) await loadLibrary();
+        shell(segments(tab) + viewLibrary());
+      } else {
+        S.COUNCIL_MODE = face === "intel" ? "intel" : "hermes";
+        shell(segments(tab) + viewCouncil());
       }
-      shell(viewStats());
     }
   };
   const UST = { locked: ["LOCKED", "bg-gray-800 text-gray-500"], active: ["ACTIVE", "bg-gold/20 text-gold"], reading_done: ["READING OK", "bg-sky-950 text-sky-300"], drill_done: ["DRILL OK", "bg-emerald-950 text-emerald-300"], complete: ["CONQUERED", "bg-emerald-800 text-emerald-100"] };
@@ -1764,6 +1791,10 @@
       S.TAB = tab;
       render();
     },
+    setSub: (e, el, tab, face) => {
+      S.SUB[tab] = face;
+      render();
+    },
     dismissId: (e, el, id) => {
       const t = document.getElementById(id);
       if (t) t.remove();
@@ -1834,23 +1865,34 @@
   function tabBadge(id) {
     const s = S.STATE;
     if (!s) return 0;
-    if (id === "now") return s.flags.length;
-    if (id === "mind") return s.dueCards || 0;
-    if (id === "tongue") return s.dueTongue || 0;
-    if (id === "debrief") return s.debriefDoneToday ? 0 : (/* @__PURE__ */ new Date()).getHours() >= 20 ? 1 : 0;
+    if (id === "today") return s.flags.length;
+    if (id === "practice") return (s.dueCards || 0) + (s.dueTongue || 0);
+    if (id === "review") return s.debriefDoneToday ? 0 : (/* @__PURE__ */ new Date()).getHours() >= 20 ? 1 : 0;
     return 0;
+  }
+  const SEGMENTS = {
+    today: [["now", "NOW"], ["schedule", "SCHEDULE"]],
+    learn: [["campaign", "CAMPAIGN"], ["books", "BOOKS"]],
+    practice: [["cards", "CARDS"], ["maxims", "MAXIMS"], ["tongue", "TONGUE"]],
+    review: [["debrief", "DEBRIEF"], ["stats", "STATS"]],
+    more: [["council", "COUNCIL"], ["intel", "INTEL"], ["settings", "SETTINGS"]]
+  };
+  function segments(tab) {
+    const faces = SEGMENTS[tab] || [];
+    if (faces.length < 2) return "";
+    const active = S.SUB[tab];
+    return '<div class="flex gap-1.5 mb-3" id="tab-segments">' + faces.map(function(f) {
+      const on = f[0] === active;
+      return '<button class="btn flex-1 p-2 text-[11px] font-bold ' + (on ? "bg-gold/20 border border-gold/50 text-gold" : "bg-panel border border-line text-gray-400") + '" data-act="setSub" data-args="' + actArgs([tab, f[0]]) + '" data-seg="' + f[0] + '">' + f[1] + "</button>";
+    }).join("") + "</div>";
   }
   function shell(content) {
     const tabs = [
-      ["now", "fa-crosshairs", "NOW"],
-      ["today", "fa-calendar-day", "DAY"],
-      ["campaign", "fa-chess-board", "WAR"],
-      ["library", "fa-book-bookmark", "BOOKS"],
-      ["council", "fa-user-secret", "COUNCIL"],
-      ["mind", "fa-brain", "MIND"],
-      ["tongue", "fa-comment-dots", "TONGUE"],
-      ["debrief", "fa-pen-nib", "LOG"],
-      ["stats", "fa-chart-line", "STATS"]
+      ["today", "fa-crosshairs", "TODAY"],
+      ["learn", "fa-chess-board", "LEARN"],
+      ["practice", "fa-brain", "PRACTICE"],
+      ["review", "fa-chart-line", "REVIEW"],
+      ["more", "fa-ellipsis", "MORE"]
     ];
     const markup = `
     <main id="app-main" class="max-w-lg mx-auto px-3 pt-3 pb-28">${content}</main>
@@ -2149,9 +2191,11 @@
     }
   }
   function render() {
-    if (S.TAB === "now") shell(viewNow());
-    else if (S.TAB === "today") shell(viewToday());
-    else renderExtra(S.TAB);
+    if (S.TAB === "today") {
+      shell(segments("today") + (S.SUB.today === "schedule" ? viewToday() : viewNow()));
+    } else {
+      renderExtra(S.TAB);
+    }
   }
   async function runCatchup() {
     let p;

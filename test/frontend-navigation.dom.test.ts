@@ -38,7 +38,15 @@ const ROUTES: Record<string, unknown> = {
   },
 }
 
-const TABS = ['today', 'campaign', 'library', 'council', 'mind', 'tongue', 'debrief', 'stats']
+// Book 9: nine tabs collapsed to five, each with faces that used to be tabs.
+const TABS = ['today', 'learn', 'practice', 'review', 'more']
+const FACES: Record<string, string[]> = {
+  today: ['now', 'schedule'],
+  learn: ['campaign', 'books'],
+  practice: ['cards', 'maxims', 'tongue'],
+  review: ['debrief', 'stats'],
+  more: ['council', 'intel', 'settings'],
+}
 
 describe('B7 frontend navigation integrity', () => {
   beforeEach(() => { document.body.innerHTML = '' })
@@ -56,6 +64,18 @@ describe('B7 frontend navigation integrity', () => {
       const active = document.querySelector(`#main-nav [data-tab="${tab}"]`) as HTMLElement
       expect(active?.className, `tab ${tab} never became active — its view threw during render`).toContain('active')
       expect(document.body.textContent, `tab ${tab} fell into the failure screen`).not.toContain('Failed to load')
+
+      // Every face of the tab must render too: these were the old nine tabs, and
+      // Book 9 collapses them without losing any of them.
+      for (const face of FACES[tab]) {
+        const seg = document.querySelector(`#tab-segments [data-seg="${face}"]`) as HTMLElement
+        expect(seg, `tab ${tab} is missing its ${face} segment`).not.toBeNull()
+        seg.click()
+        await waitFor(() => !!document.querySelector(`#tab-segments [data-seg="${face}"]`)
+          && (document.querySelector(`#tab-segments [data-seg="${face}"]`) as HTMLElement).className.includes('text-gold'))
+        expect(document.body.textContent, `${tab}/${face} fell into the failure screen`).not.toContain('Failed to load')
+        expect(document.querySelector('#main-nav'), `${tab}/${face} lost the shell`).not.toBeNull()
+      }
     }
   })
 })
