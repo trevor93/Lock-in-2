@@ -163,6 +163,15 @@ describe('Book 5.4 legal state transitions', () => {
           max_scroll_pct, plausible, closed_at)
        VALUES (?,'art_of_war',1,?,600,300,100,1,datetime('now'))`,
     ).bind(userId, unitId).run()
+    // Book 10.4: no lesson closes without R0 - a same-session, source-closed retrieval.
+    // Again, this test is about ordering, so the honest precondition is provided.
+    await env.DB.prepare(
+      `INSERT INTO retrieval_attempts
+         (user_id, subject_kind, subject_id, prompt, answer, mode, hit_ratio,
+          same_session, used_source, confidence_before)
+       VALUES (?,'unit',?, 'State the principle without notes.',
+               'Prepare before commitment; avoid prolongation.', 'free_recall', 0.8, 1, 0, 70)`,
+    ).bind(userId, String(unitId)).run()
 
     const skippedReading = await post(
       `/api/units/${unitId}/step`,

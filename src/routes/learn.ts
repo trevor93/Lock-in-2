@@ -115,6 +115,26 @@ app.post('/api/units/:id/step', async (c) => withIdempotency(c, 'unit:step', asy
        VALUES (?,?,?,?,?,?)`,
     ).bind(userId, today, 30, `Field drill executed: ${unit.title} (+30)`, 'unit', id).run()
   } else if (step === 'complete') {
+    // Book 10.4: "R0 is same-session, no-notes retrieval, and no lesson closes
+    // without it." The unit cannot be completed until a same-session, source-closed
+    // retrieval attempt exists for it. The refusal says what is missing, not that he
+    // failed.
+    if (!unit.is_exam) {
+      const r0 = await DB.prepare(
+        `SELECT id, hit_ratio FROM retrieval_attempts
+         WHERE user_id=? AND subject_kind='unit' AND subject_id=?
+           AND same_session=1 AND used_source=0
+         ORDER BY id DESC LIMIT 1`,
+      ).bind(userId, String(id)).first<any>()
+      if (!r0) {
+        return c.json({
+          error: 'R0 NOT RECORDED. No lesson closes without a same-session retrieval with the source closed.',
+          needsR0: true,
+          how: 'POST /api/retrieval with subject_kind "unit", same_session true and used_source false.',
+        }, 409)
+      }
+    }
+
     if (unit.is_exam) {
       if (!exam_answers) return c.json({ error: 'Exam answers required.' }, 400)
       const score = Number(exam_self_score ?? 0)

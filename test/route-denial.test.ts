@@ -20,7 +20,8 @@ import pushRoutesSource from '../src/routes/push.ts?raw'
 import ratchetRoutesSource from '../src/routes/ratchet.ts?raw'
 import missCauseRoutesSource from '../src/routes/miss-cause.ts?raw'
 import readingRoutesSource from '../src/routes/reading.ts?raw'
-const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource, calendarRoutesSource, pushRoutesSource, ratchetRoutesSource, missCauseRoutesSource, readingRoutesSource].join(String.fromCharCode(10))
+import masteryRoutesSource from '../src/routes/mastery.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource, calendarRoutesSource, pushRoutesSource, ratchetRoutesSource, missCauseRoutesSource, readingRoutesSource, masteryRoutesSource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,

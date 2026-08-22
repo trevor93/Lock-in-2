@@ -27,6 +27,7 @@ import { registerPushRoutes } from './routes/push'
 import { registerRatchetRoutes } from './routes/ratchet'
 import { registerMissCauseRoutes } from './routes/miss-cause'
 import { registerReadingRoutes } from './routes/reading'
+import { registerMasteryRoutes } from './routes/mastery'
 import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -254,6 +255,9 @@ registerMissCauseRoutes(app)
 
 // Measured reading: dwell + traversal decide reading_done, never a button (Book 10.1).
 registerReadingRoutes(app)
+
+// The mastery ladder, adversarial grading, and knowledge calibration (Book 10.2-10.4).
+registerMasteryRoutes(app)
 
 // COUNCIL/Hermes routes registered from ./routes/hermes (Book 7).
 registerHermesRoutes(app)

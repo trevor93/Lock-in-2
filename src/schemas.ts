@@ -267,3 +267,48 @@ export const readingProgressBodySchema = z.strictObject({
 export const readingCloseBodySchema = z.strictObject({
   session_id: z.number().int().positive(),
 })
+
+// Book 10.2 - mastery evidence. The rubric is nine dimensions scored 0-3; the
+// self-score is accepted and stored for calibration but is never a gate.
+const rubricScore = z.number().int().min(0).max(3)
+export const masteryRubricSchema = z.strictObject({
+  recall: rubricScore.optional(), explanation: rubricScore.optional(),
+  mechanism: rubricScore.optional(), application: rubricScore.optional(),
+  reversal: rubricScore.optional(), defence: rubricScore.optional(),
+  evidence: rubricScore.optional(), transfer: rubricScore.optional(),
+  retention: rubricScore.optional(),
+})
+export const masteryEvidenceBodySchema = z.strictObject({
+  subject_kind: z.enum(['unit', 'concept', 'principle', 'capture', 'section']),
+  subject_id: requiredTrimmedText(1, 200),
+  level: z.enum(['encountered', 'recalled', 'explained', 'applied', 'transferred', 'integrated']),
+  evidence_kind: requiredTrimmedText(1, 50),
+  evidence_ref: optionalTrimmedText(200),
+  body: optionalTrimmedText(20000),
+  rubric: masteryRubricSchema.optional(),
+  graded_by: z.enum(['adversarial', 'cloze', 'diff']).optional(),
+  self_score: z.number().int().min(0).max(100).optional(),
+  transfer_ref: optionalTrimmedText(200),
+  no_source: z.boolean().optional(),
+})
+// Book 10.3/10.4 - retrieval with confidence recorded before and after.
+const confidence = z.number().int().min(0).max(100)
+export const retrievalBodySchema = z.strictObject({
+  subject_kind: z.enum(['unit', 'concept', 'principle', 'capture', 'section']),
+  subject_id: requiredTrimmedText(1, 200),
+  anchor: optionalTrimmedText(200),
+  passage: optionalText(20000),
+  prompt: requiredTrimmedText(1, 2000),
+  answer: requiredTrimmedText(1, 20000),
+  confidence_before: confidence,
+  confidence_after: confidence.optional(),
+  same_session: z.boolean().optional(),
+  used_source: z.boolean().optional(),
+})
+export const clozeBodySchema = z.strictObject({
+  answers: z.array(z.string().trim().max(200)).min(1).max(100),
+  confidence_before: confidence,
+  confidence_after: confidence.optional(),
+  same_session: z.boolean().optional(),
+  used_source: z.boolean().optional(),
+})
