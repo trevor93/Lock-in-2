@@ -58,10 +58,13 @@ INSERT INTO settings (key, value) VALUES
 ('pace_mode', 'deep'), -- slow reader mode: units have no deadline, only sequence
 ('grace_minutes', '30'); -- minutes after block end before AUTO-CANCEL + penalty
 
--- THE TONGUE — starter armory (classic unreadable responses to begin the collection)
-INSERT OR IGNORE INTO responses (id, situation, trigger_q, response, why_works, source, category) VALUES
-  (1, 'Anyone pressing you to reveal your plans or opinion before you are ready', 'So what are you going to do about it?', 'I''ll let the result answer that.', 'Refuses to leak the plan, projects total confidence, and shifts attention to outcomes — nothing to attack, nothing to sabotage.', 'Sun Tzu — deception principle', 'mystery'),
-  (2, 'Someone tries to provoke you publicly with an insult dressed as a joke', 'Ha! Did that offend you?', 'You''d know if it did.', 'Calm, unbothered, slightly menacing — flips the frame: they are now wondering what your reaction WOULD look like.', 'Observed', 'power'),
-  (3, 'Being asked to commit on the spot to something you have not examined', 'Can I count on you for this?', 'Let me give you an answer worth counting on — tomorrow.', 'A refusal that sounds like a gift. Buys time, raises the perceived value of your yes, cannot be resented.', 'Negotiation practice', 'negotiation');
-INSERT OR IGNORE INTO response_srs (response_id, due_date) VALUES
-  (1, date('now')), (2, date('now')), (3, date('now'));
+-- THE TONGUE is now the RESPONSE LAB (Book 12.7). The three starter lines that
+-- used to be seeded here are deleted: they were movie-villain lines, the exact
+-- register Book 12.6 rejects with "if it reads like a reel, it is rejected", and
+-- their source was a book rather than the room. The armory is now built only from
+-- his own encounters, one intent at a time, through the Response Lab.
+--
+-- Databases seeded before this change keep their rows: migration
+-- 0027_response_lab_seed.sql ARCHIVES them (archived=1, the application's own
+-- delete path) rather than destroying them, because his drill history on those
+-- rows is real data and never deleting user data outranks tidiness.

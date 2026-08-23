@@ -23,6 +23,10 @@ import learningSources from '../migrations/0020_learning_sources_reading.sql?raw
 import masteryRubric from '../migrations/0021_mastery_rubric_calibration.sql?raw'
 import principlesGraph from '../migrations/0022_principles_graph.sql?raw'
 import immuneSeed from '../migrations/0023_immune_table_seed.sql?raw'
+import rhetoricTrack from '../migrations/0024_rhetoric_track.sql?raw'
+import rhetoricSeed from '../migrations/0025_rhetoric_seed.sql?raw'
+import figureRecords from '../migrations/0026_figure_records.sql?raw'
+import responseLabSeed from '../migrations/0027_response_lab_seed.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -216,4 +220,8 @@ beforeAll(async () => {
   await apply(masteryRubric)
   await apply(principlesGraph)
   await apply(immuneSeed)
+  await apply(rhetoricTrack)
+  await apply(rhetoricSeed)
+  await apply(figureRecords)
+  await apply(responseLabSeed)
 })
