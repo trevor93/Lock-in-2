@@ -76,6 +76,28 @@ describe('Book 12.7 — eleven intents, each an architecture', () => {
     ])
   })
 
+  it('gives each intent the exact architecture Book 12.7 specifies', async () => {
+    const rows = await env.DB.prepare(
+      `SELECT slug, architecture FROM response_intents ORDER BY sort_order`,
+    ).all<{ slug: string; architecture: string }>()
+    // Book 12.7 names the ordered moves for every intent. These are not paraphrases
+    // to be improved on: the stage names ARE the curriculum, and a renamed stage is a
+    // different drill.
+    expect(rows.results.map((r) => [r.slug, r.architecture])).toEqual([
+      ['boundary', 'observation -> standard -> consequence -> exit'],
+      ['pressure', 'acknowledge -> pause -> verify -> decide'],
+      ['provocation', 'name the issue -> refuse the bait -> return to the objective'],
+      ['loaded_question', 'reject the false premise -> state the corrected question -> answer'],
+      ['negotiation', 'interest -> constraint -> alternative -> conditional proposal'],
+      ['disagreement', 'shared point -> exact disagreement -> evidence -> next step'],
+      ['clarify', 'define the request -> define the term -> define the next action'],
+      ['repair', 'name the impact -> clarify the intent -> propose the next step'],
+      ['de_escalate', 'slow the pace -> name common ground -> ask one precise question'],
+      ['inspire', 'truthful stakes -> vivid specificity -> shared purpose'],
+      ['pause', 'delay the commitment -> do not disappear -> do not bluff'],
+    ])
+  })
+
   it('gives each intent an ordered architecture, not a line', async () => {
     const rows = await env.DB.prepare(
       `SELECT slug, architecture, when_to_use, logic FROM response_intents`,
