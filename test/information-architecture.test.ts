@@ -126,9 +126,14 @@ describe('B9 nine tabs collapse to five', () => {
 
   it('every old tab survives as a face of one of the five', () => {
     const seg = shellSrc.slice(shellSrc.indexOf('export const SEGMENTS'), shellSrc.indexOf('export function segments'))
-    for (const face of ['now', 'schedule', 'campaign', 'books', 'cards', 'maxims',
-      'tongue', 'debrief', 'stats', 'council', 'intel', 'settings']) {
+    // Book 12.7 renames the tongue face to `response` ("The Tongue is renamed Response
+    // Lab"), and Book 11 adds the Farnsworth programme as a third LEARN face. Nothing
+    // was removed: the same surfaces are reachable, one of them under its new name.
+    for (const face of ['now', 'schedule', 'campaign', 'books', 'rhetoric', 'cards', 'maxims',
+      'response', 'debrief', 'stats', 'council', 'intel', 'settings']) {
       expect(seg, `the ${face} surface must still be reachable`).toContain(`'${face}'`)
     }
+    // And the old name is gone from the control, so there is one name for it.
+    expect(seg, 'Book 12.7 renames it; the old face name must not survive').not.toContain(`'tongue'`)
   })
 })

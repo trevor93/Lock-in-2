@@ -351,7 +351,7 @@
       learn: "campaign",
       // campaign | books
       practice: "cards",
-      // cards | maxims | tongue
+      // cards | maxims | response  (Book 12.7: the Tongue is the Response Lab)
       review: "debrief",
       // debrief | stats
       more: "council"
@@ -392,8 +392,10 @@
     INTEL_OPEN: false,
     BRIDGE_CREDENTIAL: null,
     BRIDGE_CREDENTIALS: [],
-    // the tongue engine's working state
-    TG: {
+    // Response Lab working state. Book 12.7 renames the Tongue to the Response Lab and
+    // rebuilds it around architectures; RL.intents holds the eleven the server serves,
+    // so the interface never paraphrases the book's own logic.
+    RL: {
       view: "today",
       list: null,
       due: null,
@@ -407,7 +409,24 @@
       examReveal: false,
       examCorrect: 0,
       filter: "all",
-      search: ""
+      search: "",
+      // 12.7 build state: the eleven intents from the server, the intent being built,
+      // and the four layers. A build with a missing layer is refused by the route.
+      intents: null,
+      intentSlug: null,
+      build: null,
+      builds: null
+    },
+    // Book 11 — the Farnsworth programme's track state. TRACK is /api/rhetoric/track;
+    // CHAPTER is one chapter in the thirteen-slot format; METRICS carries each metric's
+    // own direction so no renderer can lose an inverted one.
+    RH: {
+      view: "track",
+      track: null,
+      today: null,
+      chapter: null,
+      chapterId: null,
+      metrics: null
     }
   };
   const DOMAINS = [
@@ -1088,7 +1107,7 @@
     addMaxim: () => addMaxim(),
     ownWords: (e, el, id) => ownWords(id)
   });
-  const TG_CATS = [
+  const RL_CATS = [
     ["deflection", "fa-shield-halved", "Deflection", "Dodge probes without lying"],
     ["wit", "fa-bolt", "Wit", "Sharp, memorable comebacks"],
     ["power", "fa-chess-king", "Power", "Frame control & authority"],
@@ -1100,33 +1119,61 @@
     ["negotiation", "fa-scale-balanced", "Negotiation", "Positioning & leverage"],
     ["silence", "fa-volume-xmark", "Silence", "When NOT to speak"]
   ];
-  const TG_CAT = Object.fromEntries(TG_CATS.map((c) => [c[0], c]));
-  const TG_MASTERY = {
+  const RL_CAT = Object.fromEntries(RL_CATS.map((c) => [c[0], c]));
+  const RL_MASTERY = {
     new: ["NEW", "#8b98ab", "fa-seedling", "Just captured — not yet in your head"],
     learning: ["LEARNING", "#60a5fa", "fa-book-open", "Forming — 3+ solid recalls"],
     memorized: ["MEMORIZED", "#f59e0b", "fa-brain", "In memory — survives a week"],
     ingrained: ["INGRAINED", "#d4af37", "fa-anchor", "Long-term — survives 3 weeks"],
     reflex: ["REFLEX", "#22c55e", "fa-bolt-lightning", "Yours forever — fires without thinking"]
   };
-  const TG_MODES = {
+  const RL_MODES = {
     recall: ["fa-comments", "SITUATION DRILL", "You are IN the situation. The question comes at you. Speak your line OUT LOUD, then reveal."],
     cloze: ["fa-puzzle-piece", "FILL THE GAPS", "Key words are redacted. Reconstruct the exact line, then reveal."],
     first_letters: ["fa-font", "FIRST LETTERS", "Only first letters remain. Rebuild the full response word-for-word."],
     reverse: ["fa-arrows-rotate", "REVERSE", "You see YOUR line. Name the situation & question it answers — proves deep binding."],
     delivery: ["fa-masks-theater", "DELIVERY REP", "Say it out loud 3× — vary tone: calm, amused, cold. Rate your fluency honestly."]
   };
-  async function loadTongue() {
-    const [stats, due] = await Promise.all([
+  const RL_LAYER_FIELDS = [
+    ["intent", "rl-l-intent", "LAYER 1 — INTENT", "What this response is for. Not what you want to say: what it must accomplish."],
+    ["truth", "rl-l-truth", "LAYER 2 — TRUTH", "What is actually true, stated to yourself first. If this layer is a lie the other three are decoration."],
+    ["structure", "rl-l-structure", "LAYER 3 — STRUCTURE", "The moves, in order, following the intent’s architecture above."],
+    ["delivery", "rl-l-delivery", "LAYER 4 — DELIVERY", "Cadence, emphasis, where to stop."]
+  ];
+  const RL_SCORE_FIELDS = [
+    ["appropriateness", "rl-a-appropriateness", "Appropriateness"],
+    ["clarity", "rl-a-clarity", "Clarity"],
+    ["proportionality", "rl-a-proportionality", "Proportionality"],
+    ["naturalness", "rl-a-naturalness", "Naturalness"],
+    ["objective_achieved", "rl-a-objective_achieved", "Objective achieved"],
+    ["escalation_risk", "rl-a-escalation_risk", "Escalation risk"]
+  ];
+  function rlInverted(slug) {
+    const list = S.RL.intents && S.RL.intents.assessment || [];
+    const found = list.find((a) => a.slug === slug);
+    return found ? !!found.inverted : slug === "escalation_risk";
+  }
+  async function loadResponseLab() {
+    const [stats, due, intents] = await Promise.all([
       axios.get("/api/tongue/stats?date=" + todayStr()).then((r) => r.data),
-      axios.get("/api/tongue/due?date=" + todayStr()).then((r) => r.data)
+      axios.get("/api/tongue/due?date=" + todayStr()).then((r) => r.data),
+      S.RL.intents ? Promise.resolve(S.RL.intents) : axios.get("/api/lab/response/intents").then((r) => r.data).catch(() => null)
     ]);
-    S.TG.stats = stats;
-    S.TG.due = due;
-    if (S.TG.view === "armory" || S.TG.list === null) {
-      S.TG.list = (await axios.get("/api/tongue?category=" + S.TG.filter + (S.TG.search ? "&q=" + encodeURIComponent(S.TG.search) : ""))).data;
+    S.RL.stats = stats;
+    S.RL.due = due;
+    if (intents) S.RL.intents = intents;
+    if (S.RL.view === "armory" || S.RL.list === null) {
+      S.RL.list = (await axios.get("/api/tongue?category=" + S.RL.filter + (S.RL.search ? "&q=" + encodeURIComponent(S.RL.search) : ""))).data;
+    }
+    if (S.RL.view === "build" && S.RL.builds === null) {
+      try {
+        S.RL.builds = (await axios.get("/api/lab/responses")).data;
+      } catch (_) {
+        S.RL.builds = { builds: [] };
+      }
     }
   }
-  function tgCloze(text) {
+  function rlCloze(text) {
     const words = text.split(/\s+/);
     return words.map((w, i) => {
       const core = w.replace(/[^A-Za-z']/g, "");
@@ -1135,58 +1182,176 @@
       return esc(w);
     }).join(" ");
   }
-  function tgFirstLetters(text) {
+  function rlFirstLetters(text) {
     return text.split(/\s+/).map((w) => {
       const m = w.match(/^([A-Za-z])(.*)$/);
       return m ? `<b class="text-gold">${m[1]}</b><span class="text-gray-600">${"·".repeat(Math.max(1, Math.min(m[2].replace(/[^A-Za-z']/g, "").length, 8)))}</span>` : esc(w);
     }).join(" ");
   }
-  function tgMasteryPill(m) {
-    const [label, color, ic] = TG_MASTERY[m] || TG_MASTERY.new;
+  function rlMasteryPill(m) {
+    const [label, color, ic] = RL_MASTERY[m] || RL_MASTERY.new;
     return `<span class="pill" style="background:${color}18;color:${color};border:1px solid ${color}55"><i class="fas ${ic} text-[8px]"></i>${label}</span>`;
   }
-  function tgCatPill(cat) {
-    const c = TG_CAT[cat] || TG_CAT.wit;
+  function rlCatPill(cat) {
+    const c = RL_CAT[cat] || RL_CAT.wit;
     return `<span class="pill bg-gray-800/80 text-gray-300 border border-line"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</span>`;
   }
-  function viewTongue() {
-    const s = S.TG.stats || {};
+  function viewResponseLab() {
+    const s = S.RL.stats || {};
     const mastered = (s.byMastery || []).filter((x) => ["memorized", "ingrained", "reflex"].includes(x.mastery)).reduce((a, x) => a + x.n, 0);
     const reflex = ((s.byMastery || []).find((x) => x.mastery === "reflex") || {}).n || 0;
     const pct = s.total ? Math.round(mastered / s.total * 100) : 0;
     return header() + `
-  <section id="tongue-section" class="stagger">
+  <section id="response-lab-section" class="stagger">
     <div class="card-lux p-4 mb-3 flex items-center gap-4">
       ${FX.ring(pct, 84, 7, mastered, "OF " + (s.total || 0))}
       <div class="flex-1">
-        <h2 class="font-engraved font-bold text-sm gold-text"><i class="fas fa-comment-dots mr-1"></i>THE TONGUE</h2>
-        <p class="text-[10px] text-gray-500 leading-relaxed mt-1">Every wise line you capture gets drilled into long-term memory until it fires as <b class="text-jade">reflex</b> — no scripts, no phone, just you.</p>
+        <h2 class="font-engraved font-bold text-sm gold-text"><i class="fas fa-diagram-project mr-1"></i>RESPONSE LAB</h2>
+        <p class="text-[10px] text-gray-500 leading-relaxed mt-1">Eleven intents, each an <b class="text-gold">architecture</b> rather than a line. Every response is built in four layers — intent, truth, structure, delivery — so the logic can be adapted instead of recited.</p>
         <p class="text-[10px] mt-1"><span class="text-gold font-bold">${reflex}</span> <span class="text-gray-500">at reflex ·</span> <span class="text-sky-400 font-bold">${s.captured7 || 0}</span> <span class="text-gray-500">captured this week</span></p>
       </div>
     </div>
 
     <div class="flex gap-1.5 mb-3">
-      ${[["today", "fa-crosshairs", "TRAIN"], ["capture", "fa-plus", "CAPTURE"], ["armory", "fa-box-archive", "ARMORY"], ["exam", "fa-graduation-cap", "EXAM"]].map(([v, ic, l]) => `
-        <button class="btn flex-1 py-2 text-[10px] font-bold tracking-wider ${S.TG.view === v ? "bg-gold/15 text-gold border border-gold/40" : "bg-panel text-gray-400 border border-line"}"
-          data-act="tgView" data-args="${actArgs([v])}"><i class="fas ${ic} mr-1"></i>${l}</button>`).join("")}
+      ${[["build", "fa-diagram-project", "BUILD"], ["today", "fa-crosshairs", "TRAIN"], ["capture", "fa-plus", "CAPTURE"], ["armory", "fa-box-archive", "ARMORY"], ["exam", "fa-graduation-cap", "EXAM"]].map(([v, ic, l]) => `
+        <button class="btn flex-1 py-2 text-[9px] font-bold tracking-wider ${S.RL.view === v ? "bg-gold/15 text-gold border border-gold/40" : "bg-panel text-gray-400 border border-line"}"
+          data-act="rlView" data-args="${actArgs([v])}"><i class="fas ${ic} mr-1"></i>${l}</button>`).join("")}
     </div>
 
-    ${S.TG.view === "today" ? tgToday() : S.TG.view === "capture" ? tgCapture() : S.TG.view === "armory" ? tgArmory() : tgExamView()}
+    ${S.RL.view === "build" ? rlBuild() : S.RL.view === "today" ? rlToday() : S.RL.view === "capture" ? rlCapture() : S.RL.view === "armory" ? rlArmory() : rlExamView()}
   </section>`;
   }
-  async function tgRefresh() {
+  function rlBuild() {
+    const data = S.RL.intents;
+    if (!data) return `
+    <div class="card p-4 text-center">
+      <i class="fas fa-plug-circle-xmark text-2xl text-gray-600 mb-2"></i>
+      <p class="text-xs text-gray-500">The eleven intents could not be loaded. Nothing is shown from memory — the architectures and their logic live on the server, and a paraphrase would be worse than a blank.</p>
+      <button class="btn mt-3 px-4 py-2 text-[10px] bg-panel border border-line text-gray-400 font-bold" data-act="rlRefresh">RETRY</button>
+    </div>`;
+    const intents = data.intents || [];
+    const chosen = intents.find((i) => i.slug === S.RL.intentSlug) || null;
+    return `
+  <div class="card-lux p-4 mb-3">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-1">1 · THE INTENT</h3>
+    <p class="text-[10px] text-gray-500 mb-3 leading-relaxed">${esc(data.neverTheLineAlone || "")}</p>
+    <div class="flex flex-wrap gap-1">
+      ${intents.map((i) => `
+        <button class="pill ${S.RL.intentSlug === i.slug ? "bg-gold/15 text-gold border border-gold/40" : "bg-gray-900 text-gray-400 border border-line"}"
+          data-act="rlIntent" data-args="${actArgs([i.slug])}">${esc(i.title)}</button>`).join("")}
+    </div>
+  </div>
+  ${!chosen ? `
+  <div class="card p-4 text-center">
+    <i class="fas fa-hand-pointer text-2xl text-gray-600 mb-2"></i>
+    <p class="text-xs text-gray-500">Choose the intent first. The architecture decides the structure — the reverse is how a response ends up well-worded and wrong.</p>
+  </div>` : `
+  <div class="card-lux p-4 mb-3" style="border-color:rgba(212,175,55,.4)">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gold mb-2">2 · THE ARCHITECTURE — ${esc(chosen.title).toUpperCase()}</h3>
+    <p class="text-sm text-white font-semibold leading-relaxed mb-2">${esc(chosen.architecture || "")}</p>
+    <p class="text-[10px] text-sky-300 leading-relaxed mb-2"><i class="fas fa-clock text-[9px] mr-1"></i>${esc(chosen.when_to_use || "")}</p>
+    <div class="p-3 rounded-lg bg-black/30 border border-line">
+      <p class="text-[9px] font-bold tracking-widest text-jade mb-1">WHY IT IS IN THAT ORDER</p>
+      <p class="text-[11px] text-gray-400 leading-relaxed">${esc(chosen.logic || "")}</p>
+    </div>
+  </div>
+
+  <div class="card-lux p-4 mb-3">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-3">3 · THE FOUR LAYERS — ALL FOUR, OR IT IS A BARE LINE</h3>
+    <label class="text-[10px] font-bold tracking-wider text-gray-400">THE SITUATION <span class="text-red-400">*</span></label>
+    <textarea id="rl-b-sit" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="Who, where, what is actually at stake."></textarea>
+    ${RL_LAYER_FIELDS.map(([slug, fid, label, asks]) => `
+      <label class="text-[10px] font-bold tracking-wider text-gold">${label} <span class="text-red-400">*</span></label>
+      <p class="text-[9px] text-gray-600 mb-1 leading-relaxed">${asks}</p>
+      <textarea id="${fid}" rows="${slug === "structure" ? "3" : "2"}" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mb-3"></textarea>`).join("")}
+  </div>
+
+  <div class="card p-4 mb-3">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-1">4 · ASSESSMENT — SIX CRITERIA (0–3, OPTIONAL)</h3>
+    <p class="text-[10px] text-amber-400 leading-relaxed mb-3"><i class="fas fa-triangle-exclamation text-[9px] mr-1"></i>Escalation risk is the one criterion where a higher score is a <b>worse</b> result. It is marked as such below and is never counted toward anything that reads as progress.</p>
+    ${RL_SCORE_FIELDS.map(([slug, fid, label]) => {
+      const inv = rlInverted(slug);
+      return `
+      <div class="flex items-center gap-2 mb-2">
+        <label class="text-[11px] flex-1 ${inv ? "text-amber-300" : "text-gray-300"}">${label}${inv ? ' <span class="text-[9px] text-amber-500">(lower is better)</span>' : ""}</label>
+        <select id="${fid}" class="bg-black/30 border ${inv ? "border-amber-800/60" : "border-line"} rounded-lg px-2 py-1.5 text-xs">
+          <option value="">—</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option>
+        </select>
+      </div>`;
+    }).join("")}
+  </div>
+
+  <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="rlSaveBuild"><i class="fas fa-layer-group mr-1"></i> RECORD THE BUILD</button>
+  <p class="text-[9px] text-gray-600 mt-2 text-center">A build missing any of the four layers is refused, and the refusal names which layer is missing.</p>
+
+  ${rlBuildHistory()}`}`;
+  }
+  function rlBuildHistory() {
+    const list = S.RL.builds && S.RL.builds.builds || [];
+    if (!list.length) return "";
+    return `
+  <div class="card p-4 mt-3">
+    <h4 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2">RECORDED BUILDS</h4>
+    ${list.slice(0, 12).map((b) => `
+    <article class="py-2 border-b border-line/50 last:border-0">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="pill bg-gold/10 text-gold border border-gold/40">${esc(b.intent_slug)}</span>
+        <span class="text-[9px] text-gray-600 ml-auto">${esc(b.occurred_on || "")}</span>
+      </div>
+      <p class="text-[10px] text-gray-500 leading-relaxed mb-1">${esc(b.situation || "")}</p>
+      <p class="text-[10px] text-sky-300 leading-relaxed mb-1"><b>STRUCTURE</b> · ${esc(b.layer_structure || "")}</p>
+      <p class="text-[9px] text-gray-600 leading-relaxed">${esc(b.architecture || "")}</p>
+      ${b.a_escalation_risk === null || b.a_escalation_risk === void 0 ? "" : `
+      <p class="text-[9px] text-amber-400 mt-1">escalation risk ${b.a_escalation_risk} — higher is worse</p>`}
+    </article>`).join("")}
+  </div>`;
+  }
+  async function rlSaveBuild() {
+    if (!S.RL.intentSlug) {
+      FX.toast("Choose the intent first.", "bad");
+      return;
+    }
+    const v = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value : "";
+    };
+    const body = {
+      intent_slug: S.RL.intentSlug,
+      situation: v("rl-b-sit"),
+      layer_intent: v("rl-l-intent"),
+      layer_truth: v("rl-l-truth"),
+      layer_structure: v("rl-l-structure"),
+      layer_delivery: v("rl-l-delivery"),
+      occurred_on: todayStr()
+    };
+    for (const pair of RL_SCORE_FIELDS) {
+      const raw = v(pair[1]);
+      if (raw !== "") body["a_" + pair[0]] = Number(raw);
+    }
     try {
-      await loadTongue();
+      await api("post", "/api/lab/response", body);
+      FX.success();
+      FX.toast("BUILD RECORDED — the architecture, not the line.", "gold");
+      S.RL.builds = null;
+      await loadResponseLab();
+      render();
+    } catch (e) {
+      FX.fail();
+    }
+  }
+  async function rlRefresh() {
+    try {
+      await loadResponseLab();
     } catch (_) {
     }
     render();
   }
-  function tgToday() {
-    const s = S.TG.stats || {}, due = S.TG.due || [];
-    if (S.TG.drill) return tgDrillCard();
+  function rlToday() {
+    const s = S.RL.stats || {}, due = S.RL.due || [];
+    if (S.RL.drill) return rlDrillCard();
     const ladder = ["new", "learning", "memorized", "ingrained", "reflex"].map((m) => {
       const n = ((s.byMastery || []).find((x) => x.mastery === m) || {}).n || 0;
-      const [label, color, ic] = TG_MASTERY[m];
+      const [label, color, ic] = RL_MASTERY[m];
       return `<div class="text-center flex-1">
       <i class="fas ${ic} text-sm" style="color:${color}"></i>
       <p class="font-disp font-bold text-base" style="color:${color}">${n}</p>
@@ -1195,7 +1360,7 @@
     }).join('<div class="text-gray-700 self-center">→</div>');
     return `
     ${due.length ? `
-    <button class="btn w-full p-4 mb-3 bg-gold/10 border border-gold/40 text-gold font-bold text-sm" data-act="tgStartDrill">
+    <button class="btn w-full p-4 mb-3 bg-gold/10 border border-gold/40 text-gold font-bold text-sm" data-act="rlStartDrill">
       <i class="fas fa-dumbbell mr-1"></i> ${due.length} RESPONSE${due.length > 1 ? "S" : ""} DUE — DRILL THE ARMORY NOW
     </button>` : `
     <div class="card p-4 mb-3 text-center">
@@ -1226,7 +1391,7 @@
     </div>
 
     ${!s.weekExamDone && s.total >= 3 ? `
-    <button class="btn w-full p-3 mb-3 bg-red-950/40 border border-red-800/50 text-red-300 text-xs font-bold" data-act="tgExamView">
+    <button class="btn w-full p-3 mb-3 bg-red-950/40 border border-red-800/50 text-red-300 text-xs font-bold" data-act="rlExamView">
       <i class="fas fa-graduation-cap mr-1"></i> WEEKLY EXAM NOT TAKEN — FACE IT (pass ≥80% or take the flag)
     </button>` : ""}
 
@@ -1235,76 +1400,76 @@
       <p class="text-[11px] text-gray-400 leading-relaxed">Wherever you are — office, movie, podcast, street — when someone answers a question in a way that makes them <b class="text-gold">unreadable, respected, clever</b>: pull out the phone. Capture the <b class="text-white">situation</b>, the exact <b class="text-white">question</b>, and the exact <b class="text-white">response</b>. Then this engine makes it permanently yours.</p>
     </div>`;
   }
-  function tgCapture() {
+  function rlCapture() {
     return `
   <div class="card-lux p-4">
     <h3 class="font-engraved font-bold text-sm gold-text mb-3"><i class="fas fa-crosshairs mr-1"></i>CAPTURE THE LINE — EXACTLY AS HEARD</h3>
     <label class="text-[10px] font-bold tracking-wider text-gray-400">THE SITUATION <span class="text-red-400">*</span></label>
-    <textarea id="tg-sit" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="Where/when. Who was present. What was at stake. e.g. 'Team meeting — boss asked in front of everyone…'"></textarea>
+    <textarea id="rl-sit" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="Where/when. Who was present. What was at stake. e.g. 'Team meeting — boss asked in front of everyone…'"></textarea>
     <label class="text-[10px] font-bold tracking-wider text-gray-400">THE QUESTION / TRIGGER <span class="text-red-400">*</span></label>
-    <textarea id="tg-q" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="The exact question or moment. e.g. 'So what do YOU think about the new policy?'"></textarea>
+    <textarea id="rl-q" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="The exact question or moment. e.g. 'So what do YOU think about the new policy?'"></textarea>
     <label class="text-[10px] font-bold tracking-wider text-gold">THE SMART WISE UNREADABLE RESPONSE <span class="text-red-400">*</span></label>
-    <textarea id="tg-r" rows="3" class="w-full bg-black/30 border border-gold/40 rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="Word-for-word. The exact line that made them untouchable."></textarea>
+    <textarea id="rl-r" rows="3" class="w-full bg-black/30 border border-gold/40 rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="Word-for-word. The exact line that made them untouchable."></textarea>
     <label class="text-[10px] font-bold tracking-wider text-gray-400">WHY IT WORKS (what it signals / hides)</label>
-    <textarea id="tg-why" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="e.g. 'Answers without revealing position; flips pressure back; sounds generous while conceding nothing.'"></textarea>
+    <textarea id="rl-why" rows="2" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1 mb-3" placeholder="e.g. 'Answers without revealing position; flips pressure back; sounds generous while conceding nothing.'"></textarea>
     <div class="flex gap-2 mb-3">
       <div class="flex-1">
-        <label class="text-[10px] font-bold tracking-wider text-gray-400">SOURCE</label>
-        <input id="tg-src" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1" placeholder="Movie / podcast / person / book">
+        <label class="text-[10px] font-bold tracking-wider text-gray-400">SOURCE — THE ROOM</label>
+        <input id="rl-src" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1" placeholder="Who said it, where, when. e.g. 'Standup, 14 Aug, delivery lead'">
       </div>
       <div class="flex-1">
         <label class="text-[10px] font-bold tracking-wider text-gray-400">CATEGORY</label>
-        <select id="tg-cat" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1">
-          ${TG_CATS.map((c) => `<option value="${c[0]}">${c[2]} — ${c[3]}</option>`).join("")}
+        <select id="rl-cat" class="w-full bg-black/30 border border-line rounded-lg p-2.5 text-xs mt-1">
+          ${RL_CATS.map((c) => `<option value="${c[0]}">${c[2]} — ${c[3]}</option>`).join("")}
         </select>
       </div>
     </div>
-    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgSave"><i class="fas fa-vault mr-1"></i> LOCK IT IN THE ARMORY (+3 pts)</button>
+    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="rlSave"><i class="fas fa-vault mr-1"></i> LOCK IT IN THE ARMORY (+3 pts)</button>
     <p class="text-[9px] text-gray-600 mt-2 text-center">It enters the drill queue immediately — first drill today.</p>
   </div>`;
   }
-  async function tgSave() {
+  async function rlSave() {
     const v = (id) => document.getElementById(id).value;
     try {
-      await api("post", "/api/tongue", { situation: v("tg-sit"), trigger_q: v("tg-q"), response: v("tg-r"), why_works: v("tg-why"), source: v("tg-src"), category: v("tg-cat") });
+      await api("post", "/api/tongue", { situation: v("rl-sit"), trigger_q: v("rl-q"), response: v("rl-r"), why_works: v("rl-why"), source: v("rl-src"), category: v("rl-cat") });
       FX.success();
       FX.toast("CAPTURED. The line is in the armory — now make it yours.", "gold");
-      S.TG.list = null;
-      await loadTongue();
-      S.TG.view = "today";
+      S.RL.list = null;
+      await loadResponseLab();
+      S.RL.view = "today";
       render();
     } catch (e) {
       FX.fail();
     }
   }
-  function tgStartDrill() {
-    S.TG.drill = S.TG.due.slice();
-    S.TG.drillIdx = 0;
-    S.TG.drillReveal = false;
-    S.TG.drillSession = { done: 0, fluent: 0 };
+  function rlStartDrill() {
+    S.RL.drill = S.RL.due.slice();
+    S.RL.drillIdx = 0;
+    S.RL.drillReveal = false;
+    S.RL.drillSession = { done: 0, fluent: 0 };
     render();
   }
-  function tgDrillCard() {
-    const list = S.TG.drill;
-    if (S.TG.drillIdx >= list.length) {
-      const s = S.TG.drillSession;
+  function rlDrillCard() {
+    const list = S.RL.drill;
+    if (S.RL.drillIdx >= list.length) {
+      const s = S.RL.drillSession;
       setTimeout(() => {
         if (s.done > 0 && s.fluent / s.done >= 0.7) FX.confetti({ count: 90 });
       }, 200);
-      S.TG.drill = null;
+      S.RL.drill = null;
       return `<div class="card-lux p-6 text-center mb-3">
       <i class="fas fa-medal text-3xl gold-text mb-2"></i>
       <h3 class="font-engraved font-bold text-lg gold-text">DRILL SESSION COMPLETE</h3>
       <p class="text-xs text-gray-400 mt-1">${s.done} lines attacked · ${s.fluent} fluent</p>
       <p class="text-[10px] text-gray-500 mt-2 leading-relaxed">Every honest grade tightens the schedule. Lines you almost lost come back tomorrow; lines you own retreat for weeks — that is long-term memory being built.</p>
-      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgRefresh">BACK TO TRAINING GROUND</button>
+      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="rlRefresh">BACK TO TRAINING GROUND</button>
     </div>`;
     }
-    const r = list[S.TG.drillIdx];
+    const r = list[S.RL.drillIdx];
     const mode = r.drill_mode || "recall";
-    const [mIc, mLabel, mHint] = TG_MODES[mode];
+    const [mIc, mLabel, mHint] = RL_MODES[mode];
     let challenge = "";
-    if (!S.TG.drillReveal) {
+    if (!S.RL.drillReveal) {
       if (mode === "recall") challenge = `
       <div class="p-3 rounded-lg bg-black/30 border border-line mb-2">
         <p class="text-[9px] font-bold tracking-widest text-gray-500 mb-1">SITUATION</p>
@@ -1321,7 +1486,7 @@
       </div>
       <div class="p-3 rounded-lg bg-black/30 border border-gold/30 mb-2">
         <p class="text-[9px] font-bold tracking-widest text-gold mb-1">YOUR LINE — GAPS REDACTED</p>
-        <p class="text-sm leading-relaxed text-gray-300">${tgCloze(r.response)}</p>
+        <p class="text-sm leading-relaxed text-gray-300">${rlCloze(r.response)}</p>
       </div>`;
       else if (mode === "first_letters") challenge = `
       <div class="p-3 rounded-lg bg-black/30 border border-line mb-2">
@@ -1329,7 +1494,7 @@
       </div>
       <div class="p-3 rounded-lg bg-black/30 border border-gold/30 mb-2">
         <p class="text-[9px] font-bold tracking-widest text-gold mb-1">FIRST LETTERS ONLY — REBUILD IT WORD-FOR-WORD</p>
-        <p class="text-sm leading-loose">${tgFirstLetters(r.response)}</p>
+        <p class="text-sm leading-loose">${rlFirstLetters(r.response)}</p>
       </div>`;
       else if (mode === "reverse") challenge = `
       <div class="p-3 rounded-lg bg-black/30 border border-gold/30 mb-2">
@@ -1370,28 +1535,28 @@
   <div class="card-lux p-4 mb-3">
     <div class="flex items-center justify-between mb-2">
       <span class="pill bg-gold/10 text-gold border border-gold/40"><i class="fas ${mIc} text-[8px]"></i>${mLabel}</span>
-      <span class="text-[10px] text-gray-500 font-bold">${S.TG.drillIdx + 1} / ${list.length}</span>
+      <span class="text-[10px] text-gray-500 font-bold">${S.RL.drillIdx + 1} / ${list.length}</span>
     </div>
-    <div class="prog mb-3"><div style="width:${Math.round(S.TG.drillIdx / list.length * 100)}%"></div></div>
-    <div class="flex gap-1.5 mb-3">${tgMasteryPill(r.mastery)}${tgCatPill(r.category)}${r.source ? `<span class="pill bg-gray-900 text-gray-500 border border-line">${esc(r.source).slice(0, 18)}</span>` : ""}</div>
+    <div class="prog mb-3"><div style="width:${Math.round(S.RL.drillIdx / list.length * 100)}%"></div></div>
+    <div class="flex gap-1.5 mb-3">${rlMasteryPill(r.mastery)}${rlCatPill(r.category)}${r.source ? `<span class="pill bg-gray-900 text-gray-500 border border-line">${esc(r.source).slice(0, 18)}</span>` : ""}</div>
     <p class="text-[10px] text-gray-500 mb-3 leading-relaxed"><i class="fas fa-circle-info mr-1"></i>${mHint}</p>
     ${challenge}
-    ${!S.TG.drillReveal ? `
-    <button class="btn btn-gold w-full p-3 mt-2 text-sm font-bold" data-act="tgDrillReveal"><i class="fas fa-eye mr-1"></i> REVEAL THE LINE</button>` : `
+    ${!S.RL.drillReveal ? `
+    <button class="btn btn-gold w-full p-3 mt-2 text-sm font-bold" data-act="rlDrillReveal"><i class="fas fa-eye mr-1"></i> REVEAL THE LINE</button>` : `
     <p class="text-[10px] font-bold tracking-widest text-gray-400 text-center mt-3 mb-2">HONEST GRADE — HOW DID IT FIRE?</p>
     <div class="grid grid-cols-4 gap-1.5">
-      <button class="btn p-2.5 bg-red-950/60 border border-red-800/60 text-red-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id, 0, mode])}">BLANK<br><span class="text-[8px] opacity-70">reset</span></button>
-      <button class="btn p-2.5 bg-amber-950/60 border border-amber-800/60 text-amber-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id, 1, mode])}">SHAKY<br><span class="text-[8px] opacity-70">soon</span></button>
-      <button class="btn p-2.5 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id, 2, mode])}">SOLID<br><span class="text-[8px] opacity-70">later</span></button>
-      <button class="btn p-2.5 bg-gold/15 border border-gold/50 text-gold text-[10px] font-bold" data-act="tgGrade" data-args="${actArgs([r.id, 3, mode])}">FLUENT<br><span class="text-[8px] opacity-70">far</span></button>
+      <button class="btn p-2.5 bg-red-950/60 border border-red-800/60 text-red-300 text-[10px] font-bold" data-act="rlGrade" data-args="${actArgs([r.id, 0, mode])}">BLANK<br><span class="text-[8px] opacity-70">reset</span></button>
+      <button class="btn p-2.5 bg-amber-950/60 border border-amber-800/60 text-amber-300 text-[10px] font-bold" data-act="rlGrade" data-args="${actArgs([r.id, 1, mode])}">SHAKY<br><span class="text-[8px] opacity-70">soon</span></button>
+      <button class="btn p-2.5 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px] font-bold" data-act="rlGrade" data-args="${actArgs([r.id, 2, mode])}">SOLID<br><span class="text-[8px] opacity-70">later</span></button>
+      <button class="btn p-2.5 bg-gold/15 border border-gold/50 text-gold text-[10px] font-bold" data-act="rlGrade" data-args="${actArgs([r.id, 3, mode])}">FLUENT<br><span class="text-[8px] opacity-70">far</span></button>
     </div>`}
   </div>`;
   }
-  async function tgGrade(id, grade, mode) {
+  async function rlGrade(id, grade, mode) {
     try {
       const res = await api("post", `/api/tongue/${id}/review`, { grade, mode, date: todayStr() });
-      S.TG.drillSession.done++;
-      if (grade === 3) S.TG.drillSession.fluent++;
+      S.RL.drillSession.done++;
+      if (grade === 3) S.RL.drillSession.fluent++;
       if (grade === 0) FX.fail();
       else if (grade === 3) FX.success();
       else FX.tap();
@@ -1401,26 +1566,26 @@
       }
     } catch (e) {
     }
-    S.TG.drillIdx++;
-    S.TG.drillReveal = false;
+    S.RL.drillIdx++;
+    S.RL.drillReveal = false;
     render();
   }
-  function tgArmory() {
-    const list = S.TG.list || [];
+  function rlArmory() {
+    const list = S.RL.list || [];
     return `
   <div class="flex gap-1.5 mb-2">
-    <input id="tg-search" class="flex-1 bg-black/30 border border-line rounded-lg px-3 py-2 text-xs" placeholder="Search situations, questions, lines…" value="${esc(S.TG.search)}"
-      data-act-change="tgSearch">
-    <button class="btn px-3 bg-panel border border-line text-gray-400 text-xs" data-act="tgSearchClear"><i class="fas fa-xmark"></i></button>
+    <input id="rl-search" class="flex-1 bg-black/30 border border-line rounded-lg px-3 py-2 text-xs" placeholder="Search situations, questions, lines…" value="${esc(S.RL.search)}"
+      data-act-change="rlSearch">
+    <button class="btn px-3 bg-panel border border-line text-gray-400 text-xs" data-act="rlSearchClear"><i class="fas fa-xmark"></i></button>
   </div>
   <div class="flex gap-1 mb-3 overflow-x-auto pb-1" style="scrollbar-width:none">
-    <button class="pill shrink-0 ${S.TG.filter === "all" ? "bg-gold/15 text-gold border border-gold/40" : "bg-gray-900 text-gray-400 border border-line"}" data-act="tgFilter" data-args="${actArgs(["all"])}">ALL</button>
-    ${TG_CATS.map((c) => `<button class="pill shrink-0 ${S.TG.filter === c[0] ? "bg-gold/15 text-gold border border-gold/40" : "bg-gray-900 text-gray-400 border border-line"}" data-act="tgFilter" data-args="${actArgs([c[0]])}"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join("")}
+    <button class="pill shrink-0 ${S.RL.filter === "all" ? "bg-gold/15 text-gold border border-gold/40" : "bg-gray-900 text-gray-400 border border-line"}" data-act="rlFilter" data-args="${actArgs(["all"])}">ALL</button>
+    ${RL_CATS.map((c) => `<button class="pill shrink-0 ${S.RL.filter === c[0] ? "bg-gold/15 text-gold border border-gold/40" : "bg-gray-900 text-gray-400 border border-line"}" data-act="rlFilter" data-args="${actArgs([c[0]])}"><i class="fas ${c[1]} text-[8px]"></i>${c[2].toUpperCase()}</button>`).join("")}
   </div>
-  ${list.length === 0 ? `<div class="card p-5 text-center"><i class="fas fa-box-open text-2xl text-gray-600 mb-2"></i><p class="text-xs text-gray-500">Armory ${S.TG.search || S.TG.filter !== "all" ? "has no match" : "is empty"}. ${!S.TG.search && S.TG.filter === "all" ? "Capture your first wise line — the hunt starts today." : ""}</p></div>` : ""}
+  ${list.length === 0 ? `<div class="card p-5 text-center"><i class="fas fa-box-open text-2xl text-gray-600 mb-2"></i><p class="text-xs text-gray-500">Armory ${S.RL.search || S.RL.filter !== "all" ? "has no match" : "is empty"}. ${!S.RL.search && S.RL.filter === "all" ? "Capture your first wise line — the hunt starts today." : ""}</p></div>` : ""}
   ${list.map((r) => `
   <article class="card p-3 mb-2">
-    <div class="flex gap-1.5 mb-1.5 flex-wrap">${tgMasteryPill(r.mastery)}${tgCatPill(r.category)}
+    <div class="flex gap-1.5 mb-1.5 flex-wrap">${rlMasteryPill(r.mastery)}${rlCatPill(r.category)}
       <span class="text-[9px] text-gray-600 ml-auto self-center">${r.correct_reviews || 0}✓ · ${r.lapses || 0}✗ · every ${r.interval_days || 0}d</span></div>
     <p class="text-[10px] text-gray-500 leading-relaxed mb-1"><i class="fas fa-location-dot text-[8px] mr-1"></i>${esc(r.situation)}</p>
     <p class="text-[11px] text-sky-300 mb-1">“${esc(r.trigger_q)}”</p>
@@ -1428,26 +1593,26 @@
     ${r.why_works ? `<p class="text-[10px] text-gray-500 mt-1 italic">${esc(r.why_works)}</p>` : ""}
     <div class="flex gap-2 mt-2 items-center">
       ${r.source ? `<span class="text-[9px] text-gray-600"><i class="fas fa-film text-[8px] mr-0.5"></i>${esc(r.source)}</span>` : ""}
-      <button class="btn ml-auto px-2.5 py-1 text-[10px] bg-gray-900 text-gray-500 border border-line" data-act="tgDelete" data-args="${actArgs([r.id])}"><i class="fas fa-trash text-[9px]"></i></button>
+      <button class="btn ml-auto px-2.5 py-1 text-[10px] bg-gray-900 text-gray-500 border border-line" data-act="rlDelete" data-args="${actArgs([r.id])}"><i class="fas fa-trash text-[9px]"></i></button>
     </div>
   </article>`).join("")}`;
   }
-  async function tgDelete(id) {
+  async function rlDelete(id) {
     if (!confirm("Retire this line from the armory? Its training history is kept.")) return;
     await api("delete", "/api/tongue/" + id);
     FX.tap();
-    S.TG.list = null;
-    await loadTongue();
+    S.RL.list = null;
+    await loadResponseLab();
     render();
   }
-  function tgExamView() {
-    const s = S.TG.stats || {};
-    if (!S.TG.exam) {
+  function rlExamView() {
+    const s = S.RL.stats || {};
+    if (!S.RL.exam) {
       return `
     <div class="card-lux p-4 mb-3">
       <h3 class="font-engraved font-bold text-sm gold-text mb-2"><i class="fas fa-graduation-cap mr-1"></i>THE WEEKLY TONGUE EXAM</h3>
       <p class="text-[11px] text-gray-400 leading-relaxed mb-2">10 random lines from your armory. For each: the situation and question appear — <b class="text-white">speak your exact line out loud</b>, reveal, and judge yourself with ruthless honesty. <b class="text-gold">Pass ≥ 80%</b>. Fail = honesty flag + −10 pts. This is where you prove the armory lives in your head, not in the app.</p>
-      ${s.total < 3 ? `<p class="text-[10px] text-amber-400"><i class="fas fa-triangle-exclamation mr-1"></i>You need at least 3 trained lines before an exam makes sense. Capture and drill first.</p>` : `<button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgStartExam"><i class="fas fa-swords mr-1"></i> BEGIN THE EXAM</button>`}
+      ${s.total < 3 ? `<p class="text-[10px] text-amber-400"><i class="fas fa-triangle-exclamation mr-1"></i>You need at least 3 trained lines before an exam makes sense. Capture and drill first.</p>` : `<button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="rlStartExam"><i class="fas fa-swords mr-1"></i> BEGIN THE EXAM</button>`}
     </div>
     ${s.exams && s.exams.length ? `
     <div class="card p-3">
@@ -1461,26 +1626,26 @@
         </div>`).join("")}
     </div>` : ""}`;
     }
-    const list = S.TG.exam;
-    if (S.TG.examIdx >= list.length) {
-      const pct = Math.round(S.TG.examCorrect / list.length * 100);
+    const list = S.RL.exam;
+    if (S.RL.examIdx >= list.length) {
+      const pct = Math.round(S.RL.examCorrect / list.length * 100);
       return `<div class="card-lux p-6 text-center">
       <i class="fas ${pct >= 80 ? "fa-trophy gold-text" : "fa-skull text-red-400"} text-3xl mb-2"></i>
       <h3 class="font-engraved font-bold text-xl ${pct >= 80 ? "gold-text" : "text-red-400"}">${pct >= 80 ? "EXAM PASSED" : "EXAM FAILED"}</h3>
       <p class="font-disp font-bold text-3xl mt-1 ${pct >= 80 ? "text-jade" : "text-red-400"}">${pct}%</p>
-      <p class="text-xs text-gray-400 mt-1">${S.TG.examCorrect} / ${list.length} lines fired correctly</p>
+      <p class="text-xs text-gray-400 mt-1">${S.RL.examCorrect} / ${list.length} lines fired correctly</p>
       <p class="text-[10px] text-gray-500 mt-2">${pct >= 80 ? "+25 pts. The armory is in your head." : "−10 pts + flag filed. Drill the failures and retake."}</p>
-      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="tgFinishExam" data-args="${actArgs([list.length])}">SEAL THE RECORD</button>
+      <button class="btn btn-gold mt-3 px-6 py-2 text-xs font-bold" data-act="rlFinishExam" data-args="${actArgs([list.length])}">SEAL THE RECORD</button>
     </div>`;
     }
-    const q = list[S.TG.examIdx];
+    const q = list[S.RL.examIdx];
     return `
   <div class="card-lux p-4">
     <div class="flex items-center justify-between mb-2">
       <span class="pill pill-blood"><i class="fas fa-graduation-cap text-[8px]"></i>EXAM</span>
-      <span class="text-[10px] text-gray-500 font-bold">${S.TG.examIdx + 1} / ${list.length}</span>
+      <span class="text-[10px] text-gray-500 font-bold">${S.RL.examIdx + 1} / ${list.length}</span>
     </div>
-    <div class="prog mb-3"><div style="width:${Math.round(S.TG.examIdx / list.length * 100)}%"></div></div>
+    <div class="prog mb-3"><div style="width:${Math.round(S.RL.examIdx / list.length * 100)}%"></div></div>
     <div class="p-3 rounded-lg bg-black/30 border border-line mb-2">
       <p class="text-[9px] font-bold tracking-widest text-gray-500 mb-1">SITUATION</p>
       <p class="text-xs text-gray-300">${esc(q.situation)}</p>
@@ -1489,96 +1654,384 @@
       <p class="text-[9px] font-bold tracking-widest text-sky-500 mb-1">THEY ASK YOU</p>
       <p class="text-sm text-white font-semibold">“${esc(q.trigger_q)}”</p>
     </div>
-    ${!S.TG.examReveal ? `
+    ${!S.RL.examReveal ? `
     <p class="text-[10px] text-gold text-center font-bold tracking-wider my-3">⟡ SPEAK YOUR EXACT LINE OUT LOUD ⟡</p>
-    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="tgExamReveal"><i class="fas fa-eye mr-1"></i> REVEAL & JUDGE</button>` : `
+    <button class="btn btn-gold w-full p-3 text-sm font-bold" data-act="rlExamReveal"><i class="fas fa-eye mr-1"></i> REVEAL & JUDGE</button>` : `
     <div class="p-3 rounded-lg border mb-3" style="background:rgba(212,175,55,.07);border-color:rgba(212,175,55,.4)">
       <p class="text-[9px] font-bold tracking-widest text-gold mb-1">THE EXACT LINE</p>
       <p class="text-sm text-white font-semibold leading-relaxed">“${esc(q.response)}”</p>
     </div>
     <p class="text-[10px] font-bold tracking-widest text-gray-400 text-center mb-2">DID YOU FIRE IT WORD-FOR-WORD? BE RUTHLESS.</p>
     <div class="grid grid-cols-2 gap-2">
-      <button class="btn p-3 bg-red-950/60 border border-red-800/60 text-red-300 text-xs font-bold" data-act="tgExamAnswer" data-args="${actArgs([false])}"><i class="fas fa-xmark mr-1"></i>MISSED IT</button>
-      <button class="btn p-3 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-xs font-bold" data-act="tgExamAnswer" data-args="${actArgs([true])}"><i class="fas fa-check mr-1"></i>NAILED IT</button>
+      <button class="btn p-3 bg-red-950/60 border border-red-800/60 text-red-300 text-xs font-bold" data-act="rlExamAnswer" data-args="${actArgs([false])}"><i class="fas fa-xmark mr-1"></i>MISSED IT</button>
+      <button class="btn p-3 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-xs font-bold" data-act="rlExamAnswer" data-args="${actArgs([true])}"><i class="fas fa-check mr-1"></i>NAILED IT</button>
     </div>`}
   </div>`;
   }
-  async function tgStartExam() {
+  async function rlStartExam() {
     try {
-      S.TG.exam = (await axios.get("/api/tongue/exam")).data;
+      S.RL.exam = (await axios.get("/api/tongue/exam")).data;
     } catch (_) {
       FX.toast("Could not load the exam — try again.", "bad");
       return;
     }
-    if (!S.TG.exam.length) {
+    if (!S.RL.exam.length) {
       FX.toast("No trained lines yet — drill first.", "bad");
-      S.TG.exam = null;
+      S.RL.exam = null;
       return;
     }
-    S.TG.examIdx = 0;
-    S.TG.examReveal = false;
-    S.TG.examCorrect = 0;
+    S.RL.examIdx = 0;
+    S.RL.examReveal = false;
+    S.RL.examCorrect = 0;
     render();
   }
-  function tgExamAnswer(ok) {
+  function rlExamAnswer(ok) {
     if (ok) {
-      S.TG.examCorrect++;
+      S.RL.examCorrect++;
       FX.success();
     } else FX.fail();
-    S.TG.examIdx++;
-    S.TG.examReveal = false;
+    S.RL.examIdx++;
+    S.RL.examReveal = false;
     render();
   }
-  async function tgFinishExam(total) {
-    const res = await api("post", "/api/tongue/exam/submit", { total, correct: S.TG.examCorrect, date: todayStr() });
+  async function rlFinishExam(total) {
+    const res = await api("post", "/api/tongue/exam/submit", { total, correct: S.RL.examCorrect, date: todayStr() });
     if (res.passed) {
       FX.confetti({ count: 140 });
       FX.victory && FX.victory();
     }
-    S.TG.exam = null;
-    await loadTongue();
+    S.RL.exam = null;
+    await loadResponseLab();
     await loadState();
     render();
   }
   registerActions({
-    tgView: (e, el, v) => {
-      S.TG.view = v;
-      tgRefresh();
+    rlView: (e, el, v) => {
+      S.RL.view = v;
+      rlRefresh();
     },
-    tgExamView: () => {
-      S.TG.view = "exam";
+    rlExamView: () => {
+      S.RL.view = "exam";
       render();
     },
-    tgStartDrill: () => tgStartDrill(),
-    tgSave: () => tgSave(),
-    tgRefresh: () => tgRefresh(),
-    tgDrillReveal: () => {
-      S.TG.drillReveal = true;
+    rlStartDrill: () => rlStartDrill(),
+    rlSave: () => rlSave(),
+    rlRefresh: () => rlRefresh(),
+    rlDrillReveal: () => {
+      S.RL.drillReveal = true;
       FX.tap();
       render();
     },
-    tgGrade: (e, el, id, grade, mode) => tgGrade(id, grade, mode),
-    tgSearch: (e, el) => {
-      S.TG.search = el.value;
-      tgRefresh();
+    rlGrade: (e, el, id, grade, mode) => rlGrade(id, grade, mode),
+    rlSearch: (e, el) => {
+      S.RL.search = el.value;
+      rlRefresh();
     },
-    tgSearchClear: () => {
-      S.TG.search = "";
-      tgRefresh();
+    rlSearchClear: () => {
+      S.RL.search = "";
+      rlRefresh();
     },
-    tgFilter: (e, el, f) => {
-      S.TG.filter = f;
-      tgRefresh();
+    rlFilter: (e, el, f) => {
+      S.RL.filter = f;
+      rlRefresh();
     },
-    tgDelete: (e, el, id) => tgDelete(id),
-    tgStartExam: () => tgStartExam(),
-    tgFinishExam: (e, el, total) => tgFinishExam(total),
-    tgExamReveal: () => {
-      S.TG.examReveal = true;
+    rlDelete: (e, el, id) => rlDelete(id),
+    rlStartExam: () => rlStartExam(),
+    rlFinishExam: (e, el, total) => rlFinishExam(total),
+    rlExamReveal: () => {
+      S.RL.examReveal = true;
       FX.tap();
       render();
     },
-    tgExamAnswer: (e, el, ok) => tgExamAnswer(ok)
+    rlExamAnswer: (e, el, ok) => rlExamAnswer(ok),
+    // 12.7 build surface
+    rlIntent: (e, el, slug) => {
+      S.RL.intentSlug = slug;
+      render();
+    },
+    rlSaveBuild: () => rlSaveBuild()
+  });
+  async function loadRhetoric() {
+    const [track, today] = await Promise.all([
+      axios.get("/api/rhetoric/track").then((r) => r.data),
+      axios.get("/api/rhetoric/today?date=" + todayStr()).then((r) => r.data).catch(() => null)
+    ]);
+    S.RH.track = track;
+    S.RH.today = today;
+    if (S.RH.view === "metrics" && !S.RH.metrics) {
+      try {
+        S.RH.metrics = (await axios.get("/api/rhetoric/metrics")).data;
+      } catch (_) {
+        S.RH.metrics = null;
+      }
+    }
+  }
+  async function rhRefresh() {
+    try {
+      await loadRhetoric();
+    } catch (_) {
+    }
+    render();
+  }
+  function viewRhetoric() {
+    const t = S.RH.track;
+    if (!t) return header() + `
+  <section class="stagger">
+    <div class="card p-4 text-center">
+      <i class="fas fa-plug-circle-xmark text-2xl text-gray-600 mb-2"></i>
+      <p class="text-xs text-gray-500">The track could not be loaded. Nothing about the programme is shown from memory — the phases, day ranges, and chapter list live on the server.</p>
+      <button class="btn mt-3 px-4 py-2 text-[10px] bg-panel border border-line text-gray-400 font-bold" data-act="rhRefresh">RETRY</button>
+    </div>
+  </section>`;
+    const faces = [["track", "fa-sitemap", "TRACK"], ["chapter", "fa-book-open", "CHAPTER"], ["metrics", "fa-ruler", "MEASUREMENT"]];
+    return header() + `
+  <section id="rhetoric-section" class="stagger">
+    <div class="card-lux p-4 mb-3">
+      <h2 class="font-engraved font-bold text-sm gold-text mb-1"><i class="fas fa-feather-pointed mr-1"></i>THE FARNSWORTH PROGRAMME</h2>
+      <p class="text-[10px] text-gray-400 leading-relaxed">${esc(t.rootNode || "")}</p>
+      <p class="text-[9px] text-gray-600 mt-2">Day ${t.firstDay} to day ${t.lastDay} · ${(t.chapters || []).length} chapters · ${(t.phases || []).length} phases</p>
+    </div>
+
+    <div class="flex gap-1.5 mb-3">
+      ${faces.map(([v, ic, l]) => `
+        <button class="btn flex-1 py-2 text-[10px] font-bold tracking-wider ${S.RH.view === v ? "bg-gold/15 text-gold border border-gold/40" : "bg-panel text-gray-400 border border-line"}"
+          data-act="rhView" data-args="${actArgs([v])}"><i class="fas ${ic} mr-1"></i>${l}</button>`).join("")}
+    </div>
+
+    ${S.RH.view === "chapter" ? rhChapter() : S.RH.view === "metrics" ? rhMetrics() : rhTrack()}
+  </section>`;
+  }
+  function rhTrack() {
+    const t = S.RH.track;
+    const today = S.RH.today;
+    return `
+  ${today ? `
+  <div class="card p-3 mb-3 flex items-center gap-3">
+    <div class="text-center border-r border-line pr-3">
+      <p class="font-disp font-bold text-lg text-white">${today.programmeDay === null ? "—" : today.programmeDay}</p>
+      <p class="text-[8px] text-gray-500 tracking-wider">PROGRAMME DAY</p>
+    </div>
+    <div class="flex-1">
+      ${today.inTrack ? `<p class="text-[11px] text-gray-300">${esc(today.where && today.where.title || "On the track.")}</p>
+           ${today.cycleDay ? `<p class="text-[10px] text-gold mt-0.5">Day ${today.cycleDay.day} · ${esc(today.cycleDay.title)} — ${esc(today.cycleDay.job || "")}</p>
+           <p class="text-[9px] text-amber-400 mt-0.5">${esc(today.cycleDay.constraint || "")}</p>` : ""}` : `<p class="text-[11px] text-gray-500">Outside the track's day range. Nothing is inferred about where he would be.</p>`}
+      <p class="text-[9px] text-gray-600 mt-1">${today.dailyReviewMinutes || 10} minutes daily · ${esc(today.dailyReviewReason || "")}</p>
+    </div>
+  </div>` : ""}
+
+  <div class="card-lux p-4 mb-3">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-1">THE FOUR PARTS</h3>
+    <p class="text-[10px] text-gray-500 leading-relaxed mb-3">${esc(t.partOrderReason || "")}</p>
+    ${(t.parts || []).map((p) => `
+    <div class="p-3 rounded-lg mb-2 border ${p.installed ? "bg-jade/5 border-jade/40" : p.unlocked ? "bg-black/30 border-line" : "bg-red-950/20 border-red-900/40"}">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="pill ${p.installed ? "bg-jade/15 text-jade border border-jade/40" : p.unlocked ? "bg-gray-900 text-gray-400 border border-line" : "bg-red-950/60 text-red-300 border border-red-800/60"}">
+          <i class="fas ${p.installed ? "fa-circle-check" : p.unlocked ? "fa-circle-dot" : "fa-lock"} text-[8px]"></i>PART ${p.part}
+        </span>
+        <span class="text-[11px] text-white font-semibold">acts on ${esc(p.acts_on)}</span>
+      </div>
+      <p class="text-[10px] text-gray-500 leading-relaxed">Operates on ${esc(p.operates_on)}. ${esc(p.why)}</p>
+      ${p.unlocked ? "" : `<p class="text-[10px] text-red-300 mt-1.5 leading-relaxed"><i class="fas fa-lock text-[9px] mr-1"></i>${esc(p.reason || "")}</p>`}
+    </div>`).join("")}
+  </div>
+
+  <div class="card p-4 mb-3">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-2">THE SEVEN-DAY CYCLE</h3>
+    ${(t.cycle || []).map((d) => `
+    <div class="py-1.5 border-b border-line/50 last:border-0">
+      <p class="text-[11px] text-white font-semibold">Day ${d.day} · ${esc(d.title)}</p>
+      <p class="text-[10px] text-gray-500 leading-relaxed">${esc(d.job)}</p>
+      <p class="text-[9px] text-amber-400 leading-relaxed mt-0.5">${esc(d.constraint)}</p>
+    </div>`).join("")}
+  </div>
+
+  <div class="card p-4">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gray-400 mb-2">THE CHAPTERS</h3>
+    ${(t.chapters || []).map((ch) => `
+    <button class="w-full text-left py-1.5 border-b border-line/50 last:border-0" data-act="rhOpenChapter" data-args="${actArgs([ch.id])}">
+      <span class="text-[10px] text-gray-600 mr-2">P${ch.part}</span>
+      <span class="text-[11px] text-gray-300">${ch.id}. ${esc(ch.title)}</span>
+      <span class="text-[9px] text-gray-600 float-right">d${ch.day_from}–${ch.day_to}${ch.self_audit ? " · " + esc(ch.self_audit) : ""}</span>
+    </button>`).join("")}
+    <p class="text-[9px] text-gray-600 mt-2 leading-relaxed">Self-audit marks: ${(t.selfAuditMarks || []).map((m) => esc(m.mark) + " = " + esc(m.meaning)).join(" · ")}. Unmarked chapters are unmarked, not new.</p>
+  </div>
+
+  <div class="card p-4 mt-3" style="border-color:rgba(212,175,55,.3)">
+    <h3 class="text-[10px] font-bold tracking-[.18em] text-gold mb-2"><i class="fas fa-crosshairs mr-1"></i>THE FIELD DEFAULT WHILE THE PROGRAMME RUNS</h3>
+    <p class="text-[11px] text-white font-semibold leading-relaxed">${esc((t.fieldDefault || {}).rule || "")}</p>
+    <p class="text-[10px] text-jade mt-1.5 leading-relaxed"><b>CORRECT</b> · ${esc((t.fieldDefault || {}).success || "")}</p>
+    <p class="text-[10px] text-amber-400 mt-0.5 leading-relaxed"><b>TOO LOUD</b> · ${esc((t.fieldDefault || {}).failure || "")}</p>
+  </div>`;
+  }
+  function rhChapter() {
+    const c = S.RH.chapter;
+    if (!c) return `
+  <div class="card p-4 text-center">
+    <i class="fas fa-hand-pointer text-2xl text-gray-600 mb-2"></i>
+    <p class="text-xs text-gray-500">Open a chapter from the TRACK face.</p>
+  </div>`;
+    const f = c.figure;
+    const sp = c.specimens || {};
+    const slotContent = rhSlotContent(c);
+    return `
+  ${c.gate && c.gate.unlocked === false ? `
+  <div class="card p-3 mb-3 bg-red-950/20 border border-red-900/40">
+    <p class="text-[10px] font-bold tracking-widest text-red-300 mb-1"><i class="fas fa-lock text-[9px] mr-1"></i>PART ${c.chapter.part} IS NOT UNLOCKED</p>
+    <p class="text-[10px] text-red-200 leading-relaxed">${esc(c.gate.reason || "")}</p>
+    <p class="text-[9px] text-gray-500 mt-1.5 leading-relaxed">The chapter is shown so it can be read. The drills are what the gate withholds.</p>
+  </div>` : ""}
+
+  <div class="card-lux p-4 mb-3">
+    <h3 class="font-engraved font-bold text-sm gold-text">${c.chapter.id}. ${esc(c.chapter.title)}</h3>
+    <p class="text-[9px] text-gray-600 mt-0.5">Part ${c.chapter.part} · days ${c.chapter.day_from}–${c.chapter.day_to}${c.chapter.self_audit ? " · self-audit " + esc(c.chapter.self_audit) : ""}</p>
+  </div>
+
+  <div class="card p-4 mb-3">
+    <h4 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2">THE SEVEN-DAY CYCLE FOR THIS CHAPTER</h4>
+    <div class="flex flex-wrap gap-1">
+      ${(c.cycle || []).map((d) => `
+      <span class="pill ${d.completed ? "bg-jade/15 text-jade border border-jade/40" : "bg-gray-900 text-gray-500 border border-line"}">
+        <i class="fas ${d.completed ? "fa-circle-check" : "fa-circle"} text-[8px]"></i>D${d.day} ${esc(d.title).toUpperCase()}
+      </span>`).join("")}
+    </div>
+  </div>
+
+  ${(c.slots || []).map((slot) => {
+      const body = slotContent[slot.slug];
+      return `
+    <div class="card p-4 mb-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-[9px] font-bold text-gold">SLOT ${slot.slot}</span>
+        <span class="text-[10px] font-bold tracking-widest text-gray-300">${esc(slot.title).toUpperCase()}</span>
+      </div>
+      <p class="text-[9px] text-gray-600 leading-relaxed mb-2">${esc(slot.requirement)}</p>
+      ${body || `<p class="text-[10px] text-amber-400 leading-relaxed"><i class="fas fa-circle-minus text-[9px] mr-1"></i>This slot is not populated for this chapter. It is shown empty rather than filled, because a slot filled with something plausible is worse than a slot that says it is empty.</p>`}
+    </div>`;
+    }).join("")}
+
+  <div class="card p-4 mb-2">
+    <h4 class="text-[10px] font-bold tracking-widest text-gray-400 mb-2">HIS PAGES</h4>
+    ${(c.pageAnchors || []).length ? `
+    ${(c.pageAnchors || []).map((a) => `
+      <p class="text-[10px] text-gray-400 leading-relaxed mb-1">
+        <span class="text-gold font-bold">capture ${a.page_index}</span> · ${esc(a.label)}${a.is_opening ? ' <span class="text-[9px] text-jade">(opening page)</span>' : ""}
+        <br><span class="text-[9px] text-gray-600">${esc(a.confirmed_by || "")}</span>
+      </p>`).join("")}` : ""}
+    <p class="text-[9px] text-gray-600 leading-relaxed">${esc(c.pageAnchorNote || "")}</p>
+  </div>
+
+  ${f ? `
+  <div class="card p-4" style="border-color:rgba(212,175,55,.3)">
+    <h4 class="text-[10px] font-bold tracking-widest text-gold mb-2">BOTH FACES — ALWAYS TOGETHER (11.7)</h4>
+    <div class="p-3 rounded-lg bg-black/30 border border-jade/30 mb-2">
+      <p class="text-[9px] font-bold tracking-widest text-jade mb-1">LEGITIMATE USE</p>
+      <p class="text-[11px] text-gray-300 leading-relaxed">${esc(f.bothFaces.legitimate || "")}</p>
+    </div>
+    <div class="p-3 rounded-lg bg-black/30 border border-red-900/40 mb-2">
+      <p class="text-[9px] font-bold tracking-widest text-red-300 mb-1">MANIPULATIVE MISUSE</p>
+      <p class="text-[11px] text-gray-300 leading-relaxed">${esc(f.bothFaces.manipulative || "")}</p>
+    </div>
+    <div class="p-3 rounded-lg bg-black/30 border border-sky-900/50">
+      <p class="text-[9px] font-bold tracking-widest text-sky-400 mb-1">DETECTION QUESTION — FOR SPOTTING IT INBOUND</p>
+      <p class="text-[11px] text-gray-300 leading-relaxed">${esc(f.bothFaces.detectionQuestion || "")}</p>
+      ${f.bothFaces.overuseTells ? `<p class="text-[10px] text-amber-400 leading-relaxed mt-1.5"><b>OVERUSE TELLS</b> · ${esc(f.bothFaces.overuseTells)}</p>` : ""}
+    </div>
+    ${(f.conversationalJobs || []).length ? `
+    <h4 class="text-[10px] font-bold tracking-widest text-gray-400 mt-3 mb-1">THE CONVERSATIONAL JOB</h4>
+    ${(f.conversationalJobs || []).map((j) => `
+      <p class="text-[10px] text-gray-400 leading-relaxed mb-1">${esc(j.job)}<br><span class="text-[9px] text-red-300">boundary · ${esc(j.misuse_boundary)}</span></p>`).join("")}` : ""}
+  </div>` : ""}
+
+  <div class="card p-3 mt-2">
+    <p class="text-[9px] text-gray-600 leading-relaxed">Tier targets · ${(sp.targets || []).map((t) => "T" + t.tier + " " + esc(t.name) + " (" + esc(t.per_figure) + " per figure)").join(" · ")}. Tier 1 is his, copied by hand; the application logs that it happened and never becomes the page.</p>
+  </div>`;
+  }
+  function rhSlotContent(c) {
+    const f = c.figure || {};
+    const sp = c.specimens || {};
+    const p = (txt) => txt ? `<p class="text-[11px] text-gray-300 leading-relaxed">${esc(txt)}</p>` : "";
+    const tier = (n, rows) => `
+    <p class="text-[10px] font-bold tracking-widest ${n === 1 ? "text-gold" : "text-gray-500"} mt-2 mb-1">TIER ${n} — ${(rows || []).length} HELD</p>
+    ${(rows || []).length ? (rows || []).map((r) => `<p class="text-[11px] text-gray-300 leading-relaxed mb-1">“${esc(r.text)}” <span class="text-[9px] text-gray-600">— ${esc(r.attribution || "unattributed")}${r.year ? ", " + esc(r.year) : ""}</span></p>`).join("") : `<p class="text-[10px] text-gray-600 leading-relaxed">${n === 1 ? "Empty by design. Tier 1 is six to eight lines he chooses and copies by hand into the commonplace book on Day 2. The application records that it happened, never the text." : "No Tier " + n + " specimens recorded for this figure yet."}</p>`}`;
+    return {
+      orientation: [f.canonical_name, f.classical_name, f.etymology, f.plain_definition].some(Boolean) ? `${f.canonical_name ? `<p class="text-sm text-white font-semibold">${esc(f.canonical_name)}</p>` : ""}
+         ${f.classical_name ? `<p class="text-[10px] text-gold">${esc(f.classical_name)}</p>` : ""}
+         ${f.etymology ? `<p class="text-[10px] text-gray-500 italic mt-1">${esc(f.etymology)}</p>` : ""}
+         ${p(f.plain_definition)}` : "",
+      mechanism: p(f.mechanism),
+      notation_and_variants: f.structural_formula || f.sub_variants ? `${f.structural_formula ? `<p class="text-xs font-mono text-gold leading-relaxed">${esc(f.structural_formula)}</p>` : ""}
+         ${f.sub_variants ? `<p class="text-[11px] text-gray-400 leading-relaxed mt-1">${esc(f.sub_variants)}</p>` : ""}` : "",
+      hidden_layer: p(f.hidden_layer),
+      tiered_specimen_bank: `${tier(1, sp.tier1)}${tier(2, sp.tier2)}${tier(3, sp.tier3)}`,
+      skeleton_set: (sp.tier2 || []).length ? `<p class="text-[10px] text-gray-500 leading-relaxed mb-1">Day 4 strips each of these to its bare structural formula, then refills it from his own life, work, and arguments.</p>
+         ${(sp.tier2 || []).map((r) => `<p class="text-[11px] text-gray-300 leading-relaxed mb-1">${esc(r.text)}</p>`).join("")}` : "",
+      failure_modes: f.overuse_tells || f.manipulative_misuse ? `${f.overuse_tells ? `<p class="text-[11px] text-amber-300 leading-relaxed"><b>OVERUSE TELLS</b> · ${esc(f.overuse_tells)}</p>` : ""}
+         ${f.manipulative_misuse ? `<p class="text-[11px] text-red-300 leading-relaxed mt-1"><b>MISUSE</b> · ${esc(f.manipulative_misuse)}</p>` : ""}` : "",
+      conversational_conversion: f.conversational_job ? p(f.conversational_job) : "",
+      one_line_summary: p(f.plain_definition)
+    };
+  }
+  function rhMetrics() {
+    const m = S.RH.metrics;
+    if (!m) return `
+  <div class="card p-4 text-center">
+    <i class="fas fa-plug-circle-xmark text-2xl text-gray-600 mb-2"></i>
+    <p class="text-xs text-gray-500">The measurements could not be loaded. No number is shown from memory.</p>
+    <button class="btn mt-3 px-4 py-2 text-[10px] bg-panel border border-line text-gray-400 font-bold" data-act="rhRefresh">RETRY</button>
+  </div>`;
+    const pct = (v) => v === null || v === void 0 ? null : Math.round(v * 100);
+    return `
+  <div class="card p-3 mb-3">
+    <p class="text-[10px] text-gray-500">Programme day <b class="text-white">${m.programmeDay === null ? "—" : m.programmeDay}</b>. Every metric below is falsifiable; a metric with no attempts reports no value rather than a zero that looks like a score.</p>
+  </div>
+
+  ${(m.metrics || []).map((x) => {
+      const d = x.data || {};
+      const inverted = !x.renderAsProgress;
+      const shown = x.slug === "identification_accuracy" || x.slug === "construction_accuracy" ? d.attempts ? pct(d.value) + "%" : "no attempts yet" : x.slug === "noticed_ratio" ? d.deployments ? pct(d.value) + "%" : "no deployments yet" : String(d.value === null || d.value === void 0 ? "—" : d.value);
+      return `
+    <div class="card p-4 mb-2 ${inverted ? "border-amber-800/50" : ""}">
+      <div class="flex items-start gap-2 mb-1">
+        <div class="flex-1">
+          <p class="text-[11px] font-bold ${inverted ? "text-amber-300" : "text-gray-200"}">${esc(x.title)}</p>
+          <p class="text-[9px] text-gray-600 leading-relaxed">${esc(x.measures)}</p>
+        </div>
+        <p class="font-disp font-bold text-lg ${inverted ? "text-amber-400" : "text-white"}">${esc(shown)}</p>
+      </div>
+      ${inverted ? `
+      <p class="text-[10px] text-amber-400 leading-relaxed mt-1"><i class="fas fa-arrow-down text-[9px] mr-1"></i>LOWER IS BETTER. This number is not progress and is never drawn as progress.</p>` : ""}
+      ${x.note ? `<p class="text-[9px] ${inverted ? "text-amber-500" : "text-gray-600"} leading-relaxed mt-1">${esc(x.note)}</p>` : ""}
+      ${x.slug === "deployment_outcomes" ? `
+      <p class="text-[10px] text-gray-400 mt-1.5">fits <b class="text-jade">${d.fits || 0}</b> · barely <b class="text-amber-400">${d.barely || 0}</b> · fails <b class="text-sky-400">${d.fails || 0}</b></p>` : ""}
+      ${x.slug === "copia_volume" ? `
+      <p class="text-[10px] text-gray-400 mt-1.5">${d.renderings || 0} renderings across ${d.sessions || 0} sessions · ${d.distinct || 0} distinct · ${d.selfMarkedBad || 0} he marked bad · target ${d.target || 0}</p>` : ""}
+      ${x.slug === "recording_comparison" ? `
+      <p class="text-[10px] ${d.dueNow ? "text-gold" : "text-gray-400"} mt-1.5">${(d.relistens || []).length} scheduled re-listens logged · days ${(d.scheduledDays || []).join(" and ")}${d.dueNow ? " · DUE TODAY" : ""}</p>` : ""}
+    </div>`;
+    }).join("")}
+
+  <div class="card p-4 mt-1" style="border-color:rgba(212,175,55,.3)">
+    <h4 class="text-[10px] font-bold tracking-widest text-gold mb-1">THE FIELD DEFAULT</h4>
+    <p class="text-[11px] text-white leading-relaxed">${esc((m.fieldDefault || {}).rule || "")}</p>
+  </div>`;
+  }
+  async function rhOpenChapter(id) {
+    try {
+      S.RH.chapter = (await axios.get("/api/rhetoric/chapter/" + id)).data;
+      S.RH.chapterId = id;
+      S.RH.view = "chapter";
+    } catch (_) {
+      S.RH.chapter = null;
+    }
+    render();
+  }
+  registerActions({
+    rhView: (e, el, v) => {
+      S.RH.view = v;
+      rhRefresh();
+    },
+    rhRefresh: () => rhRefresh(),
+    rhOpenChapter: (e, el, id) => rhOpenChapter(id)
   });
   const renderExtra = async function(tab) {
     const face = S.SUB[tab];
@@ -1586,14 +2039,17 @@
       if (face === "books") {
         if (!S.LIBRARY) await loadLibrary();
         shell(segments(tab) + viewLibrary());
+      } else if (face === "rhetoric") {
+        await loadRhetoric();
+        shell(segments(tab) + viewRhetoric());
       } else {
         if (!S.CAMPAIGN) S.CAMPAIGN = (await axios.get("/api/campaign")).data;
         shell(segments(tab) + viewCampaign());
       }
     } else if (tab === "practice") {
-      if (face === "tongue") {
-        await loadTongue();
-        shell(segments(tab) + viewTongue());
+      if (face === "response") {
+        await loadResponseLab();
+        shell(segments(tab) + viewResponseLab());
       } else {
         if (!S.DUE) S.DUE = (await axios.get("/api/cards/due?date=" + todayStr())).data;
         if (!S.MAXIMS) S.MAXIMS = (await axios.get("/api/maxims")).data;
@@ -1872,8 +2328,8 @@
   }
   const SEGMENTS = {
     today: [["now", "NOW"], ["schedule", "SCHEDULE"]],
-    learn: [["campaign", "CAMPAIGN"], ["books", "BOOKS"]],
-    practice: [["cards", "CARDS"], ["maxims", "MAXIMS"], ["tongue", "TONGUE"]],
+    learn: [["campaign", "CAMPAIGN"], ["books", "BOOKS"], ["rhetoric", "RHETORIC"]],
+    practice: [["cards", "CARDS"], ["maxims", "MAXIMS"], ["response", "RESPONSE LAB"]],
     review: [["debrief", "DEBRIEF"], ["stats", "STATS"]],
     more: [["council", "COUNCIL"], ["intel", "INTEL"], ["settings", "SETTINGS"]]
   };

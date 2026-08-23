@@ -7,7 +7,8 @@ import { viewCouncil } from './council.js'
 import { viewDebrief, viewStats } from './debrief.js'
 import { loadLibrary, viewLibrary } from './library.js'
 import { viewMind } from './mind.js'
-import { loadTongue, viewTongue } from './tongue.js'
+import { loadResponseLab, viewResponseLab } from './response-lab.js'
+import { loadRhetoric, viewRhetoric } from './rhetoric.js'
 
 /* WAR ROOM — Campaign / Mind / Debrief / Stats */
 // state moved to core/store.js: CAMPAIGN, MAXIMS, DUE, STATS, DEBRIEFS, REWARDS
@@ -19,10 +20,14 @@ export const renderExtra = async function(tab){
   const face = S.SUB[tab];
   if (tab==='learn'){
     if (face==='books'){ if(!S.LIBRARY) await loadLibrary(); shell(segments(tab) + viewLibrary()); }
+    // Book 11: the Farnsworth programme is a LEARN face, because it is a syllabus with
+    // a day range and a gate, not a drill queue.
+    else if (face==='rhetoric'){ await loadRhetoric(); shell(segments(tab) + viewRhetoric()); }
     else { if(!S.CAMPAIGN) S.CAMPAIGN=(await axios.get('/api/campaign')).data; shell(segments(tab) + viewCampaign()); }
   }
   else if (tab==='practice'){
-    if (face==='tongue'){ await loadTongue(); shell(segments(tab) + viewTongue()); }
+    // Book 12.7: the Tongue is the Response Lab.
+    if (face==='response'){ await loadResponseLab(); shell(segments(tab) + viewResponseLab()); }
     else {
       if(!S.DUE) S.DUE=(await axios.get('/api/cards/due?date='+todayStr())).data;
       if(!S.MAXIMS) S.MAXIMS=(await axios.get('/api/maxims')).data;

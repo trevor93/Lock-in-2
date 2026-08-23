@@ -10,7 +10,7 @@ export const S = {
   SUB: {
     today: 'now',        // now | schedule
     learn: 'campaign',   // campaign | books
-    practice: 'cards',   // cards | maxims | tongue
+    practice: 'cards',   // cards | maxims | response  (Book 12.7: the Tongue is the Response Lab)
     review: 'debrief',   // debrief | stats
     more: 'council',     // council | intel | settings
   },
@@ -49,10 +49,21 @@ export const S = {
   INTEL_OPEN: false,
   BRIDGE_CREDENTIAL: null,
   BRIDGE_CREDENTIALS: [],
-  // the tongue engine's working state
-  TG: {
+  // Response Lab working state. Book 12.7 renames the Tongue to the Response Lab and
+  // rebuilds it around architectures; RL.intents holds the eleven the server serves,
+  // so the interface never paraphrases the book's own logic.
+  RL: {
     view: 'today', list: null, due: null, stats: null, drill: null, drillIdx: 0,
     drillReveal: false, drillSession: { done: 0, fluent: 0 }, exam: null,
     examIdx: 0, examReveal: false, examCorrect: 0, filter: 'all', search: '',
+    // 12.7 build state: the eleven intents from the server, the intent being built,
+    // and the four layers. A build with a missing layer is refused by the route.
+    intents: null, intentSlug: null, build: null, builds: null,
+  },
+  // Book 11 — the Farnsworth programme's track state. TRACK is /api/rhetoric/track;
+  // CHAPTER is one chapter in the thirteen-slot format; METRICS carries each metric's
+  // own direction so no renderer can lose an inverted one.
+  RH: {
+    view: 'track', track: null, today: null, chapter: null, chapterId: null, metrics: null,
   },
 }

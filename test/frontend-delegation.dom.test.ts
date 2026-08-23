@@ -13,7 +13,8 @@ import { resolve } from 'node:path'
 const FILES = [
   'core/shell.js', 'core/events.js', 'core/sanitize.js',
   'features/campaign.js', 'features/mind.js', 'features/debrief.js',
-  'features/library.js', 'features/council.js', 'features/tongue.js',
+  'features/library.js', 'features/council.js', 'features/response-lab.js',
+  'features/rhetoric.js',
 ]
 const SRC = FILES
   .map((f) => readFileSync(resolve(__dirname, '../public/static/app/', f), 'utf8'))

@@ -24,6 +24,56 @@ const ROUTES: Record<string, unknown> = {
     total: 0, due: 0, byMastery: [], byCat: [], reviews7: 0, solid7: 0,
     captured7: 0, exams: [], weekExamDone: false,
   },
+  // Book 12.7 — the Response Lab's BUILD face loads the eleven intents and past builds.
+  'GET /api/lab/response/intents': {
+    intents: [{
+      slug: 'boundary', title: 'Boundary',
+      architecture: 'observation -> standard -> consequence -> exit',
+      when_to_use: 'When a line has been crossed.', logic: 'The observation comes first.',
+      sort_order: 1,
+    }],
+    layers: [
+      { slug: 'intent', asks: 'What this response is for.' },
+      { slug: 'truth', asks: 'What is actually true.' },
+      { slug: 'structure', asks: 'The moves, in order.' },
+      { slug: 'delivery', asks: 'Cadence, emphasis, where to stop.' },
+    ],
+    neverTheLineAlone: 'Never give the line alone.',
+    assessment: [
+      { slug: 'appropriateness', better: 'higher', inverted: false },
+      { slug: 'escalation_risk', better: 'lower', inverted: true },
+    ],
+  },
+  'GET /api/lab/responses': { builds: [], layers: [], assessment: [] },
+  // Book 11 — the Farnsworth programme's LEARN face.
+  'GET /api/rhetoric/track': {
+    rootNode: 'Every figure is a form of controlled repetition or controlled absence.',
+    parts: [
+      { part: 1, acts_on: 'words', operates_on: 'the ear', why: 'Repetition is percussion.', installed: false, unlocked: true, reason: null },
+      { part: 3, acts_on: 'the audience', operates_on: 'stance', why: 'Gaps register against a pattern.', installed: false, unlocked: false, reason: 'Part 3 needs Part 1 and Part 2 first.' },
+    ],
+    partOrderReason: 'Sound, then structure, then stance.',
+    firstDay: 53, lastDay: 204,
+    phases: [], chapters: [{ id: 1, phase_code: 'P1', part: 1, title: 'Simple Repetition', figure_slug: 'epizeuxis', day_from: 60, day_to: 66, self_audit: null }],
+    milestones: [],
+    cycle: [{ day: 1, slug: 'install', title: 'Install', job: 'Taught in full.', constraint: 'He produces nothing.' }],
+    chapterSlots: [], selfAuditMarks: [{ mark: 'N', meaning: 'new' }],
+    fieldDefault: { rule: 'One figure, used once, never announced.', success: 'They think it was their own.', failure: 'They remember his style.' },
+  },
+  'GET /api/rhetoric/today': {
+    date: '2026-08-21', programmeDay: null, inTrack: false, where: null, cycleDay: null,
+    fieldDefault: {}, dailyReviewMinutes: 10, dailyReviewReason: 'Ten minutes daily, non-negotiable.',
+  },
+  'GET /api/rhetoric/metrics': {
+    programmeDay: null,
+    metrics: [{
+      slug: 'noticed_ratio', title: 'Noticed versus landed invisibly',
+      measures: 'The share of deployments the counterpart noticed.', better: 'lower',
+      note: 'BEING NOTICED IS THE FAILURE CONDITION.', inverted: true, renderAsProgress: false,
+      data: { deployments: 0, noticed: 0, value: null },
+    }],
+    fieldDefault: { rule: 'One figure, used once, never announced.' },
+  },
   'GET /api/debriefs': [],
   'GET /api/rewards': [],
   'GET /api/predictions': [],
@@ -40,10 +90,11 @@ const ROUTES: Record<string, unknown> = {
 
 // Book 9: nine tabs collapsed to five, each with faces that used to be tabs.
 const TABS = ['today', 'learn', 'practice', 'review', 'more']
+// Book 11 adds `rhetoric` to LEARN; Book 12.7 renames the `tongue` face to `response`.
 const FACES: Record<string, string[]> = {
   today: ['now', 'schedule'],
-  learn: ['campaign', 'books'],
-  practice: ['cards', 'maxims', 'tongue'],
+  learn: ['campaign', 'books', 'rhetoric'],
+  practice: ['cards', 'maxims', 'response'],
   review: ['debrief', 'stats'],
   more: ['council', 'intel', 'settings'],
 }

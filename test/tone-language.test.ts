@@ -21,7 +21,8 @@ import campaignSrc from '../public/static/app/features/campaign.js?raw'
 import mindSrc from '../public/static/app/features/mind.js?raw'
 import librarySrc from '../public/static/app/features/library.js?raw'
 import councilSrc from '../public/static/app/features/council.js?raw'
-import tongueUiSrc from '../public/static/app/features/tongue.js?raw'
+import responseLabUiSrc from '../public/static/app/features/response-lab.js?raw'
+import rhetoricUiSrc from '../public/static/app/features/rhetoric.js?raw'
 import {
   SEVERITIES, TONES, DEFAULT_TONE, normaliseSeverity, normaliseTone, isRed, toned,
 } from '../src/tone'
@@ -65,7 +66,8 @@ function post(path: string, s: { cookie: string; csrf: string }, body: unknown) 
 const SOURCES = [
   enforcementSrc, daySrc, recoverySrc, missCauseSrc, ratchetSrc, economySrc,
   tongueSrc, learnSrc, blockStatusSrc, limitsSrc, toneSrc,
-  shellSrc, debriefSrc, campaignSrc, mindSrc, librarySrc, councilSrc, tongueUiSrc,
+  shellSrc, debriefSrc, campaignSrc, mindSrc, librarySrc, councilSrc, responseLabUiSrc,
+  rhetoricUiSrc,
 ].join(String.fromCharCode(10))
 
 describe('B8.7 the removed language is gone', () => {

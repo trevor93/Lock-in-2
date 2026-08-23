@@ -182,8 +182,8 @@ export function tabBadge(id) {
 // nine bottom-bar targets.
 export const SEGMENTS = {
   today:    [['now','NOW'], ['schedule','SCHEDULE']],
-  learn:    [['campaign','CAMPAIGN'], ['books','BOOKS']],
-  practice: [['cards','CARDS'], ['maxims','MAXIMS'], ['tongue','TONGUE']],
+  learn:    [['campaign','CAMPAIGN'], ['books','BOOKS'], ['rhetoric','RHETORIC']],
+  practice: [['cards','CARDS'], ['maxims','MAXIMS'], ['response','RESPONSE LAB']],
   review:   [['debrief','DEBRIEF'], ['stats','STATS']],
   more:     [['council','COUNCIL'], ['intel','INTEL'], ['settings','SETTINGS']],
 };
