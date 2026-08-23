@@ -150,6 +150,13 @@ export const CYCLE_DAYS: readonly CycleDay[] = [
 
 export const CYCLE_LENGTH = 7
 
+/**
+ * 11.3 Day 5: "one real sentence he actually had to say that week, rendered twenty ways
+ * through the figure, bad renderings included." Twenty is the drill, so a session short
+ * of it is reported as short rather than accepted as done.
+ */
+export const COPIA_TARGET = 20
+
 /** Which day of the seven-day cycle a given track day falls on, for a chapter that began on `chapterStartDay`. */
 export function cycleDayFor(day: number, chapterStartDay: number): CycleDay | null {
   const offset = day - chapterStartDay

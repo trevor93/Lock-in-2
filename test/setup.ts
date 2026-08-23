@@ -27,6 +27,7 @@ import rhetoricTrack from '../migrations/0024_rhetoric_track.sql?raw'
 import rhetoricSeed from '../migrations/0025_rhetoric_seed.sql?raw'
 import figureRecords from '../migrations/0026_figure_records.sql?raw'
 import responseLabSeed from '../migrations/0027_response_lab_seed.sql?raw'
+import attemptDeployed from '../migrations/0028_attempt_deployed.sql?raw'
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -224,4 +225,5 @@ beforeAll(async () => {
   await apply(rhetoricSeed)
   await apply(figureRecords)
   await apply(responseLabSeed)
+  await apply(attemptDeployed)
 })

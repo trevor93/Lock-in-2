@@ -315,3 +315,182 @@ export const clozeBodySchema = z.strictObject({
 
 // Book 10 - curriculum slugs (principles, concepts, graph nodes).
 export const slugParamSchema = z.string().trim().min(1).max(100).regex(/^[a-z0-9_:-]+$/)
+
+// ---------------------------------------------------------------------------
+// Book 11 / 12 — the Farnsworth track and the two Labs.
+// ---------------------------------------------------------------------------
+const figureSlugSchema = z.string().trim().min(1).max(60).regex(/^[a-z_]+$/)
+const assessmentScore = z.number().int().min(0).max(3)
+
+// 11.3 Day 2: the app logs THAT Tier 1 was copied and WHEN. There is deliberately no
+// text field — Book 11.8 and Law 22 keep the commonplace book on paper.
+export const commonplaceLogBodySchema = z.strictObject({
+  figure_slug: figureSlugSchema,
+  specimen_id: z.number().int().positive().optional().nullable(),
+  copied_on: dateSchema,
+  // The column is TEXT: his commonplace book is paper and its pages may be labelled
+  // however he labels them. The app records the reference, never the content.
+  page_of_book: optionalTrimmedText(60),
+})
+
+// 11.3 — one row per cycle day completed.
+export const cycleDayBodySchema = z.strictObject({
+  chapter_id: z.number().int().min(1).max(19),
+  cycle_day: z.number().int().min(1).max(7),
+  occurred_on: dateSchema,
+  note: optionalTrimmedText(2000),
+})
+
+// 11.3 Day 5 — the copia drill. Bad renderings are submitted WITH the rest and marked,
+// never withheld: "volume is the trainer, not quality."
+export const copiaSessionBodySchema = z.strictObject({
+  figure_slug: figureSlugSchema,
+  seed_sentence: requiredTrimmedText(1, 2000),
+  occurred_on: dateSchema,
+  renderings: z.array(z.strictObject({
+    text: requiredTrimmedText(1, 2000),
+    self_marked_bad: z.boolean().optional(),
+  })).min(1).max(100),
+})
+
+// 11.3 Day 6 + 12.5 — a deployment, with its script, notation, never-list and pivots.
+export const deploymentBodySchema = z.strictObject({
+  figure_slug: figureSlugSchema,
+  occurred_on: dateSchema,
+  context: requiredTrimmedText(1, 4000),
+  what_happened: requiredTrimmedText(1, 4000),
+  fit: z.enum(['fits', 'barely', 'fails']),
+  counterpart_noticed: z.boolean(),
+  script: optionalTrimmedText(8000),
+  delivery_notation: optionalTrimmedText(2000),
+  never_list: optionalTrimmedText(2000),
+  pivots: z.array(z.strictObject({
+    trigger: requiredTrimmedText(1, 200),
+    response: requiredTrimmedText(1, 2000),
+  })).max(20).optional(),
+})
+
+// 12.1 — the six-slot canon map. All six are required by the schema, because 12.1's
+// gate is that a figure cannot be named until the map is complete.
+export const canonMapBodySchema = z.strictObject({
+  purpose: z.enum([
+    'inform', 'clarify', 'persuade', 'repair', 'decline', 'negotiate',
+    'de-escalate', 'inspire', 'pause', 'challenge',
+  ]),
+  audience: requiredTrimmedText(1, 4000),
+  occasion: requiredTrimmedText(1, 4000),
+  proof: requiredTrimmedText(1, 8000),
+  arrangement: requiredTrimmedText(1, 4000),
+  delivery: requiredTrimmedText(1, 4000),
+})
+
+// 12.2 — an exercise attempt. why_not_obvious is required by 12.6 on any saved line,
+// and the route refuses the attempt when it is missing or when the line reads like a reel.
+export const rhetoricAttemptBodySchema = z.strictObject({
+  exercise_type: requiredTrimmedText(1, 60),
+  figure_slug: figureSlugSchema.optional().nullable(),
+  canon_map_id: z.number().int().positive().optional().nullable(),
+  prompt: optionalTrimmedText(4000),
+  answer: requiredTrimmedText(1, 20000),
+  version_plain: optionalTrimmedText(8000),
+  version_controlled: optionalTrimmedText(8000),
+  version_excessive: optionalTrimmedText(8000),
+  excess_diagnosis: optionalTrimmedText(8000),
+  why_not_obvious: optionalTrimmedText(4000),
+  source_room: optionalTrimmedText(500),
+  confidence_before: confidence.optional(),
+  confidence_after: confidence.optional(),
+  occurred_on: dateSchema,
+})
+
+// 12.6 — detection proposes; his correction is the training signal.
+export const figureDetectionBodySchema = z.strictObject({
+  text: requiredTrimmedText(1, 20000),
+})
+export const figureCorrectionBodySchema = z.strictObject({
+  corrected: z.array(figureSlugSchema).max(20),
+})
+
+// 12.3 — the inbound analysis card, all nine questions.
+export const inboundCardBodySchema = z.strictObject({
+  text: requiredTrimmedText(1, 20000),
+  figure_used: figureSlugSchema.optional().nullable(),
+  emphasis: requiredTrimmedText(1, 4000),
+  expectation_created: requiredTrimmedText(1, 4000),
+  what_is_repeated: requiredTrimmedText(1, 4000),
+  what_is_omitted: requiredTrimmedText(1, 4000),
+  emotion_activated: requiredTrimmedText(1, 4000),
+  action_wanted: requiredTrimmedText(1, 4000),
+  independently_supported: z.boolean(),
+  survives_plain_statement: z.boolean(),
+})
+
+// 12.4 — the outbound red-team card, all four questions, mandatory before deployed.
+export const outboundCardBodySchema = z.strictObject({
+  attempt_id: z.number().int().positive().optional().nullable(),
+  draft: requiredTrimmedText(1, 20000),
+  overstates_certainty: z.boolean(),
+  hides_downside: z.boolean(),
+  pressures_rather_than_persuades: z.boolean(),
+  defensible_if_quoted: z.boolean(),
+  notes: optionalTrimmedText(4000),
+})
+
+// 12.7 — a built response. Four layers, never a bare line.
+export const responseBuildBodySchema = z.strictObject({
+  intent_slug: z.enum([
+    'boundary', 'pressure', 'provocation', 'loaded_question', 'negotiation',
+    'disagreement', 'clarify', 'repair', 'de_escalate', 'inspire', 'pause',
+  ]),
+  situation: requiredTrimmedText(1, 4000),
+  layer_intent: requiredTrimmedText(1, 4000),
+  layer_truth: requiredTrimmedText(1, 4000),
+  layer_structure: requiredTrimmedText(1, 8000),
+  layer_delivery: requiredTrimmedText(1, 4000),
+  a_appropriateness: assessmentScore.optional(),
+  a_clarity: assessmentScore.optional(),
+  a_proportionality: assessmentScore.optional(),
+  a_naturalness: assessmentScore.optional(),
+  a_objective_achieved: assessmentScore.optional(),
+  a_escalation_risk: assessmentScore.optional(),
+  occurred_on: dateSchema,
+})
+
+// 11.5 — a card review. `correct` is what was actually answered; the ladder step is
+// derived from it, never submitted.
+export const rhetoricCardReviewBodySchema = z.strictObject({
+  correct: z.boolean(),
+  produced: optionalTrimmedText(4000),
+  reviewed_on: optionalDate,
+})
+
+// 11.9 — a recording is a REFERENCE to his own file (11.8), never an upload.
+export const recordingBodySchema = z.strictObject({
+  kind: z.enum(['baseline', 'thirty_day', 'written_baseline']),
+  file_reference: requiredTrimmedText(1, 500),
+  made_on: dateSchema,
+  programme_day: z.number().int().min(0).max(400).optional().nullable(),
+  duration_seconds: z.number().int().min(0).max(86400).optional().nullable(),
+  word_count: z.number().int().min(0).max(100000).optional().nullable(),
+})
+
+// 11.9 — the self-audit mark on a chapter: U, R, or N.
+export const selfAuditBodySchema = z.strictObject({
+  self_audit: z.enum(['U', 'R', 'N']),
+})
+
+// 11.7 slot 5 — his OWN example of the figure. Kept apart from the book's specimens
+// because it is his, and because Tier 1 stays small (11.4).
+export const figureOwnExampleBodySchema = z.strictObject({
+  text: requiredTrimmedText(1, 4000),
+  context: optionalTrimmedText(2000),
+})
+
+// 11.5 — a card is created from a figure and a card type. The ladder step is never
+// submitted: a new card starts at step 0 and is moved only by a recorded review.
+export const rhetoricCardBodySchema = z.strictObject({
+  card_type: z.enum(['name_to_definition', 'skeleton_to_example', 'situation_to_figure']),
+  figure_slug: figureSlugSchema,
+  specimen_id: z.number().int().positive().optional().nullable(),
+  due_date: optionalDate,
+})

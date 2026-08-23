@@ -29,6 +29,8 @@ import { registerMissCauseRoutes } from './routes/miss-cause'
 import { registerReadingRoutes } from './routes/reading'
 import { registerMasteryRoutes } from './routes/mastery'
 import { registerPrincipleRoutes } from './routes/principles'
+import { registerRhetoricRoutes } from './routes/rhetoric'
+import { registerRhetoricLabRoutes } from './routes/rhetoric-lab'
 import { RequestValidationError, validationFailed } from './validation'
 
 // Bindings/Variables extracted to ./env (Book 7).
@@ -262,6 +264,14 @@ registerMasteryRoutes(app)
 
 // Concepts, the immune table, Greene-as-hypotheses, and the principle graph (Book 10.6-10.10).
 registerPrincipleRoutes(app)
+
+// The Farnsworth track: the Part gate, the seven-day cycle, the fixed 1/3/7/16/35
+// ladder, and the metric that inverts (Book 11).
+registerRhetoricRoutes(app)
+
+// The Rhetoric Lab and the Response Lab: the canon map before any figure, the red-team
+// card before any deployment, detection as a proposal, four-layer responses (Book 12).
+registerRhetoricLabRoutes(app)
 
 // COUNCIL/Hermes routes registered from ./routes/hermes (Book 7).
 registerHermesRoutes(app)
