@@ -1057,6 +1057,282 @@ Expected: `curriculum_tables` is `7`; `nodes` is at least `34`; `principles` is 
 
 Drop the seven tables (order: `graph_edges`, `graph_nodes`, `hypotheses`, `principle_frames`, `principles`, `concept_components`, `concepts`) then redeploy the prior application. Only curriculum rows are lost, and they are re-seeded by re-applying the migrations. No personal record is involved.
 
+### 5.19 `migrations/0024_rhetoric_track.sql`
+
+**Purpose**
+
+- Books 11 and 12, as schema. Twenty-four additive tables and nothing altered or deleted: the syllabus (`rhetoric_phases`, `rhetoric_chapters`, `rhetoric_milestones`), Book 11.7's figure records (`figures`) with the operator's own examples kept separately in `figure_own_examples` because those are his and not the book's, the Book 11.4 tier bank (`specimens`), the Book 11.3 cycle (`cycle_days`, `copia_sessions`, `copia_renderings`, `deployments`, `deployment_pivots`), Book 11.9's measurement (`recordings`), Book 11.5's fixed ladder (`rhetoric_cards`, `rhetoric_card_reviews`), Book 11.8's page index (`book_page_refs`, `book_chapter_anchors`), and Book 12's Lab (`canon_maps`, `rhetoric_attempts`, `figure_detections`, `inbound_cards`, `outbound_cards`, `response_intents`, `response_builds`).
+- **Three constraints live in the schema rather than in code, because code can be edited past and a column cannot be invented at runtime.**
+  - `commonplace_log` has **no text column**. Book 11.3 has him copy Tier 1 by hand and Book 11.8 forbids the application becoming a substitute surface for it, so the table records the figure, the specimen, the date, and which page of *his* commonplace book — never the passage. Law 22 governs.
+  - `recordings` has **no audio column**. It holds `file_reference`, a name on his own machine, plus `relisten_allowed_on_day`, so 11.9's "never listened back" is a stored fact and not a habit.
+  - `rhetoric_card_reviews` is append-only, enforced by `trg_rhetoric_card_reviews_no_update` and `trg_rhetoric_card_reviews_no_delete`.
+- `book_chapter_anchors.confirmed_by` is `NOT NULL`: an anchor cannot exist without a sentence recording how it was confirmed. There is no schema path to an estimated anchor.
+- **No personal record is touched.** Every table is new and empty on application.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/rhetoric-track.test.ts
+npx vitest run test/rhetoric-routes.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/rhetoric-track.test.ts` proves all twenty-four tables exist, that `commonplace_log` has no `text` column and does have `copied_on` and `page_of_book`, and that `recordings` references a file rather than managing media.
+- [ ] `test/rhetoric-routes.test.ts` proves the append-only review trail refuses an UPDATE, that `commonplace_log` refuses a body carrying the copied text, and that a recording has no column for the audio itself.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS track_tables FROM sqlite_schema WHERE type='table' AND name IN (
+  'rhetoric_phases','rhetoric_chapters','rhetoric_milestones','figures','figure_own_examples',
+  'specimens','commonplace_log','cycle_days','copia_sessions','copia_renderings','deployments',
+  'deployment_pivots','canon_maps','rhetoric_attempts','figure_detections','inbound_cards',
+  'outbound_cards','response_intents','response_builds','recordings','book_page_refs',
+  'rhetoric_cards','rhetoric_card_reviews','book_chapter_anchors');
+
+-- Law 22 in schema form. Expected: 0 rows, both times.
+SELECT name FROM pragma_table_info('commonplace_log') WHERE name IN ('text','passage','content','specimen_text');
+SELECT name FROM pragma_table_info('recordings')      WHERE name IN ('audio','blob','data','file_body');
+
+SELECT COUNT(*) AS append_only_triggers FROM sqlite_schema WHERE type='trigger'
+  AND name IN ('trg_rhetoric_card_reviews_no_update','trg_rhetoric_card_reviews_no_delete');
+```
+
+Expected: `track_tables` is `24`; both column queries return **no rows**; `append_only_triggers` is `2`.
+
+**Rollback**
+
+Drop the tables created here in reverse dependency order — `book_chapter_anchors`, `rhetoric_card_reviews`, `rhetoric_cards`, `book_page_refs`, `recordings`, `response_builds`, `response_intents`, `outbound_cards`, `inbound_cards`, `figure_detections`, `rhetoric_attempts`, `canon_maps`, `deployment_pivots`, `deployments`, `copia_renderings`, `copia_sessions`, `cycle_days`, `commonplace_log`, `specimens`, `figure_own_examples`, `figures`, `rhetoric_milestones`, `rhetoric_chapters`, `rhetoric_phases` — then redeploy the prior application. The migration is additive, so nothing outside this list changes. Note honestly what is lost: the curriculum rows re-seed from `0025`–`0027`, but `commonplace_log`, `cycle_days`, `copia_sessions`, `deployments`, `recordings`, `rhetoric_attempts`, `figure_detections`, `inbound_cards`, `outbound_cards`, and `response_builds` hold **his own record** once the track is running. Do not roll back after he has started Chapter 1 without exporting those ten tables first.
+
+### 5.20 `migrations/0025_rhetoric_seed.sql`
+
+**Purpose**
+
+- Book 11.2's syllabus as fixed data: six phases (P0 calibration through P5 transfer to speech), the nineteen chapters with the exact day ranges the doctrine fixes, and the five non-chapter cycles (Consolidation A/B/C, Phase 4, Phase 5) seeded as rows so a day between chapters cannot read as an empty day.
+- The two Farnsworth books as **bibliographic records only**, in `sources`. No text from either book is stored, and the note says exactly what the application has and has not. No `source_editions` row is created, because the application holds no edition of them.
+- Book 11.8's page anchors — **eight rows, every one confirmed by reading the page.** Each carries a `confirmed_by` sentence naming what was visible: the definition sentence that opens Chapter 2 on capture 26, the specimens in Chapter 1's body on capture 9, the seam where capture 370 is the rhetoric book's last page and 371 is the argument book's contents. The other seventeen chapter openings are **absent rather than estimated**, and the application reports the span between two anchors as unconfirmed.
+- The final section archives the three shipped movie-villain starter lines Book 12.7 orders deleted. It **archives** (`archived = 1`) rather than deletes, because "never delete user data" outranks tidiness and his drill history on those rows is real, and it matches only rows still carrying the shipped seed's own situation and response, so a line he has edited into his own survives untouched.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/rhetoric-track.test.ts
+npx vitest run test/response-lab-seed.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/rhetoric-track.test.ts` proves all nineteen chapters carry the Book 11.2 day ranges, that every chapter has a seven-day cycle, that the days between chapters are rows, that Day 54 through Day 204 is covered with no gap and no overlap, that **only read anchors are recorded and none is fabricated**, and that the Farnsworth books are marked in copyright with no edition rows.
+- [ ] `test/response-lab-seed.test.ts` proves the starter lines are removed from `seed.sql` so a fresh install never gets them, and archived rather than destroyed where they already exist.
+
+**Non-secret verification queries**
+
+```sql
+SELECT (SELECT COUNT(*) FROM rhetoric_phases)     AS phases,
+       (SELECT COUNT(*) FROM rhetoric_chapters)   AS chapters,
+       (SELECT COUNT(*) FROM rhetoric_milestones) AS milestones,
+       (SELECT COUNT(*) FROM book_chapter_anchors) AS anchors;
+
+-- Every anchor states how it was confirmed. Expected: 0 rows.
+SELECT id, label FROM book_chapter_anchors WHERE confirmed_by IS NULL OR TRIM(confirmed_by) = '';
+
+-- The syllabus covers the track with no gap. Expected: 53 and 204.
+SELECT MIN(day_from) AS first_day, MAX(day_to) AS last_day FROM rhetoric_phases;
+
+-- Book 12.7's deletion, done as archival. Expected: archived = 0.
+SELECT COUNT(*) AS live_starter_lines FROM captures
+ WHERE kind='response' AND legacy_table='responses' AND legacy_id IN (1,2,3) AND archived = 0;
+```
+
+Expected: `phases` is `6`; `chapters` is `19`; `milestones` is `5`; `anchors` is `8`; the `confirmed_by` query returns **no rows**; `first_day` is `53` and `last_day` is `204`; `live_starter_lines` is `0`.
+
+**Rollback**
+
+```sql
+DELETE FROM book_chapter_anchors WHERE book_slug IN ('classical_english_rhetoric','classical_english_argument');
+DELETE FROM rhetoric_milestones WHERE slug IN ('consolidation_a','consolidation_b','consolidation_c','phase_4_consolidation','phase_5_transfer');
+DELETE FROM rhetoric_chapters WHERE id BETWEEN 1 AND 19;
+DELETE FROM rhetoric_phases WHERE code IN ('P0','P1','P2','P3','P4','P5');
+UPDATE captures SET archived = 0
+ WHERE kind='response' AND legacy_table='responses' AND legacy_id IN (1,2,3);
+```
+
+Then redeploy the prior application. The chapter delete will fail while `cycle_days` rows reference a chapter — D1 enforces foreign keys — which is the correct outcome: it means he has started the track and those rows are his. Export `cycle_days` before forcing it. The `sources` rows for the two books may be left in place; they hold no text and nothing keys off them.
+
+### 5.21 `migrations/0026_figure_records.sql`
+
+**Purpose**
+
+- Book 11.7 figure records. Twenty-two rows: the nineteen chapter figures of Book 11.2, plus the three further devices Chapter 1 conceals behind its "etc." (Book 11.1 says the nineteen chapters hide roughly thirty to thirty-five figures; the remaining thirteen live in each record's `sub_variants` column, which is the hidden layer of Book 11.6 slot 4).
+- Every row carries **both faces in the same record**, as 11.7 requires: `legitimate_use` and `manipulative_misuse`, plus `detection_question` for spotting the figure inbound and `overuse_tells` for catching it in his own mouth. The conversational-job mapping of 11.7 is seeded now so it is usable from Chapter 1 rather than waiting for Phase 4, and every job carries its misuse boundary in the same record.
+- **No text from Farnsworth is reproduced.** These records are written from standard classical-rhetoric reference knowledge. The book supplies the syllabus (`0025`) and the page index (`book_page_refs`); it never supplies the prose.
+- Curriculum rows only. Nothing personal is touched.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/rhetoric-track.test.ts
+npx vitest run test/rhetoric-module.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/rhetoric-track.test.ts` proves twenty-two figures across the three parts, at least thirty named devices once `sub_variants` are counted, that every chapter figure matches the syllabus slug exactly, that **every figure has both faces plus a detection question and overuse tells**, that related and stackable figures point at figures that exist, and that the three concealed Chapter 1 devices are filed under Chapter 1.
+- [ ] `test/rhetoric-module.test.ts` proves all thirteen conversational jobs are covered and that **every job carries its misuse boundary in the same record**.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS figures, SUM(part = 1) AS part_i, SUM(part = 2) AS part_ii, SUM(part = 3) AS part_iii
+  FROM figures;
+
+-- Both faces, in every record. Expected: 0 rows.
+SELECT slug FROM figures
+ WHERE legitimate_use IS NULL OR TRIM(legitimate_use) = ''
+    OR manipulative_misuse IS NULL OR TRIM(manipulative_misuse) = ''
+    OR detection_question IS NULL OR TRIM(detection_question) = ''
+    OR overuse_tells IS NULL OR TRIM(overuse_tells) = '';
+
+-- Every chapter figure has a record. Expected: 0 rows.
+SELECT c.id, c.figure_slug FROM rhetoric_chapters c
+ WHERE c.figure_slug IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM figures f WHERE f.slug = c.figure_slug);
+```
+
+Expected: `figures` is `22`; the both-faces and chapter-figure queries return **no rows**.
+
+**Rollback**
+
+```sql
+-- specimens and figure_own_examples reference figures(slug) and D1 enforces foreign
+-- keys, so clear or re-point the referencing rows FIRST. figure_own_examples rows are
+-- HIS: export them before deleting anything.
+DELETE FROM figures WHERE slug IN (
+  'epizeuxis','epimone','conduplicatio','diacope','anaphora','epistrophe','symploce',
+  'anadiplosis','polyptoton','isocolon','chiasmus','anastrophe','polysyndeton',
+  'asyndeton','ellipsis','praeteritio','aposiopesis','metanoia','litotes','erotema',
+  'hypophora','prolepsis');
+```
+
+Then redeploy the prior application. Only reference records are lost and re-applying the migration restores them identically.
+
+### 5.22 `migrations/0027_response_lab_seed.sql`
+
+**Purpose**
+
+- Three things Books 11 and 12 require, in one migration because they are one commit's worth of content and share a rollback.
+- **Specimens (Book 11.4).** A starting Tier 3 ear bank of thirty public-domain lines plus one Tier 2 skeleton. **Tier 1 is seeded EMPTY on purpose**: it is his, six to eight per figure, chosen and copied by hand. Book 11.4 explicitly rejects memorising a thousand specimens verbatim and warns the application "must not silently reintroduce it", so the target counts live in `src/rhetoric.ts` and a test asserts the rejected allocation stays rejected. Every seeded specimen is public domain by its own author and date and carries a real attribution; `page_ref` is left `NULL` because the page numbers in *his* copy are populated locally by the operator script and never committed.
+- **Response intents (Book 12.7).** The eleven intents, each stored as an **architecture** rather than a line — `architecture`, `when_to_use`, and a `logic` paragraph stating why the order is what it is, so that "never give the line alone; give the logic of the line so it can be adapted" is a property of the data.
+- **The deletion Book 12.7 orders.** The movie-villain starter lines are removed from `seed.sql` for fresh installs, and **archived** (`archived = 1`, the app's own delete path) for any database that already has them. Archival rather than destruction, because "never delete user data" outranks tidiness and his drill history on those rows is real; only rows still matching the shipped seed's own situation and response are archived, so a line he has edited into his own survives untouched.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/response-lab-seed.test.ts
+npx vitest run test/rhetoric-lab-routes.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/response-lab-seed.test.ts` proves Tier 3 is seeded for every chapter figure, that **Tier 1 is empty**, that the thousand-specimen allocation is not reintroduced, that every specimen carries a real attribution and is marked public domain, that `page_ref` is `NULL` so no Farnsworth page filename enters the repository, that exactly the eleven named intents exist with the exact architectures Book 12.7 specifies, that each architecture is ordered rather than a line, that **no example lines ship** (a line would be copied instead of built), and that the starter lines are archived rather than destroyed.
+- [ ] `test/rhetoric-lab-routes.test.ts` proves the served intents carry their architectures and their logic, that the exact stage sequence per intent matches 12.7, that a build missing a layer is refused, and that `escalation_risk` is marked as the inverted criterion.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS intents FROM response_intents;
+
+-- Architectures, not lines. Expected: 0 rows.
+SELECT slug FROM response_intents
+ WHERE architecture IS NULL OR TRIM(architecture) = ''
+    OR when_to_use   IS NULL OR TRIM(when_to_use)   = ''
+    OR logic         IS NULL OR TRIM(logic)         = '';
+
+-- Book 11.4 rejected allocation. Expected: tier1 = 0 immediately after application.
+SELECT SUM(tier = 1) AS tier1, SUM(tier = 2) AS tier2, SUM(tier = 3) AS tier3 FROM specimens;
+
+-- Nothing is claimed public domain without an attribution. Expected: 0 rows.
+SELECT id FROM specimens WHERE public_domain = 1 AND (attribution IS NULL OR TRIM(attribution) = '');
+
+-- His page numbers are never committed. Expected: 0 rows.
+SELECT id FROM specimens WHERE page_ref IS NOT NULL;
+```
+
+Expected: `intents` is `11`; the architecture, attribution, and `page_ref` queries return **no rows**; `tier1` is `0` on application and rises only as he copies by hand.
+
+**Rollback**
+
+```sql
+DELETE FROM response_intents WHERE slug IN (
+  'boundary','pressure','provocation','loaded_question','negotiation','disagreement',
+  'clarify','repair','de_escalate','inspire','pause');
+
+-- Record the highest specimens.id immediately AFTER applying this migration and scope
+-- the delete to it. A blanket delete would take his Tier 1 rows with it.
+DELETE FROM specimens WHERE id <= :max_id_recorded_at_apply_time;
+
+UPDATE captures SET archived = 0
+ WHERE kind='response' AND legacy_table='responses' AND legacy_id IN (1,2,3);
+```
+
+The intents delete will fail while `response_builds` rows reference an intent, which is the correct outcome: those builds are his. Export `response_builds` before forcing it, and prefer leaving the intents in place — they are curriculum rows that cost nothing to keep.
+
+### 5.23 `migrations/0028_attempt_deployed.sql`
+
+**Purpose**
+
+- Book 12.4 makes the outbound red-team card "mandatory before any draft is marked deployed", which presupposes a deployed state. Migration `0024` gave `rhetoric_attempts` everything except that flag, so this adds two columns with safe defaults: `deployed INTEGER NOT NULL DEFAULT 0` and `deployed_on TEXT`.
+- The flag is set only by `POST /api/lab/attempt/:id/deploy`, which refuses when no outbound card exists for the attempt, and refuses again when the newest card on it still carries a defect or fails the Daylight Test.
+- **Additive.** No existing row changes meaning: an attempt written before this migration is simply not yet deployed, which is true.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/rhetoric-lab-routes.test.ts
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/rhetoric-lab-routes.test.ts` proves the deploy transition is refused when no card has been answered, refused while a defect stands and allowed once clear, and that the Daylight Test fails on a `NO` where the other three questions fail on a `YES`.
+
+**Non-secret verification queries**
+
+```sql
+SELECT COUNT(*) AS deployed_columns FROM pragma_table_info('rhetoric_attempts')
+ WHERE name IN ('deployed','deployed_on');
+
+-- Nothing is deployed by the migration itself. Expected: 0.
+SELECT COUNT(*) AS deployed_rows FROM rhetoric_attempts WHERE deployed <> 0;
+
+-- Book 12.4 gate, as a data check. Expected: 0 rows, at apply time and afterwards.
+SELECT a.id FROM rhetoric_attempts a
+ WHERE a.deployed = 1
+   AND NOT EXISTS (SELECT 1 FROM outbound_cards o WHERE o.attempt_id = a.id);
+```
+
+Expected: `deployed_columns` is `2`; `deployed_rows` is `0` immediately after application; the last query returns **no rows**.
+
+**Rollback**
+
+SQLite cannot drop a column in the versions D1 has historically supported, and dropping one here would destroy the deployment record. The rollback is therefore to **leave the columns in place and ignore them**:
+
+```sql
+UPDATE rhetoric_attempts SET deployed = 0, deployed_on = NULL;
+```
+
+That restores the pre-migration behaviour — nothing deployed — without deleting a row. Then redeploy the prior application.
+
 ## 6. Deploy and Verify the Pages Application
 
 

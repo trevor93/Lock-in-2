@@ -24,13 +24,13 @@ somewhere the repository does not control.
 
 | Area | Repository status | Needs you |
 |---|---|---|
-| Migrations `0012`–`0023` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
+| Migrations `0012`–`0028` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
 | Web Push (alarms) | endpoints, service-worker handler, subscribe flow, delivery ledger, tests | VAPID secrets (§3) + Cron Worker (§4) |
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
-| Everything else in Books 5–10 | source + local tests green | deploy (§5) |
+| Everything else in Books 5–12 | source + local tests green | deploy (§5) |
 
-Current local gate at handoff time: **342 server tests + 25 DOM tests green,
-`npx tsc --noEmit` clean, `npm run build` clean.**
+Current local gate at handoff time: **475 server tests across 48 files + 25 DOM tests
+across 6 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
 
 ---
 
@@ -53,7 +53,7 @@ reference.
 
 ---
 
-## 2. Apply migrations 0012–0023 to production D1
+## 2. Apply migrations 0012–0028 to production D1
 
 ### 2.1 The backup gate (mandatory, blocking)
 
@@ -63,7 +63,7 @@ it is destructive and needs its own explicit approval.
 
 ### 2.2 What these migrations do
 
-They must be applied **in filename order**. All twelve are additive or preserve a full
+They must be applied **in filename order**. All seventeen are additive or preserve a full
 backup table; none deletes user data.
 
 - `0012_unify_captures.sql` — creates `captures`, `review_items`, `exams` and backfills
@@ -101,6 +101,31 @@ backup table; none deletes user data.
   non-examinable hypotheses, and the cross-book principle graph with its
   contradiction edges. CURRICULUM ROWS ONLY — neither touches personal data.
   See §5.18.
+- `0024_rhetoric_track.sql` — Books 11/12: twenty-four new tables carrying the
+  Farnsworth syllabus, the figure records, the specimen tiers, the seven-day cycle,
+  the fixed 1/3/7/16/35 ladder, the page index, and the Rhetoric/Response Lab.
+  Three of Book 11.8's constraints are enforced in schema rather than in code:
+  `commonplace_log` has no text column (the commonplace book stays handwritten),
+  `recordings` has no audio column (it references a file on his machine), and
+  `rhetoric_card_reviews` is append-only by trigger. See `OPERATIONS.md` §5.19.
+- `0025_rhetoric_seed.sql` — the syllabus as data: six phases, nineteen chapters with
+  Book 11.2's exact day ranges, five non-chapter cycles, the two books as
+  bibliographic records holding NO text, and **eight page anchors, every one
+  confirmed by reading the page**. The other seventeen chapter openings are absent
+  rather than estimated. It also archives (never deletes) the three shipped starter
+  lines Book 12.7 orders removed. See §5.20.
+- `0026_figure_records.sql` — Book 11.7: twenty-two figure records, each carrying both
+  faces (legitimate use and manipulative misuse) plus the inbound detection question
+  and the overuse tells. Written from standard classical-rhetoric reference knowledge;
+  no Farnsworth prose is reproduced. See §5.21.
+- `0027_response_lab_seed.sql` — Book 11.4's Tier 3 ear bank (thirty public-domain
+  lines, all attributed) with **Tier 1 deliberately empty** because Tier 1 is his and
+  copied by hand, and Book 12.7's eleven response intents stored as architectures with
+  their logic rather than as lines. See §5.22.
+- `0028_attempt_deployed.sql` — Book 12.4: `rhetoric_attempts.deployed` and
+  `deployed_on`, so the outbound red-team card can be mandatory before a draft is
+  marked deployed. Additive with safe defaults; nothing is deployed by the migration.
+  See §5.23.
 
 ### 2.3 Apply
 
@@ -141,15 +166,42 @@ SELECT COUNT(*) AS learning_tables FROM sqlite_schema WHERE type='table'
                'concepts','concept_components','principles','principle_frames','hypotheses',
                'graph_nodes','graph_edges');
 SELECT COUNT(*) AS examinable_hypotheses FROM hypotheses WHERE examinable <> 0;
+-- the rhetoric track (Books 11/12)
+SELECT COUNT(*) AS track_tables FROM sqlite_schema WHERE type='table' AND name IN (
+  'rhetoric_phases','rhetoric_chapters','rhetoric_milestones','figures','figure_own_examples',
+  'specimens','commonplace_log','cycle_days','copia_sessions','copia_renderings','deployments',
+  'deployment_pivots','canon_maps','rhetoric_attempts','figure_detections','inbound_cards',
+  'outbound_cards','response_intents','response_builds','recordings','book_page_refs',
+  'rhetoric_cards','rhetoric_card_reviews','book_chapter_anchors');
+-- Law 22 in schema form: no passage text, no audio. Both must return NO ROWS.
+SELECT name FROM pragma_table_info('commonplace_log') WHERE name IN ('text','passage','content');
+SELECT name FROM pragma_table_info('recordings') WHERE name IN ('audio','blob','data','file_body');
+-- the syllabus, the figures, the intents, and the confirmed anchors
+SELECT (SELECT COUNT(*) FROM rhetoric_phases) AS phases,
+       (SELECT COUNT(*) FROM rhetoric_chapters) AS chapters,
+       (SELECT COUNT(*) FROM rhetoric_milestones) AS milestones,
+       (SELECT COUNT(*) FROM figures) AS figures,
+       (SELECT COUNT(*) FROM response_intents) AS intents,
+       (SELECT COUNT(*) FROM book_chapter_anchors) AS anchors;
+-- no anchor exists without the sentence recording how it was confirmed. NO ROWS.
+SELECT id, label FROM book_chapter_anchors WHERE confirmed_by IS NULL OR TRIM(confirmed_by)='';
+-- Tier 1 is his, by hand: 0 on application, and it rises only as he copies.
+SELECT SUM(tier=1) AS tier1, SUM(tier=3) AS tier3 FROM specimens;
+-- Book 12.4's gate as a data check, and nothing deployed by the migration. NO ROWS / 0.
+SELECT COUNT(*) AS deployed_rows FROM rhetoric_attempts WHERE deployed <> 0;
 ```
 
 Expected: `captures_rows` equals `legacy_rows`; `unowned`, `orphan_cards`, `orphan_sr` and
 `missing_fsrs` are all `0`; `cards` equals `backup`; `alt_triggers` is `2`;
-`push_tables` is `3`; `tier_column` and `causes_table` are each `1`; `mandatory` is at most `3` (a `0` is valid and means the app will ask him to name his anchors); `learning_tables` is `17`; `examinable_hypotheses` is `0`.
+`push_tables` is `3`; `tier_column` and `causes_table` are each `1`; `mandatory` is at most `3` (a `0` is valid and means the app will ask him to name his anchors); `learning_tables` is `17`; `examinable_hypotheses` is `0`; `track_tables` is `24`;
+both `pragma_table_info` queries return **no rows**; `phases` is `6`, `chapters` is `19`,
+`milestones` is `5`, `figures` is `22`, `intents` is `11`, `anchors` is `8`; the
+`confirmed_by` query returns **no rows**; `tier1` is `0` and `tier3` is `30`;
+`deployed_rows` is `0`.
 
 ### 2.5 Rollback
 
-Each migration's rollback is in `OPERATIONS.md` §5.8–§5.18. In every case the legacy
+Each migration's rollback is in `OPERATIONS.md` §5.8–§5.23. In every case the legacy
 tables and their rows survive, so an application rollback is enough; you never need to
 restore the D1 backup to undo these.
 
