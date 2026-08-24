@@ -17,6 +17,7 @@ import {
   pushSubscriptionBodySchema, pushUnsubscribeBodySchema, notificationPreferencesBodySchema,
 } from '../schemas'
 import { vapidConfig, sendPush, inQuietHours, type PushSubscriptionRecord } from '../push'
+import { openJobRun, closeJobRun } from '../request-support'
 
 const DEFAULT_PREFS = {
   blocks_enabled: 1, debrief_enabled: 1, review_enabled: 1,
@@ -141,8 +142,16 @@ app.post('/internal/jobs/alarms', async (c) => {
   }
   await parseEmptyBody(c)
 
+  // Book 7 job_runs: the record is opened BEFORE the config check, so an operator
+  // reading the table can tell "the Cron never called" from "the Cron called and the
+  // push service was not configured". Those need different fixes.
+  const runId = await openJobRun(c.env.DB, 'alarms', 'cron')
+
   const config = vapidConfig(c.env)
-  if (!config) return c.json({ error: 'PUSH SERVICE OFFLINE' }, 503)
+  if (!config) {
+    await closeJobRun(c.env.DB, runId, { status: 'error', errorClass: 'PushServiceOffline' })
+    return c.json({ error: 'PUSH SERVICE OFFLINE' }, 503)
+  }
 
   const DB = c.env.DB
   const owners = (await DB.prepare(
@@ -231,6 +240,15 @@ app.post('/internal/jobs/alarms', async (c) => {
     }
     summary.push({ user_id: owner.id, sent, skipped })
   }
+  await closeJobRun(DB, runId, {
+    status: 'ok',
+    ownersWalked: owners.length,
+    counts: {
+      owners: owners.length,
+      sent: summary.reduce((total, row) => total + row.sent, 0),
+      skipped: summary.reduce((total, row) => total + row.skipped, 0),
+    },
+  })
   return c.json({ ok: true, summary })
 })
 }

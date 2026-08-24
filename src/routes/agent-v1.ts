@@ -10,6 +10,7 @@ import { blocksForDate } from '../repositories'
 import { dayAdherence } from '../scoring'
 import { hermesBriefing } from '../commanders-file'
 import { EXTERNAL_MESSAGE_PREFIX } from '../ai'
+import { isMissed } from '../block-status'
 import {
   agentIntelBodySchema, agentDebriefBodySchema,
   agentBlockLogBodySchema, agentMessageBodySchema,
@@ -149,8 +150,14 @@ app.post('/api/agent/v1/block-log', async (c) => withIdempotency(c, 'agent:block
     id: number
     status: string
   }>()
-  if (existing?.status === 'missed') {
-    return c.json({ error: 'WINDOW CLOSED. Auto-missed blocks require an appeal.' }, 409)
+  // Book 8.3: nothing auto-misses a block. The same-day close writes `unreported` and
+  // moves no points, so a `missed` log is one the commander recorded himself - and Hermes
+  // may not overwrite his own verdict. The old message called them "Auto-missed", which
+  // described the engine 2c07344 removed and told an AGENT it could blame the clock.
+  if (isMissed(existing?.status)) {
+    return c.json({
+      error: 'RECORDED AS MISSED by the commander. An agent cannot re-log it — only his weekly appeal reopens that.',
+    }, 409)
   }
   if (existing) {
     await DB.prepare(

@@ -163,3 +163,54 @@ export async function withIdempotency(
   ).bind(response.status, body, userId, scope, rid).run()
   return response
 }
+
+// ---------------------------------------------------------------------------
+// Book 7's `job_runs`. The two internal jobs and the browser tick all crank the
+// same engines, and until this existed the database could not tell the operator
+// whether the Cron fired at all. openJobRun returns the run id (or null if the
+// insert failed — a missing run record must never abort the job) and closeJobRun
+// completes it. Counts only: no journal text, no block titles, no secret.
+// ---------------------------------------------------------------------------
+export type JobName = 'enforcement' | 'alarms'
+
+export async function openJobRun(
+  DB: D1Database,
+  job: JobName,
+  actorType: 'cron' | 'user' | 'system',
+): Promise<number | null> {
+  try {
+    const row = await DB.prepare(
+      `INSERT INTO job_runs (job, actor_type) VALUES (?,?) RETURNING id`,
+    ).bind(job, actorType).first<{ id: number }>()
+    return row?.id ?? null
+  } catch (_) {
+    return null
+  }
+}
+
+export async function closeJobRun(
+  DB: D1Database,
+  runId: number | null,
+  outcome: {
+    status: 'ok' | 'error'
+    ownersWalked?: number
+    counts?: Record<string, number>
+    errorClass?: string
+  },
+): Promise<void> {
+  if (runId === null) return
+  try {
+    await DB.prepare(
+      `UPDATE job_runs SET finished_at=datetime('now'), status=?, owners_walked=?,
+         counts_json=?, error_class=? WHERE id=?`,
+    ).bind(
+      outcome.status,
+      outcome.ownersWalked ?? 0,
+      outcome.counts ? JSON.stringify(outcome.counts) : null,
+      outcome.errorClass ?? null,
+      runId,
+    ).run()
+  } catch (_) {
+    // The run record is evidence, not the work. Never mask the job's own result.
+  }
+}
