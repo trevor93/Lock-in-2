@@ -1,33 +1,46 @@
 import { env } from 'cloudflare:test'
 import { beforeAll } from 'vitest'
-import initialSchema from '../migrations/0001_initial_schema.sql?raw'
-import intelBooksAlarms from '../migrations/0002_intel_books_alarms.sql?raw'
-import tongue from '../migrations/0003_tongue.sql?raw'
-import reforge from '../migrations/0004_reforge.sql?raw'
-import sessionsAndOwnership from '../migrations/0005_sessions_and_ownership.sql?raw'
-import agentCredentials from '../migrations/0006_agent_credentials.sql?raw'
-import modelSecurity from '../migrations/0007_model_security.sql?raw'
-import auditIdempotency from '../migrations/0008_audit_idempotency.sql?raw'
-import recoveryCatchup from '../migrations/0009_recovery_catchup.sql?raw'
-import altExplanationGate from '../migrations/0010_alternative_explanation_gate.sql?raw'
-import chapterCursor from '../migrations/0011_chapter_cursor.sql?raw'
-import unifyCaptures from '../migrations/0012_unify_captures.sql?raw'
-import maximsCutover from '../migrations/0013_maxims_cutover.sql?raw'
-import intelCutover from '../migrations/0014_intel_cutover.sql?raw'
-import responsesCutover from '../migrations/0015_responses_cutover.sql?raw'
-import sm2ToFsrsMigration from '../migrations/0016_sm2_to_fsrs.sql?raw'
-import pushNotifications from '../migrations/0017_push_notifications.sql?raw'
-import ratchet from '../migrations/0018_ratchet.sql?raw'
-import blockStatuses from '../migrations/0019_block_statuses_and_causes.sql?raw'
-import learningSources from '../migrations/0020_learning_sources_reading.sql?raw'
-import masteryRubric from '../migrations/0021_mastery_rubric_calibration.sql?raw'
-import principlesGraph from '../migrations/0022_principles_graph.sql?raw'
-import immuneSeed from '../migrations/0023_immune_table_seed.sql?raw'
-import rhetoricTrack from '../migrations/0024_rhetoric_track.sql?raw'
-import rhetoricSeed from '../migrations/0025_rhetoric_seed.sql?raw'
-import figureRecords from '../migrations/0026_figure_records.sql?raw'
-import responseLabSeed from '../migrations/0027_response_lab_seed.sql?raw'
-import attemptDeployed from '../migrations/0028_attempt_deployed.sql?raw'
+
+// The migration list is DERIVED from the migrations directory, never hand-listed.
+// A hand-written list stops being exhaustive the moment a migration is added: the
+// file lands on disk, the schema it creates never reaches the test database, and
+// every test touching the new table fails with "no such table" as though the
+// migration itself were broken rather than simply unread. Vite resolves this glob
+// at build time, so it works inside the workers pool, which cannot read disk at
+// runtime.
+const migrationModules = import.meta.glob('../migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+
+// Sorted by path, which sorts by the zero-padded numeric prefix: migrations must
+// be applied in the order they were written.
+export const migrationPaths = Object.keys(migrationModules).sort()
+
+const migrationNumber = (path: string): string => {
+  const name = path.split('/').pop() ?? ''
+  return name.slice(0, 4)
+}
+
+export function migrationSql(path: string): string {
+  const sql = migrationModules[path]
+  if (typeof sql !== 'string' || sql.length === 0) {
+    throw new Error(`migration source not resolved: ${path}`)
+  }
+  return sql
+}
+
+// 0001-0004 build the legacy schema. Every migration from 0005 on is a change
+// under test, and the legacy rows have to be seeded and counted in between, so
+// the ordered list is split at that seam and nowhere else.
+const LEGACY_SCHEMA_THROUGH = '0004'
+const legacyMigrationPaths = migrationPaths.filter(
+  (path) => migrationNumber(path) <= LEGACY_SCHEMA_THROUGH,
+)
+const laterMigrationPaths = migrationPaths.filter(
+  (path) => migrationNumber(path) > LEGACY_SCHEMA_THROUGH,
+)
 
 export const personalTables = [
   'schedule_blocks', 'block_logs', 'debriefs', 'unit_progress', 'maxims',
@@ -78,7 +91,7 @@ function stripComments(sql: string): string {
   }).join('\n')
 }
 
-function statements(sql: string): string[] {
+export function statements(sql: string): string[] {
   const out: string[] = []
   let normal = ''
   let trigger = ''
@@ -118,7 +131,7 @@ function statements(sql: string): string[] {
   return out
 }
 
-async function apply(sql: string): Promise<void> {
+export async function apply(sql: string): Promise<void> {
   for (const statement of statements(sql)) {
     await env.DB.prepare(statement).run()
   }
@@ -192,8 +205,22 @@ async function seedPopulatedLegacySchema(): Promise<void> {
 }
 
 beforeAll(async () => {
-  for (const migration of [initialSchema, intelBooksAlarms, tongue, reforge]) {
-    await apply(migration)
+  // A broken glob would resolve to an empty object, every loop below would be a
+  // no-op, and the failure would surface as a confusing "no such table" in some
+  // unrelated test. Assert the floor here instead, where the message is honest.
+  if (migrationPaths.length < 29) {
+    throw new Error(
+      `migration discovery found only ${migrationPaths.length} files; the glob is broken`,
+    )
+  }
+  if (legacyMigrationPaths.length !== 4) {
+    throw new Error(
+      `expected 4 legacy migrations, found ${legacyMigrationPaths.length}`,
+    )
+  }
+
+  for (const path of legacyMigrationPaths) {
+    await apply(migrationSql(path))
   }
   await seedPopulatedLegacySchema()
   for (const table of personalTables) {
@@ -202,28 +229,7 @@ beforeAll(async () => {
     ).first<{ total: number }>()
     preMigrationRowCounts[table] = row?.total ?? 0
   }
-  await apply(sessionsAndOwnership)
-  await apply(agentCredentials)
-  await apply(modelSecurity)
-  await apply(auditIdempotency)
-  await apply(recoveryCatchup)
-  await apply(altExplanationGate)
-  await apply(chapterCursor)
-  await apply(unifyCaptures)
-  await apply(maximsCutover)
-  await apply(intelCutover)
-  await apply(responsesCutover)
-  await apply(sm2ToFsrsMigration)
-  await apply(pushNotifications)
-  await apply(ratchet)
-  await apply(blockStatuses)
-  await apply(learningSources)
-  await apply(masteryRubric)
-  await apply(principlesGraph)
-  await apply(immuneSeed)
-  await apply(rhetoricTrack)
-  await apply(rhetoricSeed)
-  await apply(figureRecords)
-  await apply(responseLabSeed)
-  await apply(attemptDeployed)
+  for (const path of laterMigrationPaths) {
+    await apply(migrationSql(path))
+  }
 })
