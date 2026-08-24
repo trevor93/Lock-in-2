@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import app from '../src/index'
+import { dowOf } from '../src/time'
 
 // Real duplicate-job idempotency (Book 17 test matrix: "duplicate-job
 // idempotency, no duplicate penalty"). Unlike a probe that 401s on the closed
@@ -97,6 +98,33 @@ describe('Book 17 — duplicate enforcement never double-awards', () => {
       `INSERT INTO block_logs (user_id, block_id, log_date, status, completed_at)
        VALUES (?,?,?, 'done', datetime('now'))`,
     ).bind(userId, blk!.id, yesterday).run()
+    // Yesterday has to be a genuine victory, and "genuine" turns out to depend on the
+    // CALENDAR. test/setup.ts seeds one legacy block scheduled `mon` and nothing else, so it
+    // enters yesterday's denominator only when yesterday happens to be a Monday. This test
+    // seeded a single block of its own, asserted the day was therefore 100%, and so passed six
+    // days a week and failed the seventh.
+    //
+    // Measured, not inferred: green while yesterday was 2026-08-23 (Sun), red the next day
+    // with yesterday = 2026-08-24 (Mon), where the unlogged legacy block took WEIGHTED
+    // adherence to 3/(3+1) = 75%, below the >= 80% victory threshold in src/enforcement.ts,
+    // so the branch under test never ran and the failure read "victory bonus was not awarded
+    // on the first pass" — a true statement about a premise the test had failed to establish,
+    // not about the idempotency guard it exists to check.
+    //
+    // A preflight that is red one day in seven teaches an operator to distrust the suite, and
+    // the runbook's gate is the only gate this repository has. So every block the app itself
+    // considers scheduled yesterday is logged done, using the app's own day predicate from
+    // src/repositories.ts rather than a second copy of the weekday rule that could drift from
+    // it. Any weekday now yields 100%.
+    await env.DB.prepare(
+      `INSERT INTO block_logs (user_id, block_id, log_date, status, completed_at)
+       SELECT ?, b.id, ?, 'done', datetime('now') FROM schedule_blocks b
+       WHERE b.user_id = ? AND (',' || b.days || ',') LIKE ?
+         AND NOT EXISTS (
+           SELECT 1 FROM block_logs l
+           WHERE l.user_id = ? AND l.block_id = b.id AND l.log_date = ?
+         )`,
+    ).bind(userId, yesterday, userId, `%,${dowOf(yesterday)},%`, userId, yesterday).run()
     await env.DB.prepare(
       `INSERT INTO debriefs (user_id, log_date, wins) VALUES (?,?, 'held the line')`,
     ).bind(userId, yesterday).run()

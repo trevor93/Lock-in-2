@@ -12,6 +12,7 @@ import { addDays } from '../time'
 import { blocksForDate, getSetting, setSetting } from '../repositories'
 import { computeStreak } from '../streak'
 import { dayAdherence } from '../scoring'
+import { LANDED_STATUSES, PARTIAL_STATUSES, sqlStatusList } from '../block-status'
 import { lawCheckBodySchema, positiveIdSchema, toneBodySchema } from '../schemas'
 
 export function registerEconomyRoutes(app: Hono<{ Bindings: Bindings; Variables: Variables }>) {
@@ -44,7 +45,14 @@ app.post('/api/laws/:id/check', async (c) => withIdempotency(c, 'law:check', asy
   const DB = c.env.DB
   const userId = c.get('userId')
   const lawId = parseValue(positiveIdSchema, c.req.param('id'))
-  const { date, kept, note } = await parseJson(c, lawCheckBodySchema)
+  const body = await parseJson(c, lawCheckBodySchema)
+  const { kept, note } = body
+  // Book 5.3/6: an event date is bounded to today. A law is kept or broken on a day that
+  // has arrived. Left raw, a forward date both fabricated a Commander's File strike
+  // (lawBreaks counts every kept=0 row regardless of date) and, because the row is
+  // matched on log_date, could not be updated by the real day's check — so the true
+  // entry arrived as a SECOND row for the same day and law.
+  const date = await safeDate(DB, body.date, userId)
   const existing = await DB.prepare(
     `SELECT id FROM law_checks WHERE user_id=? AND law_id=? AND log_date=?`,
   ).bind(userId, lawId, date).first<{ id: number }>()
@@ -108,6 +116,8 @@ app.post('/api/rewards/:id/redeem', async (c) => withIdempotency(c, 'reward:rede
 // changelog visible inside the application — the operator must be able to see
 // when the rules of his own game changed." Static, honest, newest first.
 const SCORING_CHANGELOG: Array<{ date: string; change: string }> = [
+  { date: '2026-08-23', change: 'The ten block statuses now move points everywhere, not only the two legacy spellings (Book 8.3). A block logged `completed` or `completed_late` earns its full points and a revert from either refunds them; before this, both were accepted by the API and paid nothing. A day of `completed` work also no longer reads as a dark day, so the re-entry protocol is not offered to a man who never left, and the weekly category breakdown counts it.' },
+  { date: '2026-08-23', change: 'A block you honestly cancel costs 5, not 10 (Book 8.3). `intentionally_canceled` is now treated as the same honest act as the legacy `skipped` — it is still recorded in full, it simply stops being priced as an unlogged window.' },
   { date: '2026-08-22', change: 'Reading is measured, not clicked (Book 10.1). The +20 for a unit\u2019s reading now requires a recorded session: enough dwell for the words at a plausible pace, and traversal to the end of the chapter. Slow reading is always fine; an abandoned tab earns nothing.' },
   { date: '2026-08-22', change: 'No lesson closes without R0 (Book 10.4): a same-session retrieval with the source closed. An open-book answer is recorded but does not satisfy it.' },
   { date: '2026-08-22', change: 'Mastery levels are now evidence-gated (Book 10.2). Self-scoring is never a gate: it is recorded only so calibration can be measured. Integrated status requires a rubric mean of 2.5 across nine dimensions with none at zero.' },
@@ -157,11 +167,16 @@ app.get('/api/stats', async (c) => {
     }
     days.push({ date: d, pct: pct ?? 0, done, total, mvdHeld: mvd, sleep: deb?.sleep_hours ?? null, mood: deb?.mood ?? null, energy: deb?.energy ?? null, debrief: !!deb })
   }
-  // category breakdown last 7 days
+  // Category breakdown, last 7 days. Full credit for anything that landed, half for a
+  // partial — with both lists taken from the Book 8.3 taxonomy rather than written out
+  // here, because a hand-listed CASE is how `completed` came to read as zero work done
+  // in the only view that shows him where his week actually went.
   const from = addDays(date, -6)
   const { results: catRows } = await DB.prepare(
     `SELECT b.category, COUNT(*) as total,
-            SUM(CASE WHEN l.status='done' THEN 1 WHEN l.status='partial' THEN 0.5 ELSE 0 END) as done
+            SUM(CASE WHEN l.status IN (${sqlStatusList(LANDED_STATUSES)}) THEN 1
+                     WHEN l.status IN (${sqlStatusList(PARTIAL_STATUSES)}) THEN 0.5
+                     ELSE 0 END) as done
      FROM block_logs l JOIN schedule_blocks b ON b.id=l.block_id AND b.user_id=l.user_id
      WHERE l.user_id=? AND l.log_date BETWEEN ? AND ? GROUP BY b.category`
   ).bind(userId, from, date).all()

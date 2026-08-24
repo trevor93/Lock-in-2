@@ -22,6 +22,20 @@ export async function setSetting(DB: D1Database, key: string, value: string, use
     .bind(userId ?? null, key, value).run()
 }
 
+// Book 8.3 — a numeric knob read from a TEXT column. `Number('')` is 0 and
+// `Number('abc')` is NaN, and every comparison against NaN is false, so a single
+// corrupt or blank settings row would otherwise turn a bounds check into a
+// no-op. One reader, one rule: a value that is not a finite number is not a
+// value, and the caller's documented default stands.
+export async function getNumericSetting(
+  DB: D1Database, key: string, userId: number | undefined, fallback: number,
+): Promise<number> {
+  const raw = await getSetting(DB, key, userId)
+  if (raw === null || raw.trim() === '') return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
 export async function blocksForDate(DB: D1Database, userId: number, date: string) {
   const dow = dowOf(date)
   const { results } = await DB.prepare(

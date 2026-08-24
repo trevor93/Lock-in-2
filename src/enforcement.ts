@@ -6,15 +6,51 @@
 // verbatim, verified by the enforcement/idempotency/legal-transition suites.
 // runEnforcement stays in index.tsx as the orchestrator (it also calls
 // ensureUnlocks/ensureCards) to avoid a circular import.
-import { getSetting, blocksForDate } from './repositories'
+import { getSetting, getNumericSetting, blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
 import { boundedPenalty, boundNote } from './scoring-limits'
 import { penalisedBlocks, consecutiveMisses, DEMOTE_AFTER_MISSES } from './ratchet'
-import { hasLanded, isPartial, isExcusedFromScoring } from './block-status'
+import { hasLanded, isPartial, isExcusedFromScoring, isHonestlyCanceled } from './block-status'
 import { addDays } from './time'
 import { computeStreak, trailingMedian } from './streak'
 import { userNow } from './clock'
 import { ensureUnlocks, ensureCards } from './curriculum'
+
+/**
+ * Book 8.5 — the flag types that accuse ONE block of having failed on ONE day.
+ * A granted appeal reopens that window and refunds its penalty, so these are the
+ * flags it must also clear; leaving one standing means the commander is refunded
+ * and still accused, with nothing in the interface able to dismiss it.
+ *
+ * This list exists because the appeal route used to acknowledge `missed_live`, the
+ * type the pre-Book-8.3 engine filed. When 2c07344 replaced that with
+ * `unreported_block` the literal in the route was not re-read, and the UPDATE went
+ * on matching nothing at all. A single exported list, walked by
+ * test/appeal-flag-clearing.test.ts, is what stops the next rename doing the same.
+ */
+export const BLOCK_VERDICT_FLAG_TYPES: readonly string[] = [
+  'unreported_block',        // the window closed with no status (Book 8.3, prompt only)
+  'missed_block',            // the overnight engine's verdict on a mandatory block
+  'missed_block_diagnosed',  // the consequence that followed the recorded cause (Book 8.4)
+]
+
+/**
+ * Block-scoped flags an appeal deliberately leaves alone. None of them is a verdict
+ * on the appealed day: two record a standing structural change already applied to the
+ * schedule, and the third is a fourteen-day pattern finding. Reopening one window
+ * does not undo a demotion, does not un-halve a reduced block, and Book 8.4 is
+ * explicit that repeated avoidance "escalates into investigation, not into points" —
+ * so a refund has nothing to say about it.
+ */
+export const BLOCK_STRUCTURAL_FLAG_TYPES: readonly string[] = [
+  'load_reduction',
+  'ratchet_demotion',
+  'avoidance_investigation',
+]
+
+/** A quoted SQL list for an IN (...) clause. Module constants only — never input. */
+export const sqlFlagTypeList = (types: readonly string[]): string =>
+  types.map((t) => `'${t}'`).join(',')
 
 
 /**
@@ -158,13 +194,34 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
   const yBlocks = await blocksForDate(DB, userId, y1)
   const adh = dayAdherence(yBlocks)
   if (!alreadyFinal) {
+    // Book 8.4 decides the consequence for any miss whose cause was recorded: the
+    // route files `missed_block_diagnosed` and takes -5, once. So the diagnosis, not
+    // the status spelling, is what tells this loop a consequence already landed.
+    //
+    // This used to read `log_status !== 'missed'`, and that literal was correct only
+    // for the engine 2c07344 replaced: the old same-day close wrote 'missed' AND
+    // charged for it live, so stepping over it avoided a double charge. After Book 8.3
+    // the close writes `unreported` and charges nothing, and nothing writes 'missed'
+    // automatically at all - it is now only what the commander says himself. The stale
+    // literal therefore failed in both directions at once. A diagnosed miss was charged
+    // -5 by the cause and -10 again here, making the honest answer DEARER than silence,
+    // which inverts Book 8.4. And a block he reported `missed` himself was the one
+    // not-landed status that cost nothing, which contradicts Book 8.1.
+    const diagnosed = await DB.prepare(
+      `SELECT block_id FROM block_miss_causes WHERE user_id=? AND log_date=?`,
+    ).bind(userId, y1).all()
+    const diagnosedIds = new Set(diagnosed.results.map((r: any) => Number(r.block_id)))
     for (const b of penalisedBlocks(yBlocks)) {
-      if (didNotLand(b.log_status) && b.log_status !== 'missed') {
-        const skipped = b.log_status === 'skipped'
-        await addFlag(DB, userId, y1, 'missed_block', skipped ? 'warn' : 'serious',
-          `[Block #${b.id}] MANDATORY ${skipped ? 'SKIPPED' : 'UNLOGGED'}: "${b.title}" (${y1}). ${skipped ? 'You recorded what happened — that is the honest path. -5 pts.' : 'This block passed without a status. Choose what actually happened. -10 pts.'}`,
-          skipped ? -5 : -10, 'block', b.id)
-      }
+      if (!didNotLand(b.log_status)) continue
+      if (diagnosedIds.has(b.id)) continue   // Book 8.4 already priced this one
+      // Book 8.3 / Book 17's matrix: `intentionally_canceled` is the HONEST path —
+      // he said what happened — so it draws the milder consequence, exactly as its
+      // legacy synonym 'skipped' always did. Comparing against 'skipped' alone
+      // punished the doctrinal spelling of the same honest act at the unlogged rate.
+      const canceled = isHonestlyCanceled(b.log_status)
+      await addFlag(DB, userId, y1, 'missed_block', canceled ? 'warn' : 'serious',
+          `[Block #${b.id}] MANDATORY ${canceled ? 'CANCELLED' : 'UNLOGGED'}: "${b.title}" (${y1}). ${canceled ? 'You recorded what happened — that is the honest path. -5 pts.' : 'This block passed without a status. Choose what actually happened. -10 pts.'}`,
+          canceled ? -5 : -10, 'block', b.id)
     }
 
     // 2b. RATCHET DEMOTION (Book 8.1) is DECIDED here and APPLIED after the load
@@ -296,7 +353,7 @@ export async function runHonestyEngine(DB: D1Database, userId: number, today: st
 export async function runSameDayEnforcement(DB: D1Database, userId: number, date: string, time: string) {
   const start = await getSetting(DB, 'start_date', userId)
   if (start && date < start) return
-  const grace = Math.max(0, Number((await getSetting(DB, 'grace_minutes', userId)) ?? 30))
+  const grace = Math.max(0, await getNumericSetting(DB, 'grace_minutes', userId, 30))
   const [nh, nm] = time.split(':').map(Number)
   const nowMin = nh * 60 + nm
   const blocks = await blocksForDate(DB, userId, date)
