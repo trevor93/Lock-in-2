@@ -5,7 +5,7 @@ import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency } from '../request-support'
 import { readingVerdict } from '../reading'
-import { safeDate, userNow } from '../clock'
+import { safeDate } from '../clock'
 import { addDays } from '../time'
 import { addFlag } from '../enforcement'
 import { ensureUnlocks, ensureCards } from '../curriculum'
@@ -91,7 +91,13 @@ app.post('/api/units/:id/step', async (c) => withIdempotency(c, 'unit:step', asy
   if (!allowedUnitSteps[up.status]?.includes(step)) {
     return c.json({ error: 'ILLEGAL UNIT TRANSITION. Complete each gate in order.' }, 409)
   }
-  const today = date || (await userNow(c.env.DB, userId)).date
+  // Book 5.3/6: an event date is bounded to today. This one is the widest in the app —
+  // it dates FOUR points_ledger awards (+20/+30/+100/+50) and an honesty flag. Left raw,
+  // a forward date banked up to 200 points into the lifetime total (SUM with no date
+  // filter) while no day's reckoning could see them, and gave the exam-failure flag a
+  // fabricated identity: flagExists() and the daily penalty cap are both keyed on the
+  // flag's date, so a varying client string reset both.
+  const today = await safeDate(c.env.DB, date, userId)
 
   if (step === 'reading') {
     await DB.prepare(

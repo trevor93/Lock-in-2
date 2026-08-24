@@ -12,6 +12,7 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue } from '../validation'
+import { safeDate } from '../clock'
 import {
   canonMapBodySchema, rhetoricAttemptBodySchema, figureDetectionBodySchema,
   figureCorrectionBodySchema, inboundCardBodySchema, outboundCardBodySchema,
@@ -249,6 +250,8 @@ app.post('/api/lab/attempt', async (c) => withIdempotency(c, 'lab:attempt', asyn
     return c.json({ error: 'LINE REFUSED', reasons: anti.reasons, source: SOURCE_IS_THE_ROOM }, 409)
   }
 
+  // Book 5.3/6: an event date is bounded to today. A lab attempt is work he did.
+  const occurredOn = await safeDate(DB, b.occurred_on, userId)
   const res = await DB.prepare(
     `INSERT INTO rhetoric_attempts
        (user_id, exercise_type, figure_slug, canon_map_id, prompt, answer,
@@ -259,7 +262,7 @@ app.post('/api/lab/attempt', async (c) => withIdempotency(c, 'lab:attempt', asyn
     b.prompt ?? null, b.answer, b.version_plain ?? null, b.version_controlled ?? null,
     b.version_excessive ?? null, b.excess_diagnosis ?? null, b.why_not_obvious ?? null,
     b.source_room ?? null, b.confidence_before ?? null, b.confidence_after ?? null,
-    b.occurred_on).run()
+    occurredOn).run()
 
   return c.json({
     ok: true,
@@ -552,6 +555,8 @@ app.post('/api/lab/response', async (c) => withIdempotency(c, 'lab:response', as
     }, 409)
   }
 
+  // Book 5.3/6: an event date is bounded to today. A lab attempt is work he did.
+  const occurredOn = await safeDate(DB, b.occurred_on, userId)
   const res = await DB.prepare(
     `INSERT INTO response_builds
        (user_id, intent_slug, situation, layer_intent, layer_truth, layer_structure,
@@ -562,7 +567,7 @@ app.post('/api/lab/response', async (c) => withIdempotency(c, 'lab:response', as
     b.layer_structure, b.layer_delivery,
     b.a_appropriateness ?? null, b.a_clarity ?? null, b.a_proportionality ?? null,
     b.a_naturalness ?? null, b.a_objective_achieved ?? null, b.a_escalation_risk ?? null,
-    b.occurred_on).run()
+    occurredOn).run()
 
   return c.json({
     ok: true,

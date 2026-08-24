@@ -17,7 +17,7 @@ import {
   rhetoricCardReviewBodySchema, rhetoricCardBodySchema, figureOwnExampleBodySchema,
   positiveIdSchema, slugParamSchema,
 } from '../schemas'
-import { userNow } from '../clock'
+import { safeDate, userNow } from '../clock'
 import { getSetting } from '../repositories'
 import { addDays, daysBetween } from '../time'
 import { withIdempotency } from '../request-support'
@@ -275,12 +275,16 @@ app.post('/api/rhetoric/cycle-day', async (c) =>
     if (!gate.unlocked) return c.json({ error: 'PART LOCKED', reason: gate.reason }, 409)
 
     const day = CYCLE_DAYS.find((d) => d.day === b.cycle_day)!
+    // Book 5.3/6: an event date is bounded to today. This upsert's DO UPDATE would
+    // otherwise let a forward date REPLACE a truthful one rather than merely add a
+    // false one — the cycle record is evidence of work done, not a plan.
+    const occurredOn = await safeDate(DB, b.occurred_on, userId)
     await DB.prepare(
       `INSERT INTO cycle_days (user_id, chapter_id, cycle_day, occurred_on, note)
        VALUES (?,?,?,?,?)
        ON CONFLICT(user_id, chapter_id, cycle_day)
        DO UPDATE SET occurred_on=excluded.occurred_on, note=excluded.note`,
-    ).bind(userId, b.chapter_id, b.cycle_day, b.occurred_on, b.note ?? null).run()
+    ).bind(userId, b.chapter_id, b.cycle_day, occurredOn, b.note ?? null).run()
 
     return c.json({
       ok: true,
@@ -315,10 +319,14 @@ app.post('/api/rhetoric/commonplace', async (c) =>
         }, 409)
       }
     }
+    // Book 5.3/6: an event date is bounded to today. The commonplace book is read back
+    // ORDER BY copied_on DESC LIMIT 100; one forward row sits at the top of it until the
+    // date arrives, and at a hundred such rows real entries fall off the end.
+    const copiedOn = await safeDate(DB, b.copied_on, userId)
     await DB.prepare(
       `INSERT INTO commonplace_log (user_id, figure_slug, specimen_id, copied_on, page_of_book)
        VALUES (?,?,?,?,?)`,
-    ).bind(userId, b.figure_slug, b.specimen_id ?? null, b.copied_on, b.page_of_book ?? null).run()
+    ).bind(userId, b.figure_slug, b.specimen_id ?? null, copiedOn, b.page_of_book ?? null).run()
 
     // 11.4's rejected allocation is reported, never silently approached.
     const tier1 = await DB.prepare(
@@ -361,10 +369,12 @@ app.post('/api/rhetoric/copia', async (c) =>
       .bind(b.figure_slug).first()
     if (!figure) return c.json({ error: 'no such figure' }, 404)
 
+    // Book 5.3/6: an event date is bounded to today.
+    const occurredOn = await safeDate(DB, b.occurred_on, userId)
     const session = await DB.prepare(
       `INSERT INTO copia_sessions (user_id, figure_slug, seed_sentence, occurred_on)
        VALUES (?,?,?,?)`,
-    ).bind(userId, b.figure_slug, b.seed_sentence, b.occurred_on).run()
+    ).bind(userId, b.figure_slug, b.seed_sentence, occurredOn).run()
     const sessionId = session.meta.last_row_id as number
 
     for (const r of b.renderings) {
@@ -420,12 +430,14 @@ app.post('/api/rhetoric/deployment', async (c) =>
       .bind(b.figure_slug).first()
     if (!figure) return c.json({ error: 'no such figure' }, 404)
 
+    // Book 5.3/6: an event date is bounded to today. A deployment is a thing he DID.
+    const occurredOn = await safeDate(DB, b.occurred_on, userId)
     const res = await DB.prepare(
       `INSERT INTO deployments
          (user_id, figure_slug, occurred_on, context, what_happened, fit,
           counterpart_noticed, script, delivery_notation, never_list)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(userId, b.figure_slug, b.occurred_on, b.context, b.what_happened, b.fit,
+    ).bind(userId, b.figure_slug, occurredOn, b.context, b.what_happened, b.fit,
       b.counterpart_noticed ? 1 : 0, b.script ?? null,
       b.delivery_notation ?? null, b.never_list ?? null).run()
     const id = res.meta.last_row_id as number
@@ -560,8 +572,13 @@ app.post('/api/rhetoric/review/:id', async (c) =>
     ).bind(id, userId).first<any>()
     if (!card) return c.json({ error: 'no such card' }, 404)
 
-    const { date } = await userNow(DB, userId)
-    const reviewedOn = b.reviewed_on || date
+    // He drills on paper and records it afterwards, so a PAST reviewed_on is the whole
+    // point of the field. Nothing bounded it FORWARD, though: a date that has not
+    // happened both parked the card outside the due queue (nextDue is derived from it)
+    // and wrote a review dated in the future into an append-only log. safeDate clamps
+    // forward to today and passes a past date through untouched, which is what the other
+    // nine route files do and what tongue.ts already does for its own review log.
+    const reviewedOn = await safeDate(DB, b.reviewed_on, userId)
     const stepBefore = card.ladder_step as number
 
     // The rung is DERIVED. A correct answer advances one rung and never skips; a wrong
@@ -606,12 +623,14 @@ app.post('/api/rhetoric/recording', async (c) =>
     const DB = c.env.DB
     const userId = c.get('userId')
     const b = await parseJson(c, recordingBodySchema)
+    // Book 5.3/6: an event date is bounded to today. A recording exists or it does not.
+    const madeOn = await safeDate(DB, b.made_on, userId)
     const res = await DB.prepare(
       `INSERT INTO recordings
          (user_id, kind, file_reference, made_on, programme_day, duration_seconds,
           relisten_allowed_on_day, word_count)
        VALUES (?,?,?,?,?,?,?,?)`,
-    ).bind(userId, b.kind, b.file_reference, b.made_on, b.programme_day ?? null,
+    ).bind(userId, b.kind, b.file_reference, madeOn, b.programme_day ?? null,
       b.duration_seconds ?? null, b.kind === 'baseline' ? RELISTEN_DAYS[0] : null,
       b.word_count ?? null).run()
     return c.json({

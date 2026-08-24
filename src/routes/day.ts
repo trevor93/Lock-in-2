@@ -6,13 +6,16 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, parseEmptyBody, RequestValidationError } from '../validation'
-import { withIdempotency } from '../request-support'
+import { withIdempotency, openJobRun, closeJobRun } from '../request-support'
 import { safeDate, userNow } from '../clock'
 import { addDays, isoWeekKey } from '../time'
 import { getSetting, setSetting } from '../repositories'
 import { timingSafeEq } from '../crypto'
-import { runEnforcement, writeDaySummary } from '../enforcement'
+import {
+  runEnforcement, writeDaySummary, BLOCK_VERDICT_FLAG_TYPES, sqlFlagTypeList,
+} from '../enforcement'
 import { buildState } from '../state'
+import { hasLanded, isPartial, isMissed } from '../block-status'
 import {
   tickBodySchema, blockLogBodySchema, appealBodySchema, loadReductionBodySchema,
   predictionBodySchema, predictionResolutionBodySchema, debriefBodySchema, positiveIdSchema,
@@ -90,7 +93,20 @@ app.post('/api/tick', async (c) => {
       throw new RequestValidationError()
     }
   }
-  const { date, time } = await runEnforcement(c.env.DB, userId)
+  // Book 7 job_runs: the tick cranks the same engine the Cron does, and the record
+  // has to say which, or a dead Cron looks identical to a quiet one.
+  const runId = await openJobRun(DB, 'enforcement', 'user')
+  let result
+  try {
+    result = await runEnforcement(c.env.DB, userId)
+  } catch (error) {
+    await closeJobRun(DB, runId, {
+      status: 'error', ownersWalked: 1, errorClass: (error as Error)?.name || 'Error',
+    })
+    throw error
+  }
+  await closeJobRun(DB, runId, { status: 'ok', ownersWalked: 1, counts: { owners: 1 } })
+  const { date, time } = result
   return c.json(await buildState(DB, userId, date, time))
 })
 
@@ -107,9 +123,20 @@ app.post('/internal/jobs/enforcement', async (c) => {
   }
   await parseEmptyBody(c)
 
+  const runId = await openJobRun(c.env.DB, 'enforcement', 'cron')
   const owners = (await c.env.DB.prepare(`SELECT id FROM users WHERE role='owner' ORDER BY id`).all()).results as Array<{ id: number }>
   const runs = []
-  for (const owner of owners) runs.push(await runEnforcement(c.env.DB, owner.id))
+  try {
+    for (const owner of owners) runs.push(await runEnforcement(c.env.DB, owner.id))
+  } catch (error) {
+    await closeJobRun(c.env.DB, runId, {
+      status: 'error', ownersWalked: runs.length, errorClass: (error as Error)?.name || 'Error',
+    })
+    throw error
+  }
+  await closeJobRun(c.env.DB, runId, {
+    status: 'ok', ownersWalked: owners.length, counts: { owners: owners.length },
+  })
   return c.json({ ok: true, runs })
 })
 
@@ -146,10 +173,17 @@ app.post('/api/blocks/:id/log', async (c) => withIdempotency(c, 'block:log', asy
       }, 409)
     }
   }
-  // THE WINDOW RULE: a block auto-canceled by the enforcement engine is CLOSED.
-  // The only exit is the weekly appeal token (which costs a permanent written reason).
-  if (prev && prev.status === 'missed') {
-    return c.json({ error: 'WINDOW CLOSED. "' + block.title + '" was auto-canceled unlogged — it cannot be reopened. The penalty stands. One appeal token per week exists, if you can face writing the reason.' }, 409)
+  // THE WINDOW RULE: `missed` is terminal, and the weekly appeal token is the only exit
+  // (it costs a permanent written reason). Book 8.3 changed what leads HERE: the
+  // same-day close writes `unreported` now and never auto-cancels, so the only way a
+  // block carries `missed` is that the commander recorded it himself. This message used
+  // to tell him it "was auto-canceled unlogged" and that "the penalty stands" - naming
+  // an engine 2c07344 removed and a charge that is taken by the overnight review, not
+  // here. It states what is true and what his one exit is.
+  if (prev && isMissed(prev.status)) {
+    return c.json({
+      error: 'RECORDED AS MISSED. "' + block.title + '" cannot be re-logged — that record stands. One appeal token per week exists, if you can face writing the reason.',
+    }, 409)
   }
 
   // atomic: log + points transition in one batch
@@ -162,20 +196,24 @@ app.post('/api/blocks/:id/log', async (c) => withIdempotency(c, 'block:log', asy
        WHERE block_logs.user_id=excluded.user_id`
     ).bind(userId, id, date, status, note || null)
   ]
-  const prevEarned = prev && (prev.status === 'done' || prev.status === 'partial')
-  const nowEarns = status === 'done' || status === 'partial'
-  if (nowEarns && !prevEarned) {
-    const p = status === 'done' ? block.points : Math.ceil(block.points / 2)
+  // Book 8.3: what a status PAYS is decided by the taxonomy helpers, never by a
+  // literal comparison against the legacy pair. `completed` and `completed_late` are
+  // the statuses the doctrine names first, and the API accepts both; before this went
+  // through hasLanded/isPartial they earned nothing at all and a revert from them
+  // refunded nothing, which is a silently wrong number rather than an error.
+  const creditFor = (st?: string | null): number =>
+    hasLanded(st) ? block.points : isPartial(st) ? Math.ceil(block.points / 2) : 0
+  const prevCredit = prev ? creditFor(prev.status) : 0
+  const nowCredit = creditFor(status)
+  if (nowCredit !== prevCredit) {
+    const delta = nowCredit - prevCredit
+    const reason = delta > 0
+      ? `${hasLanded(status) ? 'Completed' : 'Partial'}: ${block.title} (+${delta})`
+      : `Reverted: ${block.title} (${delta})`
     stmts.push(DB.prepare(
       `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
        VALUES (?,?,?,?,?,?)`,
-    ).bind(userId, date, p, `${status === 'done' ? 'Completed' : 'Partial'}: ${block.title} (+${p})`, 'block', id))
-  } else if (!nowEarns && prevEarned) {
-    const p = prev.status === 'done' ? block.points : Math.ceil(block.points / 2)
-    stmts.push(DB.prepare(
-      `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type, ref_id)
-       VALUES (?,?,?,?,?,?)`,
-    ).bind(userId, date, -p, `Reverted: ${block.title} (-${p})`, 'block', id))
+    ).bind(userId, date, delta, reason, 'block', id))
   }
   await DB.batch(stmts)
   await writeDaySummary(DB, userId, date, false)
@@ -198,7 +236,16 @@ app.post('/api/appeals', async (c) => {
     `SELECT l.* FROM block_logs l JOIN schedule_blocks b ON b.id=l.block_id
      WHERE l.user_id=? AND b.user_id=? AND l.block_id=? AND l.log_date=?`,
   ).bind(userId, userId, block_id, block_date).first<any>()
-  if (!log || log.status !== 'missed') return c.json({ error: 'That block was not auto-canceled. Appeals only reopen closed windows.' }, 400)
+  // Book 8.3: an appeal reopens a RECORDED miss, not a window that closed by itself. The
+  // old message said the block "was not auto-canceled", which told him the engine
+  // cancels blocks - it stopped doing that in 2c07344. `unreported` is not appealable
+  // because nothing was charged for it; there is no verdict to overturn, only a status
+  // still waiting to be chosen.
+  if (!log || !isMissed(log.status)) {
+    return c.json({
+      error: 'That block is not recorded as missed. An appeal overturns a miss you logged; a block with no status yet needs a status, not an appeal.',
+    }, 400)
+  }
   const week = isoWeekKey(date)
   const used = await DB.prepare(
     `SELECT id FROM appeals WHERE user_id=? AND week_key=?`,
@@ -223,9 +270,16 @@ app.post('/api/appeals', async (c) => {
        WHERE user_id=? AND block_id=? AND log_date=?`,
     ).bind(date, userId, block_id, block_date),
     DB.prepare(
+      // Book 8.5: the appeal clears every flag that accused THIS block on THAT day.
+      // The types come from the enforcement module's own list rather than a literal
+      // here - a literal is how this line came to say `missed_live`, a flag type the
+      // engine stopped filing in 2c07344, so the UPDATE matched nothing and the
+      // accusation stood after the refund. Structural flags (a demotion, a load
+      // reduction, an avoidance investigation) are deliberately left alone: they are
+      // not verdicts on the appealed day.
       `UPDATE honesty_flags SET acknowledged=1
-       WHERE user_id=? AND flag_date=? AND flag_type='missed_live'
-         AND ref_type='block' AND ref_id=?`,
+       WHERE user_id=? AND flag_date=? AND ref_type='block' AND ref_id=?
+         AND flag_type IN (${sqlFlagTypeList(BLOCK_VERDICT_FLAG_TYPES)})`,
     ).bind(userId, block_date, block_id),
   ]
   if ((pen?.p ?? 0) < 0) {

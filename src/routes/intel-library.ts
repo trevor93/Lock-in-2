@@ -6,7 +6,7 @@ import { Hono } from 'hono'
 import type { Bindings, Variables } from '../env'
 import { parseJson, parseValue, RequestValidationError } from '../validation'
 import { withIdempotency, requestId, altGate, recordAltExplanation, auditEvent } from '../request-support'
-import { safeDate, userNow } from '../clock'
+import { safeDate } from '../clock'
 import { collapseDomain, DOMAINS, DOMAIN_LABELS } from '../intel-domains'
 import {
   intelBodySchema, intelVerdictBodySchema, intelDomainSchema,
@@ -174,7 +174,9 @@ app.post('/api/library/:bookId/chapter/:idx', async (c) => withIdempotency(c, 'l
     await DB.prepare(
       `INSERT INTO points_ledger (user_id, log_date, points, reason, ref_type)
        VALUES (?,?,?,?,?)`,
-    ).bind(userId, date || (await userNow(DB, userId)).date, 20, `Real chapter finished: ${bookId} ch.${idx + 1} (+20)`, 'book').run()
+      // Book 5.3/6: an event date is bounded to today. safeDate already falls back to
+      // the user's today when the field is absent, which is what the || was doing.
+    ).bind(userId, await safeDate(DB, date, userId), 20, `Real chapter finished: ${bookId} ch.${idx + 1} (+20)`, 'book').run()
   }
   return c.json({ ok: true })
 }))
