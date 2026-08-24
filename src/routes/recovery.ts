@@ -1,7 +1,9 @@
 // Book 7 refactor — the re-entry routes (Book 8.2/8.6): Minimum Viable Recovery
 // and the deterministic /catchup protocol (its taxonomy + helpers travel here).
 import { Hono } from 'hono'
-import { hasLanded, isPartial, isExcusedFromScoring } from '../block-status'
+import {
+  hasLanded, isPartial, isExcusedFromScoring, ACTIVITY_STATUSES, sqlStatusList,
+} from '../block-status'
 import type { Bindings, Variables } from '../env'
 import { parseJson } from '../validation'
 import { requestId, auditEvent } from '../request-support'
@@ -22,15 +24,19 @@ const MISS_TAXONOMY = [
   'forgotten log', 'emergency', 'technology failure',
 ] as const
 
-// Consecutive days ending yesterday with no logged activity (a block
-// done/partial, or a debrief). Bounded walk; the server owns the clock.
+// Consecutive days ending yesterday with no logged activity (any Book 8.3 status that
+// means something landed, or a debrief). Bounded walk; the server owns the clock.
+// The status list is derived from the taxonomy: while it hand-listed 'done','partial'
+// a week of `completed` work counted as a week of absence, and /catchup opened a
+// re-entry protocol for a man who had never left.
 async function computeDaysAbsent(DB: D1Database, userId: number, today: string): Promise<number> {
   let absent = 0
   for (let i = 1; i <= 60; i++) {
     const d = addDays(today, -i)
     const act = await DB.prepare(
       `SELECT
-         (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date=? AND status IN ('done','partial')) AS blocks,
+         (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date=?
+            AND status IN (${sqlStatusList(ACTIVITY_STATUSES)})) AS blocks,
          (SELECT COUNT(*) FROM debriefs WHERE user_id=? AND log_date=?) AS debriefs`,
     ).bind(userId, d, userId, d).first<{ blocks: number; debriefs: number }>()
     if ((act?.blocks ?? 0) > 0 || (act?.debriefs ?? 0) > 0) break

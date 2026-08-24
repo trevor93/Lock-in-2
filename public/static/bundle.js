@@ -34,6 +34,21 @@
     const el = e.target && e.target.closest && e.target.closest("[data-act-change]");
     if (el) _dispatchAct(e, "data-act-change", el);
   });
+  const LANDED = ["completed", "completed_late", "done"];
+  const PARTIAL = ["partial"];
+  const HONESTLY_CANCELED = ["intentionally_canceled", "skipped"];
+  const EXCLUDED = ["rescheduled", "displaced_by_priority"];
+  const hasLanded = (st) => LANDED.includes(st);
+  const isPartial = (st) => PARTIAL.includes(st);
+  const isHonestlyCanceled = (st) => HONESTLY_CANCELED.includes(st);
+  const isExcusedFromScoring = (st) => EXCLUDED.includes(st);
+  const isUnreported = (st) => st === "unreported";
+  const STATUS_BUTTONS = [
+    { value: "completed", icon: "fa-check", cls: "bg-emerald-700 text-white", label: "COMPLETED", is: hasLanded },
+    { value: "partial", icon: "fa-star-half-stroke", cls: "bg-amber-600 text-white", label: "PARTIAL", is: isPartial },
+    { value: "intentionally_canceled", icon: "fa-xmark", cls: "bg-red-800 text-white", label: "CANCELLED", is: isHonestlyCanceled }
+  ];
+  const isMissed = (st) => st === "missed";
   function isElement(n) {
     return n && n.nodeType === 1;
   }
@@ -366,6 +381,11 @@
     BOUNDARY_TIMER: null,
     // laws
     LAWS_CACHE: null,
+    // Book 8.4 miss diagnosis. CAUSE_LIST caches GET /api/miss-causes (the eleven the
+    // doctrine names, served by the server so the interface never invents one); CAUSE is
+    // the open panel: which block, and the correction the server returned once recorded.
+    CAUSE_LIST: null,
+    CAUSE: null,
     // lazily-loaded per-tab caches
     CAMPAIGN: null,
     MAXIMS: null,
@@ -887,17 +907,17 @@
           this.banner(b);
         }
       }
-      const prevMissed = new Set((S.STATE.blocks || []).filter((b) => b.log_status === "missed").map((b) => b.id));
+      const prevUnreported = new Set((S.STATE.blocks || []).filter((b) => isUnreported(b.log_status)).map((b) => b.id));
       refreshIfStale().then(() => {
         for (const b of S.STATE.blocks || []) {
-          if (b.log_status === "missed" && !prevMissed.has(b.id)) {
-            const mkey = today + "-missed-" + b.id;
+          if (isUnreported(b.log_status) && !prevUnreported.has(b.id)) {
+            const mkey = today + "-unreported-" + b.id;
             if (!this.fired[mkey]) {
               this.fired[mkey] = 1;
               localStorage.setItem("wr_fired", JSON.stringify(this.fired));
-              this.notify("✖ CANCELED — " + b.title, "Window closed unlogged. The block is gone and the penalty is on your ledger. — Law 2: The plan is law.", "warroom-missed");
-              if (FX) FX.toast("✖ “" + b.title + "” AUTO-CANCELED — PENALTY APPLIED", "bad");
-              if (navigator.vibrate) navigator.vibrate([500, 120, 500]);
+              this.notify("◆ NO STATUS — " + b.title, "This block passed without a status. Choose what actually happened, and record the cause before rescheduling.", "warroom-unreported");
+              if (FX) FX.toast("◆ “" + b.title + "” PASSED WITHOUT A STATUS — WHAT HAPPENED?", "info");
+              if (navigator.vibrate) navigator.vibrate([200, 90, 200]);
             }
           }
         }
@@ -2254,7 +2274,10 @@
     dismissId: (e, el, id) => {
       const t = document.getElementById(id);
       if (t) t.remove();
-    }
+    },
+    openCause: (e, el, id) => openCause(id),
+    closeCause: () => closeCause(),
+    recordCause: (e, el, id, cause) => recordCause(id, cause)
   });
   const TONE_LINES = {
     no_targets: {
@@ -2422,21 +2445,21 @@
   }
   function statusBtns(b, compact = false) {
     const st = b.log_status;
-    if (st === "missed") {
+    if (isMissed(st)) {
       const canAppeal = S.STATE && S.STATE.appealAvailable;
       return `<span class="pill" style="background:rgba(153,27,27,.25);color:#f87171;border:1px solid rgba(220,38,38,.45);letter-spacing:.12em">
-      <i class="fas fa-ban text-[9px]"></i>CANCELED</span>${canAppeal ? `
+      <i class="fas fa-ban text-[9px]"></i>MISSED</span>${canAppeal ? `
     <button class="btn px-2 py-1 text-[9px] bg-gray-800/60 border border-gold/40 text-gold ml-1" title="Use this week's appeal token"
       data-act="appealBlock" data-args="${actArgs([b.id, S.STATE.date, b.title])}"><i class="fas fa-gavel"></i></button>` : ""}`;
     }
-    const mk = (val, ic, cls, active) => `
-    <button class="btn ${compact ? "px-2.5 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} ${active ? cls : "bg-gray-800/60 text-gray-500 border border-line"}"
-      data-act="logBlock" data-args="${actArgs([b.id, st === val ? "pending" : val])}"><i class="fas ${ic}"></i></button>`;
-    return `<div class="flex gap-1.5">
-    ${mk("done", "fa-check", "bg-emerald-700 text-white", st === "done")}
-    ${mk("partial", "fa-star-half-stroke", "bg-amber-600 text-white", st === "partial")}
-    ${mk("skipped", "fa-xmark", "bg-red-800 text-white", st === "skipped")}
-  </div>`;
+    if (isUnreported(st)) {
+      return `<button class="btn ${compact ? "px-2.5 py-1.5 text-[10px]" : "px-3 py-2 text-[11px]"} bg-gray-800/60 border border-amber-800/50 text-amber-300 font-bold"
+      data-act="openCause" data-args="${actArgs([b.id])}"><i class="fas fa-clipboard-question mr-1"></i>WHAT HAPPENED?</button>`;
+    }
+    const mk = (btn) => `
+    <button class="btn ${compact ? "px-2.5 py-1.5 text-[11px]" : "px-3 py-2 text-xs"} ${btn.is(st) ? btn.cls : "bg-gray-800/60 text-gray-500 border border-line"}"
+      title="${btn.label}" data-act="logBlock" data-args="${actArgs([b.id, btn.is(st) ? "pending" : btn.value])}"><i class="fas ${btn.icon}"></i></button>`;
+    return `<div class="flex gap-1.5">${STATUS_BUTTONS.map(mk).join("")}</div>`;
   }
   async function logBlock(id, status, ev) {
     const el = ev && ev.target ? ev.target.closest("button") : null;
@@ -2444,27 +2467,89 @@
     try {
       await api("post", `/api/blocks/${id}/log`, { status });
     } catch (e) {
+      if (e && e.response && e.response.status === 409 && e.response.data && e.response.data.needsCause) {
+        await openCause(id);
+        return;
+      }
       FX.fail();
       await loadState();
       render();
       return;
     }
-    if (status === "done") {
+    if (hasLanded(status)) {
       FX.success();
       if (b) FX.floatDelta(b.points, el);
-    } else if (status === "skipped") FX.fail();
+    } else if (isHonestlyCanceled(status)) FX.fail();
     await loadState();
     render();
-    if (status === "done" && S.STATE.adherence && S.STATE.adherence.pct >= 100) {
+    if (hasLanded(status) && S.STATE.adherence && S.STATE.adherence.pct >= 100) {
       FX.confetti({ count: 130 });
       FX.toast("FULL DAY CONQUERED — 100% ADHERENCE", "gold");
     }
+  }
+  async function openCause(id) {
+    S.CAUSE = { blockId: id, list: S.CAUSE_LIST, result: null };
+    if (!S.CAUSE_LIST) {
+      try {
+        S.CAUSE_LIST = await api("get", "/api/miss-causes");
+      } catch (e) {
+        S.CAUSE = null;
+        return;
+      }
+      S.CAUSE.list = S.CAUSE_LIST;
+    }
+    render();
+  }
+  function closeCause() {
+    S.CAUSE = null;
+    render();
+  }
+  async function recordCause(id, cause) {
+    let res;
+    try {
+      res = await api("post", `/api/blocks/${id}/cause`, { cause });
+    } catch (e) {
+      return;
+    }
+    S.CAUSE = { blockId: id, list: S.CAUSE_LIST, result: res };
+    await loadState();
+    render();
+  }
+  function causePanel() {
+    const c = S.CAUSE;
+    if (!c) return "";
+    const b = (S.STATE.blocks || []).find((x) => x.id === c.blockId);
+    const r = c.result;
+    return `
+  <div class="card-lux p-4 mb-3 border-amber-800/50" id="cause-panel">
+    <div class="flex items-start gap-2 mb-2">
+      <div class="flex-1">
+        <h3 class="text-[11px] font-bold tracking-[.2em] text-amber-300"><i class="fas fa-clipboard-question"></i> RECORD THE CAUSE</h3>
+        <p class="text-[10px] text-gray-500 mt-0.5">${b ? esc(b.title) : ""} — this block passed without a status. Record the cause before rescheduling. No points move for saying what happened.</p>
+      </div>
+      <button class="btn px-2 py-1 text-[10px] bg-gray-800/60 border border-line text-gray-400" data-act="closeCause"><i class="fas fa-xmark"></i></button>
+    </div>
+    ${r ? `
+    <div class="card p-3 border-jade/30">
+      <p class="text-[9px] font-bold tracking-widest text-jade">CAUSE ON RECORD — ${esc(String(r.cause || "").replace(/_/g, " ").toUpperCase())}</p>
+      <p class="text-[11px] text-gray-300 leading-relaxed mt-1">${esc(r.correction && r.correction.action || "")}</p>
+      ${r.statusSetTo ? `<p class="text-[10px] text-gray-500 mt-1.5">Status set to <b>${esc(String(r.statusSetTo).replace(/_/g, " "))}</b> — the record is repaired, nothing is pretended away.</p>` : ""}
+      ${r.investigation ? `<p class="text-[10px] text-amber-300 mt-1.5">${esc(r.investigation)}</p>` : ""}
+    </div>` : `
+    <div class="flex flex-col gap-1.5">
+      ${(c.list || []).map((x) => `
+      <button class="btn text-left p-2.5 bg-gray-800/60 border border-line" data-act="recordCause" data-args="${actArgs([c.blockId, x.cause])}">
+        <span class="text-[11px] font-bold text-gray-200">${esc(String(x.cause).replace(/_/g, " ").toUpperCase())}</span>
+        <span class="block text-[10px] text-gray-500 leading-snug mt-0.5">${esc(x.action || "")}</span>
+      </button>`).join("")}
+    </div>`}
+  </div>`;
   }
   function viewNow() {
     const s = S.STATE, c = s.current, n = s.next;
     const adh = s.adherence;
     adh.pct >= 80 ? "#22c55e" : adh.pct >= 50 ? "#f59e0b" : "#dc2626";
-    return `${header()}${flagsPanel()}
+    return `${header()}${flagsPanel()}${causePanel()}
   <section id="now-section" class="stagger">
     ${s.needsCatchup ? `
     <div class="card-lux p-4 mb-3 border-gold/40" id="catchup-door">
@@ -2489,7 +2574,8 @@
       <h2 class="font-disp font-bold text-2xl leading-tight mb-1 text-white">${esc(c.title)}</h2>
       <p class="text-xs text-gray-400 leading-relaxed mb-3">${esc(c.description || "")}</p>
       ${c.is_non_negotiable ? '<span class="pill pill-blood mb-3 inline-flex"><i class="fas fa-lock text-[8px]"></i>NON-NEGOTIABLE</span>' : ""}
-      ${c.log_status === "missed" ? `<p class="text-[10px] text-red-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-ban"></i> WINDOW CLOSED — AUTO-CANCELED. PENALTY APPLIED.</p>` : ""}
+      ${isUnreported(c.log_status) ? `<p class="text-[10px] text-amber-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-clipboard-question"></i> THIS BLOCK PASSED WITHOUT A STATUS. CHOOSE WHAT ACTUALLY HAPPENED.</p>` : ""}
+      ${isMissed(c.log_status) ? `<p class="text-[10px] text-red-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-ban"></i> MISSED — RECORDED. THE OVERNIGHT REVIEW PRICES IT; ONE APPEAL A WEEK EXISTS.</p>` : ""}
       <div class="flex justify-center">${statusBtns(c)}</div>
     </article>` : `
     <article class="card-lux p-6 mb-3 text-center">
@@ -2559,22 +2645,34 @@
     </button>` : ""}
   </section>`;
   }
+  function rowStatusLine(b) {
+    const st = b.log_status;
+    if (isUnreported(st)) return { cls: "text-amber-400 font-bold tracking-wider", text: "◆ NO STATUS YET — WHAT HAPPENED?" };
+    if (isMissed(st)) return { cls: "text-red-500 font-bold tracking-wider", text: "✖ MISSED — RECORDED" };
+    if (isHonestlyCanceled(st)) return { cls: "text-gray-400 tracking-wider", text: "✕ CANCELLED — YOU SAID SO" };
+    if (isExcusedFromScoring(st)) return { cls: "text-blue-300 tracking-wider", text: "→ MOVED — NOT OWED TODAY" };
+    if (hasLanded(st)) return { cls: "text-emerald-400 font-bold", text: "✔ +" + b.points + " pts" };
+    if (isPartial(st)) return { cls: "text-amber-300 font-bold", text: "◐ partial credit" };
+    return { cls: "text-gray-500", text: "+" + b.points + " pts" };
+  }
   function viewToday() {
     const nowMin = (() => {
       const [h, m] = nowTime().split(":").map(Number);
       return h * 60 + m;
     })();
-    return `${header()}
+    return `${header()}${causePanel()}
   <section id="today-schedule" class="fade-in">
     <div class="sect">FULL DAY PLAN — ${dowLabel()}</div>
     <div class="relative" style="padding-left:14px">
     <div class="absolute top-2 bottom-2" style="left:4px;width:2px;background:linear-gradient(180deg,rgba(212,175,55,.4),rgba(29,41,66,.6))"></div>
     ${S.STATE.blocks.map((b) => {
       const isNow = S.STATE.current && S.STATE.current.id === b.id;
-      const done = b.log_status === "done", part = b.log_status === "partial", skip = b.log_status === "skipped", missed = b.log_status === "missed";
+      const done = hasLanded(b.log_status), part = isPartial(b.log_status);
+      const skip = isHonestlyCanceled(b.log_status), missed = isMissed(b.log_status);
+      const unrep = isUnreported(b.log_status), sl = rowStatusLine(b);
       const [sh, sm] = b.start_time.split(":").map(Number);
       const past = sh * 60 + sm < nowMin && !isNow;
-      const dotColor = done ? "#22c55e" : skip || missed ? "#dc2626" : part ? "#f59e0b" : isNow ? "#d4af37" : past ? "#5d6b82" : "#1d2942";
+      const dotColor = done ? "#22c55e" : skip || missed ? "#dc2626" : unrep ? "#f59e0b" : part ? "#f59e0b" : isNow ? "#d4af37" : past ? "#5d6b82" : "#1d2942";
       return `
       <article class="card p-3 mb-2 relative ${isNow ? "card-lux now-ring" : ""} ${done ? "opacity-55" : ""} ${missed ? "opacity-70" : ""}" ${missed ? 'style="border-color:rgba(220,38,38,.35);background:linear-gradient(135deg,rgba(60,10,10,.35),rgba(15,20,32,.9))"' : ""}>
         <div class="absolute rounded-full" style="left:-14px;top:50%;transform:translate(-50%,-50%);width:9px;height:9px;background:${dotColor};box-shadow:0 0 8px ${dotColor}${isNow ? ";animation:flicker 1.5s infinite" : ""}"></div>
@@ -2588,7 +2686,7 @@
             <p class="text-xs font-semibold ${done || missed ? "line-through" : ""} ${skip || missed ? "text-red-400" : ""}">${esc(b.title)}
               ${b.is_non_negotiable ? '<i class="fas fa-lock text-[8px] text-red-500 ml-1"></i>' : ""}
             </p>
-            <p class="text-[10px] ${missed ? "text-red-500 font-bold tracking-wider" : "text-gray-500"}">${missed ? "✖ MISSED — WINDOW CLOSED · PENALTY TAKEN" : `+${b.points} pts ${part ? "· partial" : ""}`}</p>
+            <p class="text-[10px] ${sl.cls}">${sl.text}</p>
           </div>
           ${statusBtns(b, true)}
         </div>

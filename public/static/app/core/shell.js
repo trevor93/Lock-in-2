@@ -4,6 +4,7 @@ import { esc, nl2br } from './sanitize.js'
 import { ACTIONS, registerActions, actArgs } from './events.js'
 import { FX } from './fx.js'
 import { renderExtra } from '../features/campaign.js'
+import * as BS from './block-status.js'
 
 /* WAR ROOM — frontend */
 const $ = (s) => document.querySelector(s);
@@ -86,6 +87,9 @@ registerActions({
   setTab:      (e, el, tab) => { S.TAB = tab; render(); },
   setSub:      (e, el, tab, face) => { S.SUB[tab] = face; render(); },
   dismissId:   (e, el, id) => { const t = document.getElementById(id); if (t) t.remove(); },
+  openCause:   (e, el, id) => openCause(id),
+  closeCause:  () => closeCause(),
+  recordCause: (e, el, id, cause) => recordCause(id, cause),
 });
 
 /* Book 8.7 - the interface register. The server reports the commander's chosen
@@ -274,21 +278,32 @@ export async function ackFlag(id){ await api('post',`/api/flags/${id}/ack`); awa
 /* ================= NOW TAB ================= */
 export function statusBtns(b, compact=false) {
   const st = b.log_status;
-  if (st === 'missed') {
+  // Book 8.3: `missed` is terminal, and the ONLY way in is the commander's own hand -
+  // the same-day close writes `unreported` now and never this. So the pill says MISSED
+  // rather than CANCELED (a cancellation is `intentionally_canceled`, which is the
+  // honest path and costs less), and the appeal token is the one exit, exactly as
+  // src/routes/day.ts requires `log.status === 'missed'` before it will reopen a window.
+  if (BS.isMissed(st)) {
     const canAppeal = S.STATE && S.STATE.appealAvailable;
     return `<span class="pill" style="background:rgba(153,27,27,.25);color:#f87171;border:1px solid rgba(220,38,38,.45);letter-spacing:.12em">
-      <i class="fas fa-ban text-[9px]"></i>CANCELED</span>${canAppeal?`
+      <i class="fas fa-ban text-[9px]"></i>MISSED</span>${canAppeal?`
     <button class="btn px-2 py-1 text-[9px] bg-gray-800/60 border border-gold/40 text-gold ml-1" title="Use this week's appeal token"
       data-act="appealBlock" data-args="${actArgs([b.id, S.STATE.date, b.title])}"><i class="fas fa-gavel"></i></button>`:''}`;
   }
-  const mk = (val, ic, cls, active) => `
-    <button class="btn ${compact?'px-2.5 py-1.5 text-[11px]':'px-3 py-2 text-xs'} ${active?cls:'bg-gray-800/60 text-gray-500 border border-line'}"
-      data-act="logBlock" data-args="${actArgs([b.id, st===val?'pending':val])}"><i class="fas ${ic}"></i></button>`;
-  return `<div class="flex gap-1.5">
-    ${mk('done','fa-check','bg-emerald-700 text-white', st==='done')}
-    ${mk('partial','fa-star-half-stroke','bg-amber-600 text-white', st==='partial')}
-    ${mk('skipped','fa-xmark','bg-red-800 text-white', st==='skipped')}
-  </div>`;
+  // Book 8.4: the window passed with no status, so the CAUSE comes before the status.
+  // The server refuses a status here with 409 needsCause; offering the status buttons
+  // alone would hand him a refusal and no control that could answer it.
+  if (BS.isUnreported(st)) {
+    return `<button class="btn ${compact?'px-2.5 py-1.5 text-[10px]':'px-3 py-2 text-[11px]'} bg-gray-800/60 border border-amber-800/50 text-amber-300 font-bold"
+      data-act="openCause" data-args="${actArgs([b.id])}"><i class="fas fa-clipboard-question mr-1"></i>WHAT HAPPENED?</button>`;
+  }
+  // Book 8.3: the button writes the DOCTRINAL spelling, and `active` asks the
+  // taxonomy predicate rather than comparing to one literal — so a legacy `done`
+  // row still reads as landed instead of as an untouched block.
+  const mk = (btn) => `
+    <button class="btn ${compact?'px-2.5 py-1.5 text-[11px]':'px-3 py-2 text-xs'} ${btn.is(st)?btn.cls:'bg-gray-800/60 text-gray-500 border border-line'}"
+      title="${btn.label}" data-act="logBlock" data-args="${actArgs([b.id, btn.is(st)?'pending':btn.value])}"><i class="fas ${btn.icon}"></i></button>`;
+  return `<div class="flex gap-1.5">${BS.STATUS_BUTTONS.map(mk).join('')}</div>`;
 }
 export async function logBlock(id, status, ev){
   const el = ev && ev.target ? ev.target.closest('button') : null;
@@ -296,21 +311,78 @@ export async function logBlock(id, status, ev){
   try {
     await api('post',`/api/blocks/${id}/log`,{status}); // date is server-derived
   } catch(e) {
+    // 409 needsCause (Book 8.4) is not a dead end: open the panel that answers it.
+    if (e && e.response && e.response.status === 409 && e.response.data && e.response.data.needsCause) {
+      await openCause(id); return;
+    }
     FX.fail(); await loadState(); render(); return; // 409 WINDOW CLOSED — api() already toasted
   }
-  if (status==='done') { FX.success(); if (b) FX.floatDelta(b.points, el); }
-  else if (status==='skipped') FX.fail();
+  if (BS.hasLanded(status)) { FX.success(); if (b) FX.floatDelta(b.points, el); }
+  else if (BS.isHonestlyCanceled(status)) FX.fail();
   await loadState(); render();
-  if (status==='done' && S.STATE.adherence && S.STATE.adherence.pct>=100) {
+  if (BS.hasLanded(status) && S.STATE.adherence && S.STATE.adherence.pct>=100) {
     FX.confetti({count:130}); FX.toast('FULL DAY CONQUERED — 100% ADHERENCE','gold');
   }
+}
+
+/* ============ BOOK 8.4 — MISS DIAGNOSIS ============
+   "Every miss demands a cause before it can be rescheduled." The causes are NOT
+   written here: GET /api/miss-causes serves Book 8.4's fixed taxonomy with each
+   cause's correction, so the interface can never invent a cause of its own or drift
+   from the eleven the doctrine names. The correction that comes back is shown as the
+   result, because 8.4 is explicit that the correction follows the cause, not the
+   penalty. */
+export async function openCause(id){
+  S.CAUSE = { blockId: id, list: S.CAUSE_LIST, result: null };
+  if (!S.CAUSE_LIST) {
+    try { S.CAUSE_LIST = await api('get','/api/miss-causes'); } catch(e) { S.CAUSE = null; return; }
+    S.CAUSE.list = S.CAUSE_LIST;
+  }
+  render();
+}
+export function closeCause(){ S.CAUSE = null; render(); }
+export async function recordCause(id, cause){
+  let res;
+  try { res = await api('post',`/api/blocks/${id}/cause`,{cause}); }
+  catch(e) { return; }                       // api() already surfaced the reason
+  S.CAUSE = { blockId: id, list: S.CAUSE_LIST, result: res };
+  await loadState(); render();
+}
+export function causePanel(){
+  const c = S.CAUSE; if (!c) return '';
+  const b = (S.STATE.blocks||[]).find(x=>x.id===c.blockId);
+  const r = c.result;
+  return `
+  <div class="card-lux p-4 mb-3 border-amber-800/50" id="cause-panel">
+    <div class="flex items-start gap-2 mb-2">
+      <div class="flex-1">
+        <h3 class="text-[11px] font-bold tracking-[.2em] text-amber-300"><i class="fas fa-clipboard-question"></i> RECORD THE CAUSE</h3>
+        <p class="text-[10px] text-gray-500 mt-0.5">${b?esc(b.title):''} — this block passed without a status. Record the cause before rescheduling. No points move for saying what happened.</p>
+      </div>
+      <button class="btn px-2 py-1 text-[10px] bg-gray-800/60 border border-line text-gray-400" data-act="closeCause"><i class="fas fa-xmark"></i></button>
+    </div>
+    ${r?`
+    <div class="card p-3 border-jade/30">
+      <p class="text-[9px] font-bold tracking-widest text-jade">CAUSE ON RECORD — ${esc(String(r.cause||'').replace(/_/g,' ').toUpperCase())}</p>
+      <p class="text-[11px] text-gray-300 leading-relaxed mt-1">${esc((r.correction&&r.correction.action)||'')}</p>
+      ${r.statusSetTo?`<p class="text-[10px] text-gray-500 mt-1.5">Status set to <b>${esc(String(r.statusSetTo).replace(/_/g,' '))}</b> — the record is repaired, nothing is pretended away.</p>`:''}
+      ${r.investigation?`<p class="text-[10px] text-amber-300 mt-1.5">${esc(r.investigation)}</p>`:''}
+    </div>`:`
+    <div class="flex flex-col gap-1.5">
+      ${(c.list||[]).map(x=>`
+      <button class="btn text-left p-2.5 bg-gray-800/60 border border-line" data-act="recordCause" data-args="${actArgs([c.blockId, x.cause])}">
+        <span class="text-[11px] font-bold text-gray-200">${esc(String(x.cause).replace(/_/g,' ').toUpperCase())}</span>
+        <span class="block text-[10px] text-gray-500 leading-snug mt-0.5">${esc(x.action||'')}</span>
+      </button>`).join('')}
+    </div>`}
+  </div>`;
 }
 
 export function viewNow() {
   const s = S.STATE, c = s.current, n = s.next;
   const adh = s.adherence;
   const adhColor = adh.pct>=80?'#22c55e':adh.pct>=50?'#f59e0b':'#dc2626';
-  return `${header()}${flagsPanel()}
+  return `${header()}${flagsPanel()}${causePanel()}
   <section id="now-section" class="stagger">
     ${s.needsCatchup?`
     <div class="card-lux p-4 mb-3 border-gold/40" id="catchup-door">
@@ -335,7 +407,8 @@ export function viewNow() {
       <h2 class="font-disp font-bold text-2xl leading-tight mb-1 text-white">${esc(c.title)}</h2>
       <p class="text-xs text-gray-400 leading-relaxed mb-3">${esc(c.description||'')}</p>
       ${c.is_non_negotiable?'<span class="pill pill-blood mb-3 inline-flex"><i class="fas fa-lock text-[8px]"></i>NON-NEGOTIABLE</span>':''}
-      ${c.log_status==='missed'?`<p class="text-[10px] text-red-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-ban"></i> WINDOW CLOSED — AUTO-CANCELED. PENALTY APPLIED.</p>`:''}
+      ${BS.isUnreported(c.log_status)?`<p class="text-[10px] text-amber-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-clipboard-question"></i> THIS BLOCK PASSED WITHOUT A STATUS. CHOOSE WHAT ACTUALLY HAPPENED.</p>`:''}
+      ${BS.isMissed(c.log_status)?`<p class="text-[10px] text-red-400 font-bold tracking-[.2em] mb-2"><i class="fas fa-ban"></i> MISSED — RECORDED. THE OVERNIGHT REVIEW PRICES IT; ONE APPEAL A WEEK EXISTS.</p>`:''}
       <div class="flex justify-center">${statusBtns(c)}</div>
     </article>`:`
     <article class="card-lux p-6 mb-3 text-center">
@@ -406,21 +479,51 @@ export function viewNow() {
   </section>`;
 }
 
+/* One place that says what a row's status MEANS, in the doctrine's own terms.
+   Book 8.3 removed the auto-cancellation, so the copy that used to live here -
+   announcing a closed window as auto-cancelled with the penalty applied - described
+   an engine that no longer exists and named a charge that was never taken: a passed
+   window becomes `unreported`, and no points move. Book 8.7 also reserves red for
+   genuine risk, "never ordinary incompletion", so the amber prompt is amber. */
+export function rowStatusLine(b) {
+  const st = b.log_status;
+  if (BS.isUnreported(st)) return { cls: 'text-amber-400 font-bold tracking-wider', text: '◆ NO STATUS YET — WHAT HAPPENED?' };
+  if (BS.isMissed(st))     return { cls: 'text-red-500 font-bold tracking-wider',   text: '✖ MISSED — RECORDED' };
+  if (BS.isHonestlyCanceled(st)) return { cls: 'text-gray-400 tracking-wider',      text: '✕ CANCELLED — YOU SAID SO' };
+  if (BS.isExcusedFromScoring(st)) return { cls: 'text-blue-300 tracking-wider',    text: '→ MOVED — NOT OWED TODAY' };
+  if (BS.hasLanded(st))    return { cls: 'text-emerald-400 font-bold',              text: '✔ +' + b.points + ' pts' };
+  if (BS.isPartial(st))    return { cls: 'text-amber-300 font-bold',                text: '◐ partial credit' };
+  return { cls: 'text-gray-500', text: '+' + b.points + ' pts' };
+}
+
 /* ================= TODAY TAB ================= */
 // state moved to core/store.js: LAWS_CACHE
 export function viewToday() {
   const nowMin = (() => { const [h,m]=nowTime().split(':').map(Number); return h*60+m; })();
-  return `${header()}
+  return `${header()}${causePanel()}
   <section id="today-schedule" class="fade-in">
     <div class="sect">FULL DAY PLAN — ${dowLabel()}</div>
     <div class="relative" style="padding-left:14px">
     <div class="absolute top-2 bottom-2" style="left:4px;width:2px;background:linear-gradient(180deg,rgba(212,175,55,.4),rgba(29,41,66,.6))"></div>
     ${S.STATE.blocks.map(b=>{
       const isNow = S.STATE.current && S.STATE.current.id===b.id;
-      const done = b.log_status==='done', part = b.log_status==='partial', skip = b.log_status==='skipped', missed = b.log_status==='missed';
+      // Book 8.3 via the taxonomy module, not via four literals. These read
+      // `b.log_status==='done'/'partial'/'skipped'/'missed'` until this audit, and
+      // STATUS_BUTTONS writes the DOCTRINAL spellings - so every block the commander
+      // logged through the shipped interface came back and rendered as UNTOUCHED: no
+      // strikethrough, no colour, and the row still advertising the points he had
+      // already earned. Predicates cover the legacy synonyms too, so history keeps
+      // its meaning.
+      const done = BS.hasLanded(b.log_status), part = BS.isPartial(b.log_status);
+      const skip = BS.isHonestlyCanceled(b.log_status), missed = BS.isMissed(b.log_status);
+      const unrep = BS.isUnreported(b.log_status), sl = rowStatusLine(b);
       const [sh,sm] = b.start_time.split(':').map(Number);
       const past = (sh*60+sm) < nowMin && !isNow;
-      const dotColor = done?'#22c55e':(skip||missed)?'#dc2626':part?'#f59e0b':isNow?'#d4af37':past?'#5d6b82':'#1d2942';
+      // Book 8.7's ladder in colour: red for a recorded miss or a cancellation, AMBER
+      // for the unreported prompt. An unreported window used to draw as an untouched
+      // future block, which is how the one row that needs an answer became the one row
+      // that looked like it needed nothing.
+      const dotColor = done?'#22c55e':(skip||missed)?'#dc2626':unrep?'#f59e0b':part?'#f59e0b':isNow?'#d4af37':past?'#5d6b82':'#1d2942';
       return `
       <article class="card p-3 mb-2 relative ${isNow?'card-lux now-ring':''} ${done?'opacity-55':''} ${missed?'opacity-70':''}" ${missed?'style="border-color:rgba(220,38,38,.35);background:linear-gradient(135deg,rgba(60,10,10,.35),rgba(15,20,32,.9))"':''}>
         <div class="absolute rounded-full" style="left:-14px;top:50%;transform:translate(-50%,-50%);width:9px;height:9px;background:${dotColor};box-shadow:0 0 8px ${dotColor}${isNow?';animation:flicker 1.5s infinite':''}"></div>
@@ -434,7 +537,7 @@ export function viewToday() {
             <p class="text-xs font-semibold ${done||missed?'line-through':''} ${skip||missed?'text-red-400':''}">${esc(b.title)}
               ${b.is_non_negotiable?'<i class="fas fa-lock text-[8px] text-red-500 ml-1"></i>':''}
             </p>
-            <p class="text-[10px] ${missed?'text-red-500 font-bold tracking-wider':'text-gray-500'}">${missed?'✖ MISSED — WINDOW CLOSED · PENALTY TAKEN':`+${b.points} pts ${part?'· partial':''}`}</p>
+            <p class="text-[10px] ${sl.cls}">${sl.text}</p>
           </div>
           ${statusBtns(b, true)}
         </div>

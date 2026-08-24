@@ -6,6 +6,7 @@
 import { blocksForDate } from './repositories'
 import { dayAdherence } from './scoring'
 import { isMandatory, needsAnchors, ANCHOR_TARGET } from './ratchet'
+import { ACTIVITY_STATUSES, sqlStatusList } from './block-status'
 import { normaliseTone } from './tone'
 import { computeStreak, trailingMedian } from './streak'
 import { addDays, isoWeekKey } from './time'
@@ -71,9 +72,13 @@ export async function buildState(DB: D1Database, userId: number, date: string, t
 
   // Re-entry signal (Book 8.6): auto-offer /catchup after three consecutive
   // zero days. One bounded query so it does not inflate the /api/state budget.
+  // The activity statuses come from the Book 8.3 taxonomy, not from a literal pair:
+  // a day of `completed` or `completed_late` work read as a dark day while this
+  // query hand-listed 'done','partial', and offered him a door he did not need.
   const recent = await DB.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date > ? AND log_date <= ? AND status IN ('done','partial')) AS blocks,
+       (SELECT COUNT(*) FROM block_logs WHERE user_id=? AND log_date > ? AND log_date <= ?
+          AND status IN (${sqlStatusList(ACTIVITY_STATUSES)})) AS blocks,
        (SELECT COUNT(*) FROM debriefs WHERE user_id=? AND log_date > ? AND log_date <= ?) AS debriefs`,
   ).bind(userId, addDays(date, -3), addDays(date, -1), userId, addDays(date, -3), addDays(date, -1))
     .first<{ blocks: number; debriefs: number }>().catch(() => ({ blocks: 1, debriefs: 0 }))

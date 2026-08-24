@@ -27,9 +27,41 @@ export const BLOCK_STATUSES = [
 const LANDED = new Set(['completed', 'completed_late', 'done'])
 /** Statuses that carry no moral weight at all and are excluded from scoring. */
 const EXCLUDED = new Set(['rescheduled', 'displaced_by_priority'])
+/**
+ * He cancelled it himself and said so. Book 17's matrix requires
+ * `intentionally_canceled` to be treated as the honest path rather than as an
+ * unlogged window: the legacy 'skipped' is its synonym, so both live here.
+ */
+const HONESTLY_CANCELED = new Set(['intentionally_canceled', 'skipped'])
 
 export const hasLanded = (status?: string | null): boolean => !!status && LANDED.has(status)
 export const isPartial = (status?: string | null): boolean => status === 'partial'
+/**
+ * Book 8.3/8.4: an honest cancellation is not an unlogged miss. It is recorded, and it
+ * costs less, because saying what happened is the behaviour the engine wants.
+ */
+export const isHonestlyCanceled = (status?: string | null): boolean =>
+  !!status && HONESTLY_CANCELED.has(status)
+
+/**
+ * Statuses that mean the block earned its points, and the ones that earned half.
+ * Exported as arrays because several call sites are SQL, not TypeScript, and a SQL
+ * query that hand-lists the statuses is exactly how `completed` came to earn nothing:
+ * the predicate above was updated, the four SQL literals were not.
+ */
+export const LANDED_STATUSES: readonly string[] = [...LANDED].sort()
+export const PARTIAL_STATUSES: readonly string[] = ['partial']
+/** Every status that means something actually happened that day (landed or partly). */
+export const ACTIVITY_STATUSES: readonly string[] = [...LANDED_STATUSES, ...PARTIAL_STATUSES]
+
+/**
+ * A quoted SQL list for an IN (...) clause, built from the sets above so a new status
+ * reaches the queries the same moment it reaches the predicates. The values are
+ * module constants — never request input — so there is nothing here to inject.
+ */
+export const sqlStatusList = (statuses: readonly string[]): string =>
+  statuses.map((s) => `'${s}'`).join(',')
+
 /**
  * A block moved elsewhere or displaced by a genuine higher priority is not owed on
  * this day — Book 8.4: "A higher priority marks the block displaced_by_priority with
@@ -37,6 +69,19 @@ export const isPartial = (status?: string | null): boolean => status === 'partia
  */
 export const isExcusedFromScoring = (status?: string | null): boolean =>
   !!status && EXCLUDED.has(status)
+
+/**
+ * Book 8.3: `missed` is now only ever written by the commander's own hand. The same-day
+ * close writes `unreported` and moves no points, so nothing auto-cancels a block into
+ * this status any more. It is terminal for re-logging - the weekly appeal token is the
+ * one exit - and the overnight review prices it. A predicate rather than an inline
+ * literal because a hand-written literal is exactly how four renderer comparisons came
+ * to draw a `completed` block as untouched.
+ */
+export const isMissed = (status?: string | null): boolean => status === 'missed'
+
+/** The window passed with no status recorded: a prompt, not a penalty (Book 8.3). */
+export const isUnreported = (status?: string | null): boolean => status === 'unreported'
 
 /** Book 8.4's fixed taxonomy. A miss must name one of these before it is rescheduled. */
 export const MISS_CAUSES = [

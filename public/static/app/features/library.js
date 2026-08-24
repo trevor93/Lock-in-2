@@ -3,6 +3,7 @@ import { FX } from '../core/fx.js'
 import { api, header, nowTime, refreshIfStale, render, toast, todayStr } from '../core/shell.js'
 import { registerActions } from '../core/events.js'
 import { esc } from '../core/sanitize.js'
+import * as BS from '../core/block-status.js'
 
 /* WAR ROOM — ALARM ENGINE + LIBRARY (real books reader) */
 
@@ -116,18 +117,24 @@ export const Alarm = {
         this.banner(b);
       }
     }
-    // refresh state so current-block view stays live — and detect fresh auto-cancellations
-    const prevMissed = new Set((S.STATE.blocks || []).filter(b => b.log_status === 'missed').map(b => b.id));
+    // Refresh state so the current-block view stays live, and tell him the moment a
+    // window closes on him. What that close MEANS changed with Book 8.3: it writes
+    // `unreported`, a data state carrying a prompt and no penalty, and it never
+    // auto-cancels. This watcher was still looking for 'missed' and announcing
+    // 'AUTO-CANCELED — PENALTY APPLIED', so it fired for a status the engine no longer
+    // writes, and would have lied about the ledger if it ever had. It now watches the
+    // state the engine really writes and asks the question the panel can answer.
+    const prevUnreported = new Set((S.STATE.blocks || []).filter(b => BS.isUnreported(b.log_status)).map(b => b.id));
     refreshIfStale().then(() => {
       for (const b of (S.STATE.blocks || [])) {
-        if (b.log_status === 'missed' && !prevMissed.has(b.id)) {
-          const mkey = today + '-missed-' + b.id;
+        if (BS.isUnreported(b.log_status) && !prevUnreported.has(b.id)) {
+          const mkey = today + '-unreported-' + b.id;
           if (!this.fired[mkey]) {
             this.fired[mkey] = 1;
             localStorage.setItem('wr_fired', JSON.stringify(this.fired));
-            this.notify('✖ CANCELED — ' + b.title, 'Window closed unlogged. The block is gone and the penalty is on your ledger. — Law 2: The plan is law.', 'warroom-missed');
-            if (FX) FX.toast('✖ “' + b.title + '” AUTO-CANCELED — PENALTY APPLIED', 'bad');
-            if (navigator.vibrate) navigator.vibrate([500, 120, 500]);
+            this.notify('◆ NO STATUS — ' + b.title, 'This block passed without a status. Choose what actually happened, and record the cause before rescheduling.', 'warroom-unreported');
+            if (FX) FX.toast('◆ “' + b.title + '” PASSED WITHOUT A STATUS — WHAT HAPPENED?', 'info');
+            if (navigator.vibrate) navigator.vibrate([200, 90, 200]);
           }
         }
       }
