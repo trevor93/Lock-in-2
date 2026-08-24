@@ -195,7 +195,11 @@ A D1 restore overwrites production state and is destructive. Do not import or re
 
 ## 5. Production Migration Gate
 
-**State:** Repository-authored migrations currently listed here are `migrations/0005_sessions_and_ownership.sql`, `migrations/0006_agent_credentials.sql`, and `migrations/0007_model_security.sql`. Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
+**State:** Repository-authored migrations listed in this section are `migrations/0005_sessions_and_ownership.sql` through `migrations/0029_job_runs.sql` — twenty-five migrations, each with its own numbered subsection below (§5.1 through §5.24; §5.18 covers `0022` and `0023` together). Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
+
+> This line previously read that only `0005`, `0006`, and `0007` were listed here. It was written when that was true and was never updated as §5.4 through §5.24 were appended. An operator following it would have applied three migrations and believed the gate satisfied while twenty-two remained pending. Corrected by the 2026-08-24 audit. **When a subsection is added, this line is part of that change.**
+
+**`migrations/0001`–`0004` carry no rollback note, and that is deliberate.** `0001_initial_schema`, `0002_intel_books_alarms`, `0003_tongue`, and `0004_reforge` are the INHERITED BASELINE: they were authored and applied before this remediation began, and they create the tables the commander's entire history lives in. A rollback note for `0001` would be an instruction to drop that history, which the standing rule against deleting user data forbids outright. They are the floor the rollback base rests on, not a step that can be reversed. The Book 17 requirement that "every schema change ships with a migration and a rollback note" governs changes this remediation makes — `0005` onward — and every one of those has one.
 
 For each future migration entry, execute only after Section 4 succeeds and the approved commit is checked out.
 
@@ -1332,6 +1336,69 @@ UPDATE rhetoric_attempts SET deployed = 0, deployed_on = NULL;
 ```
 
 That restores the pre-migration behaviour — nothing deployed — without deleting a row. Then redeploy the prior application.
+
+### 5.24 `migrations/0029_job_runs.sql`
+
+**Purpose**
+
+- Book 7 names `job_runs`. Book 5.3 requires audit events on the internal job path, and Book 17's test matrix requires duplicate-job idempotency. Both were already true in behaviour — the enforcement pass is idempotent and the alarm ledger has a UNIQUE identity — but neither job left a **run record**, so the database could not answer "did the Cron fire at 07:31, and what did it do?" A silent job that never ran looks identical to a job that ran and found nothing.
+- One row per run: `job` (`enforcement` or `alarms`), `actor_type` (`cron`, `user`, `system`), `started_at`, `finished_at`, `status` (`running`/`ok`/`error`), `owners_walked`, `counts_json`, `error_class`.
+- `actor_type` is the operationally important column. `POST /internal/jobs/*` records `cron`; a browser `POST /api/tick` cranking the same engine records `user`. Without that distinction a dead Cron is invisible, because the app catching itself up on open looks the same as the scheduler working.
+- The alarms run is opened **before** the VAPID configuration check, so "the Cron never called" and "the Cron called and push was unconfigured" are different rows rather than the same silence. The unconfigured path closes the run with `error_class = 'PushServiceOffline'`.
+- **Metadata only.** Counts, timestamps and an error *class* — never journal text, block titles, subscription endpoints, or the shared secret. `openJobRun`/`closeJobRun` in `src/request-support.ts` swallow their own failures: the run record is evidence, not the work, and must never abort the job it observes.
+- **No `user_id`.** A run covers every owner the job walked, so ownership lives in the counts. The table is therefore deliberately exempt from the ownership sweep in `test/session-ownership.test.ts`, which derives its table set from the columns rather than from a list.
+- **Additive.** Creates one table, one index and one trigger. No existing row changes meaning; no existing table is touched.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/job-runs.test.ts
+npm test
+npx vitest run --config vitest.dom.config.ts
+npx tsc --noEmit
+npm run build
+git diff --check
+```
+
+- [ ] `test/job-runs.test.ts` proves a Cron enforcement call is recorded as `cron`/`ok` with a `finished_at` and at least one owner walked; that a browser tick on the same engine is recorded as `user`; that an alarms call is recorded; that a **wrong secret writes no row at all**; that a finished run refuses `UPDATE`; and that `counts_json` holds only numbers with an `error_class` that never contains SQL, a bearer token, or a password.
+
+**Non-secret verification queries**
+
+```sql
+-- The table, its index and its append-only trigger.
+SELECT COUNT(*) AS job_runs_table FROM sqlite_schema WHERE type='table' AND name='job_runs';
+SELECT COUNT(*) AS job_runs_index FROM sqlite_schema WHERE type='index' AND name='idx_job_runs_job_time';
+SELECT COUNT(*) AS no_reopen_trigger FROM sqlite_schema WHERE type='trigger' AND name='trg_job_runs_no_reopen';
+
+-- Deliberately has no owner column. Expected: NO ROWS.
+SELECT name FROM pragma_table_info('job_runs') WHERE name='user_id';
+
+-- Nothing is seeded by the migration. Expected: 0.
+SELECT COUNT(*) AS rows_at_apply FROM job_runs;
+
+-- After the Cron has run at least once: did the scheduler fire, or only the browser?
+SELECT job, actor_type, status, COUNT(*) AS runs, MAX(started_at) AS latest
+  FROM job_runs GROUP BY job, actor_type, status;
+
+-- A run that never closed. A steady trickle here means the job is dying mid-pass.
+SELECT id, job, actor_type, started_at FROM job_runs
+ WHERE status='running' AND started_at < datetime('now','-1 hour');
+
+-- The record must never carry a row value or a credential. Expected: NO ROWS.
+SELECT id FROM job_runs
+ WHERE error_class LIKE '%SELECT%' OR error_class LIKE '%INSERT%'
+    OR error_class LIKE '%Bearer%' OR error_class LIKE '%password%';
+```
+
+Expected: `job_runs_table`, `job_runs_index` and `no_reopen_trigger` are each `1`; the `pragma_table_info` query returns **no rows**; `rows_at_apply` is `0`. After the Cron has fired, the grouping query should show a row with `actor_type = 'cron'` — **if the only rows are `user`, the Cron Worker is not reaching the application** and §4.5 of `OPERATOR_HANDOFF.md` is the place to look. The stale-`running` query and the `error_class` query must both return **no rows**.
+
+**Rollback**
+
+```sql
+DROP TABLE IF EXISTS job_runs;
+```
+
+Nothing references the table — `openJobRun` returns `null` when the insert fails and `closeJobRun` swallows its own error — so both jobs keep working unchanged after the drop. The only thing destroyed is the run history, which is operational metadata and not a personal record. Then redeploy the prior application if you also want the wiring gone.
 
 ## 6. Deploy and Verify the Pages Application
 

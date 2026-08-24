@@ -24,13 +24,18 @@ somewhere the repository does not control.
 
 | Area | Repository status | Needs you |
 |---|---|---|
-| Migrations `0012`–`0028` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
+| Migrations `0012`–`0029` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
 | Web Push (alarms) | endpoints, service-worker handler, subscribe flow, delivery ledger, tests | VAPID secrets (§3) + Cron Worker (§4) |
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
 | Everything else in Books 5–12 | source + local tests green | deploy (§5) |
 
-Current local gate at handoff time: **475 server tests across 48 files + 25 DOM tests
-across 6 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
+The preflight in §1 must produce: **572 server tests across 61 files + 48 DOM tests
+across 9 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
+
+If your run reports different totals, the tree you are holding is not the tree this
+document describes. Stop and reconcile before you deploy — do not assume the document is
+right and the runner is wrong. `test/handoff-consistency.test.ts` derives the two file
+counts from the repository itself and fails if this sentence drifts from them again.
 
 ---
 
@@ -45,15 +50,26 @@ npx tsc --noEmit
 npm test
 npx vitest run --config vitest.dom.config.ts
 git diff --check
+```
+
+All six must pass. Not five, and not "the important ones" — there is no CI in this
+repository, so this block is the entire gate. Two of the six look skippable and are not:
+`npm test` is bare `vitest run`, which **excludes** `**/*.dom.test.ts`, so the DOM suite
+runs only because the line above names it explicitly; and `git diff --check` is what
+catches a whitespace-mangled file before it reaches production rather than after.
+
+Then record the deploy target:
+
+```powershell
 git rev-parse HEAD
 ```
 
-All five must pass. Write down the commit SHA — it is the deploy target and the rollback
-reference.
+Write down that SHA — it is the deploy target and the rollback reference. It prints a
+value rather than passing or failing, which is why it is not one of the six.
 
 ---
 
-## 2. Apply migrations 0012–0028 to production D1
+## 2. Apply migrations 0012–0029 to production D1
 
 ### 2.1 The backup gate (mandatory, blocking)
 
@@ -63,8 +79,9 @@ it is destructive and needs its own explicit approval.
 
 ### 2.2 What these migrations do
 
-They must be applied **in filename order**. All seventeen are additive or preserve a full
-backup table; none deletes user data.
+They must be applied **in filename order**. All eighteen are additive or preserve a full
+backup table; none deletes user data. (Eighteen files, seventeen descriptions below:
+`0022` and `0023` are described together, exactly as `OPERATIONS.md` §5.18 does.)
 
 - `0012_unify_captures.sql` — creates `captures`, `review_items`, `exams` and backfills
   them 1:1 from `intel_entries` / `maxims` / `responses` / `response_srs` /
@@ -126,6 +143,11 @@ backup table; none deletes user data.
   `deployed_on`, so the outbound red-team card can be mandatory before a draft is
   marked deployed. Additive with safe defaults; nothing is deployed by the migration.
   See §5.23.
+- `0029_job_runs.sql` — Book 7's `job_runs`: one metadata row per enforcement or alarm
+  run, recording whether the **Cron** called or a browser tick did. That distinction is
+  the reason it exists — without it a dead scheduler looks exactly like the app quietly
+  catching itself up. Counts, timestamps and an error class only; no `user_id`, no
+  journal text, never the shared secret. See §5.24.
 
 ### 2.3 Apply
 
@@ -189,19 +211,27 @@ SELECT id, label FROM book_chapter_anchors WHERE confirmed_by IS NULL OR TRIM(co
 SELECT SUM(tier=1) AS tier1, SUM(tier=3) AS tier3 FROM specimens;
 -- Book 12.4's gate as a data check, and nothing deployed by the migration. NO ROWS / 0.
 SELECT COUNT(*) AS deployed_rows FROM rhetoric_attempts WHERE deployed <> 0;
+-- the job-run ledger: table, index and append-only trigger present, no owner column,
+-- and nothing seeded. Expected: 1 / 1 / 1, NO ROWS, 0.
+SELECT (SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='job_runs') AS job_runs_table,
+       (SELECT COUNT(*) FROM sqlite_schema WHERE type='index' AND name='idx_job_runs_job_time') AS job_runs_index,
+       (SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name='trg_job_runs_no_reopen') AS no_reopen_trigger;
+SELECT name FROM pragma_table_info('job_runs') WHERE name='user_id';
+SELECT COUNT(*) AS job_runs_rows FROM job_runs;
 ```
 
 Expected: `captures_rows` equals `legacy_rows`; `unowned`, `orphan_cards`, `orphan_sr` and
 `missing_fsrs` are all `0`; `cards` equals `backup`; `alt_triggers` is `2`;
 `push_tables` is `3`; `tier_column` and `causes_table` are each `1`; `mandatory` is at most `3` (a `0` is valid and means the app will ask him to name his anchors); `learning_tables` is `17`; `examinable_hypotheses` is `0`; `track_tables` is `24`;
-both `pragma_table_info` queries return **no rows**; `phases` is `6`, `chapters` is `19`,
+the two Law 22 `pragma_table_info` queries return **no rows**; `phases` is `6`, `chapters` is `19`,
 `milestones` is `5`, `figures` is `22`, `intents` is `11`, `anchors` is `8`; the
 `confirmed_by` query returns **no rows**; `tier1` is `0` and `tier3` is `30`;
-`deployed_rows` is `0`.
+`deployed_rows` is `0`; `job_runs_table`, `job_runs_index` and `no_reopen_trigger` are each
+`1`, the `job_runs` owner-column query returns **no rows**, and `job_runs_rows` is `0`.
 
 ### 2.5 Rollback
 
-Each migration's rollback is in `OPERATIONS.md` §5.8–§5.23. In every case the legacy
+Each migration's rollback is in `OPERATIONS.md` §5.8–§5.24. In every case the legacy
 tables and their rows survive, so an application rollback is enough; you never need to
 restore the D1 backup to undo these.
 
@@ -343,6 +373,25 @@ SELECT COUNT(*) AS duplicates FROM (
 
 Expected: `duplicates` is `0`, always. One row per alarm per day is the guarantee; the
 minute-by-minute Cron cannot double-notify.
+
+- The database answers the same question without reading a log, which matters because
+  logs expire and a missing log looks like a quiet night:
+
+```sql
+-- Did the SCHEDULER fire, or only the browser? If every row says 'user', the Cron is
+-- not reaching the application no matter how healthy the Worker dashboard looks.
+SELECT job, actor_type, status, COUNT(*) AS runs, MAX(started_at) AS latest
+  FROM job_runs GROUP BY job, actor_type, status ORDER BY latest DESC;
+
+-- Runs that opened and never closed. A steady trickle means the pass is dying midway.
+SELECT id, job, actor_type, started_at FROM job_runs
+ WHERE status='running' AND started_at < datetime('now','-1 hour');
+```
+
+  Expected once the Cron is live: at least one `alarms` / `cron` row, and — after the
+  07:31 enforcement trigger — at least one `enforcement` / `cron` row. A `PushServiceOffline`
+  in `error_class` is the 503 above recorded honestly: the Cron *did* call, and VAPID is
+  not configured. The stale-`running` query returns no rows.
 
 ### 4.6 Rollback
 
