@@ -23,6 +23,11 @@ export const S = {
   BOUNDARY_TIMER: null,
   // laws
   LAWS_CACHE: null,
+  // Book 8.4 miss diagnosis. CAUSE_LIST caches GET /api/miss-causes (the eleven the
+  // doctrine names, served by the server so the interface never invents one); CAUSE is
+  // the open panel: which block, and the correction the server returned once recorded.
+  CAUSE_LIST: null,
+  CAUSE: null,
   // lazily-loaded per-tab caches
   CAMPAIGN: null,
   MAXIMS: null,

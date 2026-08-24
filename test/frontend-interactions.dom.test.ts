@@ -87,17 +87,20 @@ describe('B7 frontend interaction integrity', () => {
     })
     await waitFor(() => !!document.querySelector('[data-act="logBlock"]'))
 
-    // The current-block card renders done/partial/skipped via statusBtns(); the
-    // "done" button carries data-act="logBlock" data-args='[42,"done"]'.
+    // The current-block card renders the three status buttons via statusBtns(). The
+    // spelling changed with the Book 8.3 fix and this assertion moved with it: the
+    // completion button now writes `completed`, the status the doctrine names first,
+    // where it used to write the legacy synonym `done`. The server accepted both all
+    // along; only `completed` was unreachable from the interface.
     const buttons = Array.from(document.querySelectorAll('[data-act="logBlock"]')) as HTMLElement[]
-    const done = buttons.find((b) => (b.getAttribute('data-args') || '').includes('done'))
-    expect(done, 'the done button did not render').toBeTruthy()
+    const done = buttons.find((b) => (b.getAttribute('data-args') || '').includes('completed'))
+    expect(done, 'the completion button did not render').toBeTruthy()
     done!.click()
     await waitFor(() => !!findCall(calls, 'POST', '/api/blocks/42/log'))
 
     const logged = findCall(calls, 'POST', '/api/blocks/42/log')
     expect(logged, '/api/blocks/42/log was not called').toBeTruthy()
-    expect((logged!.data as { status: string }).status).toBe('done')
+    expect((logged!.data as { status: string }).status).toBe('completed')
   })
 
   it('the MIND drill flips a card and grading it posts to /api/cards/:id/review', async () => {

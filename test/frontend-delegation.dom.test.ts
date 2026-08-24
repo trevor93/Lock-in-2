@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 // Book 7 structural guard: the generated frontend must carry NO inline event-handler
@@ -9,15 +9,17 @@ import { resolve } from 'node:path'
 // forgotten registration can't ship as a silently-dead button.
 
 // Book 7: the frontend is an ES-module tree under public/static/app/ (core/ +
-// features/) bundled by Vite, so the guard scans every module.
-const FILES = [
-  'core/shell.js', 'core/events.js', 'core/sanitize.js',
-  'features/campaign.js', 'features/mind.js', 'features/debrief.js',
-  'features/library.js', 'features/council.js', 'features/response-lab.js',
-  'features/rhetoric.js',
-]
+// features/) bundled by Vite, so the guard scans every module. The list is read
+// from the directory rather than hand-written: a hardcoded list silently stops
+// covering a module the moment one is added, which is how core/fx.js,
+// core/morph.js and core/store.js came to sit outside this guard.
+const APP_ROOT = resolve(__dirname, '../public/static/app/')
+const FILES = ['main.js', ...['core', 'features'].flatMap((dir) =>
+  readdirSync(resolve(APP_ROOT, dir))
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => `${dir}/${name}`))]
 const SRC = FILES
-  .map((f) => readFileSync(resolve(__dirname, '../public/static/app/', f), 'utf8'))
+  .map((f) => readFileSync(resolve(APP_ROOT, f), 'utf8'))
   .join(String.fromCharCode(10))
 
 // Pull handler names out of each registerActions({...}) object via a brace-balanced
@@ -42,6 +44,14 @@ function registeredNames(src: string): Set<string> {
 }
 
 describe('B7 frontend delegation integrity', () => {
+  it('scans every module in the app tree', () => {
+    // A floor plus the two directories, so a broken glob fails loudly instead of
+    // quietly scanning nothing.
+    expect(FILES.length).toBeGreaterThanOrEqual(13)
+    expect(FILES).toContain('core/store.js')
+    expect(FILES).toContain('features/rhetoric.js')
+  })
+
   it('carries no inline event-handler attributes in any shipped app file', () => {
     const offenders = [...SRC.matchAll(/\son(click|keydown|change|input|submit|mouseover|load|error)\s*=\s*"/g)]
       .map((m) => m[0].trim())
