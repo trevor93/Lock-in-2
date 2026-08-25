@@ -1,0 +1,60 @@
+# The repository-side gate, run by a machine instead of by memory.
+#
+# The 2026-08-25 audit found fifteen defects with one cause: a hand-written count,
+# list, or literal stops being true the moment the thing it describes grows, and
+# nothing tells you. The gate that verified those fixes had the same defect — the
+# runbook preflight was a hand-written list of commands that ran 572 of 620 tests
+# and exited 0. Collapsing it to `npm run verify` fixed the list. This file fixes
+# the remaining half of the problem: that running it at all was a human choice.
+#
+# SCOPE BOUNDARY, and it is not negotiable. Cloudflare belongs to a separate
+# operator agent. This workflow holds no credentials, reads no secrets, and
+# performs no deploy — it is a test runner. `test/gate-completeness.test.ts`
+# asserts that: if `wrangler`, `secrets.`, `pages deploy`, or a Cloudflare token
+# ever appears in a workflow file, the suite fails.
+
+name: verify
+
+on:
+  push:
+    branches: ['main', 'refactor/**']
+  pull_request:
+    branches: ['main']
+
+# Least privilege: this workflow only needs to read the code it tests.
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same ref. The server suite takes
+  # about six minutes, so without this a burst of pushes queues them all.
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # The server suite runs around six minutes on this hardware; the ceiling is set
+    # well above that so a genuine hang fails rather than running to the account
+    # default, but not so tight that a slow runner reports a false red.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # `npm ci` and not `npm install`: it installs exactly what the lockfile says,
+      # so a passing run here is a statement about the committed dependency tree
+      # rather than about whatever resolved today.
+      - run: npm ci
+
+      # The whole gate. One command on purpose — see OPERATIONS.md Section 5.
+      # This includes `git diff --exit-code -- public/static/bundle.js`, which fails
+      # if the committed client bundle disagrees with the source it was built from, so
+      # a stale bundle cannot pass here even though it typechecks and every test is
+      # green. It is the only build output this repository tracks; `dist/` is
+      # gitignored and is rebuilt at deploy time.
+      - run: npm run verify

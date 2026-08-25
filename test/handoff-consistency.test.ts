@@ -39,6 +39,10 @@ const NUMBER_WORDS: Record<string, number> = {
   'twenty-one': 21, 'twenty-two': 22, 'twenty-three': 23, 'twenty-four': 24,
   'twenty-five': 25, 'twenty-six': 26, 'twenty-seven': 27, 'twenty-eight': 28,
   'twenty-nine': 29, thirty: 30,
+  // "both" is not a numeral but it is an exact quantifier — it means two and cannot mean
+  // anything else, which is the only property this lexicon cares about. It is here
+  // because the preflight is now two commands and "All two must pass" is not English.
+  both: 2,
 }
 
 /**
@@ -176,14 +180,23 @@ describe('B17.5 the operator handoff counts what is actually there', () => {
     const block = fencedBlockUnder(handoffSrc, /^## 1\. Preflight[^\n]*\n/m)
     expect(block, 'the preflight block moved or lost its fence').not.toBe('')
     const commands = commandLines(block)
-    expect(commands.length, 'the preflight block has no commands in it').toBeGreaterThanOrEqual(5)
-    const claim = handoffSrc.match(/All (\S+) (?:must pass|of these must pass)/)
+    // The floor was five when the gate was five commands printed by hand. That list is
+    // what went stale — it named `npm test`, which excluded the DOM project, so the block
+    // ran 572 of 620 tests and exited 0. The gate is now `npm ci` then `npm run verify`,
+    // and this floor exists only to catch a block that has lost one of those two.
+    expect(commands.length, 'the preflight block has no commands in it').toBeGreaterThanOrEqual(2)
+    // The quantifier can be a digit, a number word, or "Both" — resolved to a number so
+    // this keeps working at any list length rather than only at the length it was written for.
+    const claim = handoffSrc.match(
+      /All (\S+) (?:must pass|of these must pass)|(Both) (?:must pass|of these must pass)/,
+    )
     expect(claim, 'the preflight no longer states how many commands must pass').not.toBeNull()
-    const claimed = asNumber(claim![1])
-    expect(claimed, `"${claim![1]}" is not a number this guard can read`).not.toBeNull()
+    const quantifier = claim![1] ?? claim![2]
+    const claimed = asNumber(quantifier)
+    expect(claimed, `"${quantifier}" is not a number this guard can read`).not.toBeNull()
     expect(
       claimed,
-      `the preflight prints ${commands.length} commands and then says ${claim![1]} must `
+      `the preflight prints ${commands.length} commands and then says ${quantifier} must `
       + 'pass. An operator has to guess which ones do not count, and the two that look '
       + 'most skippable are the DOM suite and the whitespace check',
     ).toBe(commands.length)
@@ -311,18 +324,34 @@ describe('B17.5 the operator handoff counts what is actually there', () => {
     }
   })
 
-  it('the preflight actually names both suites, not only the one npm test runs', () => {
-    // `npm test` is bare `vitest run`, and vitest.config.ts excludes **/*.dom.test.ts.
-    // There is no CI in this repository, so this block is the ONLY place the DOM suite
-    // is guaranteed to be run before a deploy. If the line naming it were ever dropped,
-    // nine files and every escaping guard in them would go unrun with nothing to say so.
+  it('the preflight delegates to the one derived gate instead of listing suites', () => {
+    // WHAT THIS USED TO ASSERT, AND WHY IT CHANGED — recorded because the reason is the
+    // finding, not a refactor. It required this block to name `npm test` and
+    // `vitest run --config vitest.dom.config.ts` literally, on three premises: `npm test`
+    // was bare `vitest run`, `vitest.config.ts` excludes `**/*.dom.test.ts`, and there
+    // was no CI — so the block was the only place the DOM suite was guaranteed to run.
+    // All three are now false.
+    //
+    // The old form was also the audit's own root cause wearing a guard's clothes: a
+    // hand-written list of config names, kept in a second document, that would go stale
+    // the moment a third project was added and would then enforce the stale version.
+    // Coverage is now asserted by DERIVATION in `test/gate-completeness.test.ts`, which
+    // globs `vitest*.config.ts` and fails if the gate misses one — and which also holds
+    // the typecheck assertion this guard used to duplicate. What is left here is the part
+    // that genuinely belongs to the handoff: that the operator is sent to the whole gate
+    // and not to some shorter thing that looks equivalent.
     const block = fencedBlockUnder(handoffSrc, /^## 1\. Preflight[^\n]*\n/m)
-    expect(block, 'the preflight lost the command that runs the server suite').toMatch(/npm test/)
+    expect(block, 'the preflight lost the single gate command').toMatch(/npm run verify/)
     expect(
       block,
-      'the preflight no longer runs the DOM suite — `npm test` excludes **/*.dom.test.ts '
-      + 'and there is no CI, so nothing else would run it',
-    ).toMatch(/vitest run --config vitest\.dom\.config\.ts/)
-    expect(block, 'the preflight lost the typecheck').toMatch(/tsc --noEmit/)
+      'the preflight no longer installs from the lockfile, so a green run says nothing '
+      + 'about the committed dependency tree',
+    ).toMatch(/npm ci/)
+    expect(
+      block,
+      'the preflight calls bare `npm test` beside the gate, which invites an operator to '
+      + 'treat the shorter command as sufficient — that is how 572 of 620 tests came to '
+      + 'count as a pass',
+    ).not.toMatch(/^npm test$/m)
   })
 })

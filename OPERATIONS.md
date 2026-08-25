@@ -211,13 +211,41 @@ git switch refactor/strategic-judgment-os
 git pull --ff-only origin refactor/strategic-judgment-os
 git status --short
 npm ci
-npm test
-npm run build
-npx tsc --noEmit
+npm run verify
 ```
 
+> **Why this is one command and not a list.** It used to be a list, and the list went
+> stale. It named `npm test`, `npm run build` and `npx tsc --noEmit`. When a second
+> vitest project was added, `npm test` stayed in the list and stopped being the whole
+> suite: `vitest.config.ts` excludes `**/*.dom.test.ts`, so this preflight ran 572 of
+> 620 tests and exited 0 — a gate that reported a pass over forty-eight tests it never
+> ran. `npm run verify` is now the entire gate: build, every vitest project,
+> `tsc --noEmit`, `git diff --check`, and `git diff --exit-code`. It is defined in
+> `package.json`, and `test/gate-completeness.test.ts` derives the required project
+> list from the `vitest*.config.ts` files that actually exist, so adding a third
+> project fails the suite until the gate covers it. **Do not expand this back into a
+> list of commands.** The list is what failed.
+>
+> The last step runs after the build and fails if the committed client bundle
+> disagrees with the source it was built from. That disagreement is what let a stale
+> `bundle.js` ship an interface which drew every logged block as untouched — the first
+> CRITICAL finding of the 2026-08-25 audit.
+>
+> It is written `git diff --exit-code -- public/static/bundle.js`, and both halves of
+> that are deliberate. The path is the **only** build output git tracks: `dist/` is in
+> `.gitignore`, so the worker bundle has no committed copy to go stale against and
+> cannot be diffed at all. And the check is scoped rather than run over the whole tree
+> because an unscoped `git diff --exit-code` also fails on any unrelated uncommitted
+> edit — one message for two causes, so its failure could not tell you whether the
+> committed bundle was stale or you simply had work in progress. That ambiguity is
+> finding 15 of the same audit, where a message that could not name its cause taught an
+> operator to re-run the gate until it went green. `test/gate-completeness.test.ts`
+> holds the scope in place: it reads the artefact path out of `vite.client.config.ts`
+> rather than repeating it, and fails if `dist/` ever stops being ignored.
+
 - [ ] Require a clean `git status --short` before applying a migration.
-- [ ] Require every listed command to exit successfully.
+- [ ] Require `npm run verify` to exit successfully. It is one command on purpose; if
+      any stage fails it stops there, and a partial pass is not a pass.
 - [ ] Record `git rev-parse HEAD` as the approved commit.
 - [ ] Confirm Section 4 produced a fresh backup for this exact change window.
 
@@ -255,10 +283,8 @@ npx wrangler d1 migrations list webapp-production --remote
 **Repository evidence required before production application**
 
 ```powershell
-npm test -- --run test/migration-0005.test.ts test/session-ownership.test.ts
-npm test
-npm run build
-npx tsc --noEmit
+npx vitest run test/migration-0005.test.ts test/session-ownership.test.ts
+npm run verify
 ```
 
 - [ ] `test/migration-0005.test.ts` passes against a populated pre-`0005` schema copy.
@@ -331,10 +357,7 @@ Deploy the recorded prior application deployment while retaining the additive `u
 
 ```powershell
 npx vitest run test/migration-0006.test.ts test/agent-credentials.test.ts test/session-ownership.test.ts test/get-read-only.test.ts test/hermes-bridge.test.ts
-npm test
-npm run build
-npx tsc --noEmit
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/migration-0006.test.ts` passes against the populated schema copy created before `0005` and migrated through `0005` and `0006`.
@@ -403,10 +426,7 @@ Deploy the recorded prior application deployment while retaining `agent_credenti
 
 ```powershell
 npx vitest run test/migration-0007.test.ts test/model-security.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/migration-0007.test.ts` passes against the populated schema copy created before `0005` and migrated in order through `0005`, `0006`, and `0007`.
@@ -483,10 +503,7 @@ Deploy the recorded prior application deployment while retaining `model_requests
 
 ```powershell
 npx vitest run test/migration-0008.test.ts test/audit-idempotency.test.ts test/enforcement-idempotency.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/migration-0008.test.ts` passes against the populated schema copy migrated in order through `0008`.
@@ -528,10 +545,7 @@ Deploy the recorded prior application while retaining both tables, all indexes/t
 
 ```powershell
 npx vitest run test/recovery-catchup.test.ts test/catchup-wiring.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/recovery-catchup.test.ts` passes; pre-existing row counts unchanged.
@@ -570,10 +584,7 @@ Deploy the prior application while retaining the column, tables, and rows. `mvr_
 
 ```powershell
 npx vitest run test/alt-explanation-gate.test.ts test/alt-gate-wiring.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] Focused tests prove the schema gate rejects a heated capture with no alternative, allows a calm one, counts the "none plausible" tell, and surfaces the counts in `/api/stats`.
@@ -610,10 +621,7 @@ Deploy the prior application while retaining the columns, table, and rows. The a
 
 ```powershell
 npx vitest run test/cursor-continuity.test.ts test/get-read-only.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] Focused tests prove the cursor persists an update, rejects an out-of-range cycle day, drives the Continuity Brief, and that `GET /api/cursor` and `GET /api/continuity-brief` perform zero writes.
@@ -646,10 +654,7 @@ Deploy the prior application while retaining the table and rows. The prior appli
 
 ```powershell
 npx vitest run test/migration-0012.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/migration-0012.test.ts` proves `captures` = intel+maxim+response split by `kind`, `review_items` = `response_srs`, `exams` = `tongue_exams`, that field values and owner (`user_id`) survive the mapping, that the legacy tables are left byte-for-byte unchanged, and that the backfill is idempotent (re-runnable, `NOT EXISTS`-guarded).
@@ -688,10 +693,7 @@ Drop the three shadow tables only — `DROP TABLE IF EXISTS exams; DROP TABLE IF
 
 ```powershell
 npx vitest run test/maxims-cutover.test.ts test/legal-state-transitions.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/maxims-cutover.test.ts` proves the pre-migration backup is retained with full parity, `flashcards` row count is unchanged (no SR state lost), every flashcard remaps onto a real `kind='maxim'` capture (no orphans), the new FK rejects a non-existent capture, and the maxim routes read/write `captures` while the card queue still surfaces a new maxim.
@@ -726,10 +728,7 @@ Expected: `backup_table` is `1`; `cards` equals `backup`; `orphans` is `0`.
 
 ```powershell
 npx vitest run test/intel-cutover.test.ts test/alt-explanation-gate.test.ts test/alt-gate-wiring.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/intel-cutover.test.ts` proves intel is written to `captures` (not the frozen `intel_entries`), read back through the API, verdict finality holds, the heated-capture brake returns 400 through the API, and the captures trigger aborts a non-calm intel row with no alternative while accepting a calm one or a heated one with an alternative.
@@ -765,10 +764,7 @@ Expected: `captures_alt_triggers` is `2`; at cutover time `intel_captures` equal
 
 ```powershell
 npx vitest run test/responses-cutover.test.ts test/tongue-review.test.ts test/legal-state-transitions.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/responses-cutover.test.ts` proves the response SR rows remap onto real response captures (no orphans) with count parity, the `tongue_reviews` backup is retained and the responses FK is gone (a review can be logged against a capture id), and capture/exam writes land in `captures`/`review_items`/`exams` while `responses`/`response_srs`/`tongue_exams` stay frozen. `test/tongue-review.test.ts` proves the drill queue and scheduling still work through `review_items`.
@@ -806,10 +802,7 @@ Expected: `orphan_sr` is `0`; `treviews_backup` is `1`; at cutover time `sr_rows
 
 ```powershell
 npx vitest run test/fsrs.test.ts test/fsrs-wiring.test.ts test/tongue-review.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/fsrs.test.ts` proves the scheduler's properties (retrievability decay, interval grows with stability / shrinks as retention rises, recall strengthens, lapse never strengthens, difficulty in range, monotonic SM-2 mapping). `test/fsrs-wiring.test.ts` proves 0016 left no response review_item without FSRS state and a review records stability/difficulty/last_review and schedules forward. `test/tongue-review.test.ts` proves the live drill flow.
@@ -845,10 +838,7 @@ The prior application ignores the FSRS columns and reads the untouched SM-2 colu
 
 ```powershell
 npx vitest run test/alarms-push.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/alarms-push.test.ts` proves the VAPID JWT is a real, verifiable ES256 signature with the right claims, that the module fails closed when any VAPID value is missing or the subject is malformed, that quiet hours wrap past midnight correctly, that subscribe upserts (never duplicates) and unsubscribe deletes, that malformed subscriptions are refused (non-HTTPS endpoint, non-base64url key, unknown field), that preferences default and persist, that the internal job refuses a caller without the shared secret and 503s with no VAPID, that a re-run cannot double-notify, that an unreachable push service cannot abort the run, and that the delivery ledger is append-only.
@@ -892,10 +882,7 @@ Push stays off until the VAPID secrets exist and the Cron Worker is deployed. Bo
 
 ```powershell
 npx vitest run test/ratchet.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/ratchet.test.ts` proves consequence covers the mandatory set only, the transition fallback while no anchor exists, that a promotion past three anchors requires a clean seven-day hold, that demotion by choice is always allowed and recorded, the append-only history, the `/api/state` summary, and an end-to-end demotion after three straight misses that costs no points.
@@ -928,10 +915,7 @@ Expected: `tier_column` is `1`; `mandatory` is at most `3`; `events_append_only`
 
 ```powershell
 npx vitest run test/miss-diagnosis.test.ts test/scoring-limits.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/miss-diagnosis.test.ts` proves the status semantics, that a displaced block cannot drag adherence down, that the window close writes `unreported` with a zero-point prompt, that a status cannot be set on an unreported block until the cause is recorded, that a repaired log and a genuine displacement cost nothing, that a real miss costs 5 with a correction that never insults him, that repeated avoidance opens an investigation costing no points, and that the ledger is append-only and one-per-day.
@@ -964,10 +948,7 @@ Expected: `causes_table` is `1`; `causes_append_only` is `2`. The status breakdo
 
 ```powershell
 npx vitest run test/measured-reading.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/measured-reading.test.ts` proves the dwell/traversal/pace rules, that no endpoint lets a client declare a chapter read, that the traversal record is append-only, that the curriculum gate refuses `reading` until a measured session passed, and that the provenance CHECKs and variant storage behave.
@@ -999,10 +980,7 @@ Drop the six tables. The prior application never referenced them; unit reading r
 
 ```powershell
 npx vitest run test/mastery-calibration.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/mastery-calibration.test.ts` proves the ladder's declared bars, that self-scoring gates nothing in either direction, that integrated needs a 2.5 mean with no zero, deterministic cloze that never returns its answers, free-recall diffing, the named calibration patterns carrying no penalty language, the append-only evidence trail, and the R0 gate.
@@ -1036,10 +1014,7 @@ Drop the four tables; the added `review_items` columns are nullable and ignored 
 
 ```powershell
 npx vitest run test/principle-graph.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/principle-graph.test.ts` proves each factor is taught with a range and its named distortion, that 將 is scored on the lowest of five with the weakest virtue reported, that outward-facing 將 framings are struck, that the Chapter II oversimplification is recorded as struck, that a master reading is never returned without its naive twin and the cost, that every Machiavelli principle carries all five framing fields with a stated break condition, that a hypothesis cannot be made examinable, that every named graph node exists, and that contradiction edges carry the real question.
@@ -1078,10 +1053,7 @@ Drop the seven tables (order: `graph_edges`, `graph_nodes`, `hypotheses`, `princ
 ```powershell
 npx vitest run test/rhetoric-track.test.ts
 npx vitest run test/rhetoric-routes.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/rhetoric-track.test.ts` proves all twenty-four tables exist, that `commonplace_log` has no `text` column and does have `copied_on` and `page_of_book`, and that `recordings` references a file rather than managing media.
@@ -1125,10 +1097,7 @@ Drop the tables created here in reverse dependency order — `book_chapter_ancho
 ```powershell
 npx vitest run test/rhetoric-track.test.ts
 npx vitest run test/response-lab-seed.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/rhetoric-track.test.ts` proves all nineteen chapters carry the Book 11.2 day ranges, that every chapter has a seven-day cycle, that the days between chapters are rows, that Day 54 through Day 204 is covered with no gap and no overlap, that **only read anchors are recorded and none is fabricated**, and that the Farnsworth books are marked in copyright with no edition rows.
@@ -1182,10 +1151,7 @@ Then redeploy the prior application. The chapter delete will fail while `cycle_d
 ```powershell
 npx vitest run test/rhetoric-track.test.ts
 npx vitest run test/rhetoric-module.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/rhetoric-track.test.ts` proves twenty-two figures across the three parts, at least thirty named devices once `sub_variants` are counted, that every chapter figure matches the syllabus slug exactly, that **every figure has both faces plus a detection question and overuse tells**, that related and stackable figures point at figures that exist, and that the three concealed Chapter 1 devices are filed under Chapter 1.
@@ -1241,10 +1207,7 @@ Then redeploy the prior application. Only reference records are lost and re-appl
 ```powershell
 npx vitest run test/response-lab-seed.test.ts
 npx vitest run test/rhetoric-lab-routes.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/response-lab-seed.test.ts` proves Tier 3 is seeded for every chapter figure, that **Tier 1 is empty**, that the thousand-specimen allocation is not reintroduced, that every specimen carries a real attribution and is marked public domain, that `page_ref` is `NULL` so no Farnsworth page filename enters the repository, that exactly the eleven named intents exist with the exact architectures Book 12.7 specifies, that each architecture is ordered rather than a line, that **no example lines ship** (a line would be copied instead of built), and that the starter lines are archived rather than destroyed.
@@ -1302,10 +1265,7 @@ The intents delete will fail while `response_builds` rows reference an intent, w
 
 ```powershell
 npx vitest run test/rhetoric-lab-routes.test.ts
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/rhetoric-lab-routes.test.ts` proves the deploy transition is refused when no card has been answered, refused while a defect stands and allowed once clear, and that the Daylight Test fails on a `NO` where the other three questions fail on a `YES`.
@@ -1353,11 +1313,7 @@ That restores the pre-migration behaviour — nothing deployed — without delet
 
 ```powershell
 npx vitest run test/job-runs.test.ts
-npm test
-npx vitest run --config vitest.dom.config.ts
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] `test/job-runs.test.ts` proves a Cron enforcement call is recorded as `cron`/`ok` with a `finished_at` and at least one owner walked; that a browser tick on the same engine is recorded as `user`; that an alarms call is recorded; that a **wrong secret writes no row at all**; that a finished run refuses `UPDATE`; and that `counts_json` holds only numbers with an `error_class` that never contains SQL, a bearer token, or a password.
@@ -1410,10 +1366,7 @@ Book 5.4 adds same-origin/allowlisted CORS, private no-store and security header
 **Repository evidence required before operator deployment**
 
 ```powershell
-npm test
-npx tsc --noEmit
-npm run build
-git diff --check
+npm run verify
 ```
 
 - [ ] Confirm the Book 5.4 focused request-validation and legal-transition suites pass as part of the full suite.
@@ -1441,9 +1394,7 @@ git switch refactor/strategic-judgment-os
 git pull --ff-only origin refactor/strategic-judgment-os
 git status --short
 npm ci
-npm test
-npm run build
-npx tsc --noEmit
+npm run verify
 $ApprovedCommit = git rev-parse HEAD
 $ApprovedCommit
 ```

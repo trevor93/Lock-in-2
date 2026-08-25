@@ -29,7 +29,7 @@ somewhere the repository does not control.
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
 | Everything else in Books 5–12 | source + local tests green | deploy (§5) |
 
-The preflight in §1 must produce: **572 server tests across 61 files + 48 DOM tests
+The preflight in §1 must produce: **579 server tests across 62 files + 48 DOM tests
 across 9 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
 
 If your run reports different totals, the tree you are holding is not the tree this
@@ -45,18 +45,35 @@ Run these from the repository root and record the output status only:
 
 ```powershell
 npm ci
-npm run build
-npx tsc --noEmit
-npm test
-npx vitest run --config vitest.dom.config.ts
-git diff --check
+npm run verify
 ```
 
-All six must pass. Not five, and not "the important ones" — there is no CI in this
-repository, so this block is the entire gate. Two of the six look skippable and are not:
-`npm test` is bare `vitest run`, which **excludes** `**/*.dom.test.ts`, so the DOM suite
-runs only because the line above names it explicitly; and `git diff --check` is what
-catches a whitespace-mangled file before it reaches production rather than after.
+Both must pass. `npm run verify` is the entire repository-side gate in one command:
+it builds, runs **every** vitest project, typechecks, checks for whitespace damage, and
+finally runs `git diff --exit-code -- public/static/bundle.js` to prove the committed
+client bundle still matches the source it was built from. That last step names one file
+on purpose. It is the only build output the repository tracks — `dist/` is gitignored,
+so the worker bundle has no committed copy to disagree with — and checking the whole
+tree instead would also fail on any unrelated uncommitted edit, leaving you unable to
+tell a stale bundle from work in progress.
+
+This used to be a list of six commands, and the list is what went wrong. `npm test` was
+bare `vitest run`, which **excludes** `**/*.dom.test.ts`, so the DOM suite ran only
+because a separate line named it — and the runbook's own Section 5 preflight did not have
+that line. It ran 572 of 620 tests and exited 0. A gate that reports a pass over
+forty-eight tests it never ran is worse than no gate, because it is the sentence that
+stops the search.
+
+So there is nothing left to remember. `npm test` now runs every project, and
+`test/gate-completeness.test.ts` derives the required project list from the
+`vitest*.config.ts` files that exist on disk — add a third project and the suite fails
+until the gate covers it. **If you ever see this expanded back into a list of commands,
+that is a regression.**
+
+A GitHub Actions workflow (`.github/workflows/verify.yml`) runs the same single command
+on every push and pull request, so the gate no longer depends on a person choosing to
+run it. It is a test runner only: it holds no credentials and performs no deploy. Every
+step in this document remains yours.
 
 Then record the deploy target:
 
@@ -65,7 +82,7 @@ git rev-parse HEAD
 ```
 
 Write down that SHA — it is the deploy target and the rollback reference. It prints a
-value rather than passing or failing, which is why it is not one of the six.
+value rather than passing or failing, which is why it is not part of the gate above.
 
 ---
 

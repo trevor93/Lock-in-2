@@ -4,11 +4,14 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run build:client && vite build",
-    "test": "vitest run",
+    "build:client": "vite build --config vite.client.config.ts",
+    "test": "npm run test:server && npm run test:dom",
+    "test:server": "vitest run",
+    "test:dom": "vitest run --config vitest.dom.config.ts",
+    "verify": "npm run build && npm test && tsc --noEmit && git diff --check && git diff --exit-code -- public/static/bundle.js",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "build:client": "vite build --config vite.client.config.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
     "hono": "^4.12.26",
