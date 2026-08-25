@@ -22,7 +22,9 @@ import missCauseRoutesSource from '../src/routes/miss-cause.ts?raw'
 import readingRoutesSource from '../src/routes/reading.ts?raw'
 import masteryRoutesSource from '../src/routes/mastery.ts?raw'
 import principleRoutesSource from '../src/routes/principles.ts?raw'
-const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource, calendarRoutesSource, pushRoutesSource, ratchetRoutesSource, missCauseRoutesSource, readingRoutesSource, masteryRoutesSource, principleRoutesSource].join(String.fromCharCode(10))
+import rhetoricRoutesSource from '../src/routes/rhetoric.ts?raw'
+import rhetoricLabRoutesSource from '../src/routes/rhetoric-lab.ts?raw'
+const allRouteSources = [appSource, agentV1Source, hermesRoutesSource, intelLibrarySource, tongueRoutesSource, learnRoutesSource, recoveryRoutesSource, cursorRoutesSource, dayRoutesSource, economyRoutesSource, authRoutesSource, agentCredRoutesSource, calendarRoutesSource, pushRoutesSource, ratchetRoutesSource, missCauseRoutesSource, readingRoutesSource, masteryRoutesSource, principleRoutesSource, rhetoricRoutesSource, rhetoricLabRoutesSource].join(String.fromCharCode(10))
 
 const baseEnv = {
   DB: env.DB,
@@ -71,6 +73,7 @@ function concrete(path: string): string {
     .replace(/:maximId/g, '1')
     .replace(/:bookId/g, 'art_of_war')
     .replace(/:idx/g, '0')
+    .replace(/:slug/g, 'anaphora')
     .replace(/:id/g, '1')
 }
 
@@ -98,7 +101,7 @@ const DENIED = [401, 403]
 
 describe('B5.8.1 exhaustive private-route denial', () => {
   it('found a non-trivial route table to check', () => {
-    expect(browserRoutes.length).toBeGreaterThanOrEqual(45)
+    expect(browserRoutes.length).toBeGreaterThanOrEqual(120)
     expect(agentRoutes.length).toBeGreaterThanOrEqual(9)
     expect(internalRoutes.length).toBeGreaterThanOrEqual(1)
   })

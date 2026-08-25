@@ -23,6 +23,28 @@ import librarySrc from '../public/static/app/features/library.js?raw'
 import councilSrc from '../public/static/app/features/council.js?raw'
 import responseLabUiSrc from '../public/static/app/features/response-lab.js?raw'
 import rhetoricUiSrc from '../public/static/app/features/rhetoric.js?raw'
+// The gate has to be exhaustive over every shipped string, so every server route
+// module and every frontend module is scanned. Listing a subset lets a new
+// module ship banned language without failing anything.
+import agentCredentialsRouteSrc from '../src/routes/agent-credentials.ts?raw'
+import agentV1RouteSrc from '../src/routes/agent-v1.ts?raw'
+import authRouteSrc from '../src/routes/auth.ts?raw'
+import calendarRouteSrc from '../src/routes/calendar.ts?raw'
+import cursorRouteSrc from '../src/routes/cursor.ts?raw'
+import hermesRouteSrc from '../src/routes/hermes.ts?raw'
+import intelLibraryRouteSrc from '../src/routes/intel-library.ts?raw'
+import masteryRouteSrc from '../src/routes/mastery.ts?raw'
+import principlesRouteSrc from '../src/routes/principles.ts?raw'
+import pushRouteSrc from '../src/routes/push.ts?raw'
+import readingRouteSrc from '../src/routes/reading.ts?raw'
+import rhetoricRouteSrc from '../src/routes/rhetoric.ts?raw'
+import rhetoricLabRouteSrc from '../src/routes/rhetoric-lab.ts?raw'
+import fxSrc from '../public/static/app/core/fx.js?raw'
+import morphSrc from '../public/static/app/core/morph.js?raw'
+import storeSrc from '../public/static/app/core/store.js?raw'
+import eventsSrc from '../public/static/app/core/events.js?raw'
+import sanitizeSrc from '../public/static/app/core/sanitize.js?raw'
+import mainSrc from '../public/static/app/main.js?raw'
 import {
   SEVERITIES, TONES, DEFAULT_TONE, normaliseSeverity, normaliseTone, isRed, toned,
 } from '../src/tone'
@@ -68,6 +90,8 @@ const SOURCES = [
   tongueSrc, learnSrc, blockStatusSrc, limitsSrc, toneSrc,
   shellSrc, debriefSrc, campaignSrc, mindSrc, librarySrc, councilSrc, responseLabUiSrc,
   rhetoricUiSrc,
+  agentCredentialsRouteSrc, agentV1RouteSrc, authRouteSrc, calendarRouteSrc, cursorRouteSrc, hermesRouteSrc, intelLibraryRouteSrc, masteryRouteSrc, principlesRouteSrc, pushRouteSrc, readingRouteSrc, rhetoricRouteSrc, rhetoricLabRouteSrc,
+  fxSrc, morphSrc, storeSrc, eventsSrc, sanitizeSrc, mainSrc,
 ].join(String.fromCharCode(10))
 
 describe('B8.7 the removed language is gone', () => {

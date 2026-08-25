@@ -1,41 +1,76 @@
 import { env } from 'cloudflare:test'
 import { beforeEach, describe, expect, it } from 'vitest'
 import app from '../src/index'
+import appSource from '../src/index.tsx?raw'
+import agentV1Source from '../src/routes/agent-v1.ts?raw'
+import hermesSource from '../src/routes/hermes.ts?raw'
+import intelLibrarySource from '../src/routes/intel-library.ts?raw'
+import tongueSource from '../src/routes/tongue.ts?raw'
+import learnSource from '../src/routes/learn.ts?raw'
+import recoverySource from '../src/routes/recovery.ts?raw'
+import cursorSource from '../src/routes/cursor.ts?raw'
+import daySource from '../src/routes/day.ts?raw'
+import economySource from '../src/routes/economy.ts?raw'
+import authSource from '../src/routes/auth.ts?raw'
+import agentCredentialsSource from '../src/routes/agent-credentials.ts?raw'
+import calendarSource from '../src/routes/calendar.ts?raw'
+import pushSource from '../src/routes/push.ts?raw'
+import ratchetSource from '../src/routes/ratchet.ts?raw'
+import missCauseSource from '../src/routes/miss-cause.ts?raw'
+import readingSource from '../src/routes/reading.ts?raw'
+import masterySource from '../src/routes/mastery.ts?raw'
+import principlesSource from '../src/routes/principles.ts?raw'
+import rhetoricSource from '../src/routes/rhetoric.ts?raw'
+import rhetoricLabSource from '../src/routes/rhetoric-lab.ts?raw'
+
+const FIXTURE_ANCHOR = 'get_read_only:1:1'
+const FIXTURE_COPIA_ID = 9901
 
 const MUTATING_SQL = /^(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|VACUUM|REINDEX|PRAGMA\s+(?!table_info\b|table_xinfo\b|index_list\b|index_info\b|foreign_key_list\b))/i
-const GET_ROUTES = [
-  '/api/state',
-  '/api/version',
-  '/api/changelog',
-  '/api/cursor',
-  '/api/continuity-brief',
-  '/api/appeals',
-  '/api/predictions',
-  '/api/predictions/calibration',
-  '/api/debriefs',
-  '/api/campaign',
-  '/api/maxims',
-  '/api/cards/due',
-  '/api/flags/history',
-  '/api/tongue',
-  '/api/tongue/due',
-  '/api/tongue/exam',
-  '/api/tongue/stats',
-  '/api/laws',
-  '/api/rewards',
-  '/api/stats',
-  '/api/intel',
-  '/api/library',
-  '/calendar.ics',
-  '/api/hermes/history',
-  '/api/agent/token',
-  '/api/agent/v1/briefing',
-  '/api/agent/v1/pending',
-  '/api/agent/v1/debriefs',
-  '/api/agent/v1/intel',
-  '/api/agent/v1/intel/read',
-  '/api/agent/v1/export',
-] as const
+// Book 17's GET-safety gate has to be exhaustive, so the route list is derived
+// from the route sources rather than hand-maintained. A hardcoded list stops
+// covering new ground the moment a module is added, which is exactly how the
+// rhetoric routes escaped it.
+const allRouteSources = [appSource, agentV1Source, hermesSource, intelLibrarySource, tongueSource, learnSource, recoverySource, cursorSource, daySource, economySource, authSource, agentCredentialsSource, calendarSource, pushSource, ratchetSource, missCauseSource, readingSource, masterySource, principlesSource, rhetoricSource, rhetoricLabSource].join(String.fromCharCode(10))
+
+function declaredGetRoutes(): string[] {
+  const paths = new Set<string>()
+  const pattern = /app\.get\('([^']+)'/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(allRouteSources)) !== null) {
+    const path = match[1]
+    if (path.startsWith('/api/') || path.startsWith('/internal/') || path === '/calendar.ics') {
+      paths.add(path)
+    }
+  }
+  return [...paths]
+}
+
+// Concrete values for path parameters so routing resolves and the handler
+// actually runs against a real row. A 404 would exercise nothing, so the
+// values below are ones the migrations or seedReadCoverage() guarantee exist.
+// :slug means a different namespace per route, so those paths are named
+// explicitly rather than sharing one substitution.
+const EXPLICIT_PATHS: Record<string, string> = {
+  '/api/principles/:slug': '/api/principles/deception_controlled_revelation',
+  '/api/concepts/:slug': '/api/concepts/sunzi_dao',
+  '/api/cloze/:anchor': `/api/cloze/${FIXTURE_ANCHOR}`,
+  '/api/rhetoric/copia/:id': `/api/rhetoric/copia/${FIXTURE_COPIA_ID}`,
+}
+
+function concrete(path: string): string {
+  if (EXPLICIT_PATHS[path]) return EXPLICIT_PATHS[path]
+  return path
+    .replace(/:bookId/g, 'art_of_war')
+    .replace(/:chapterIdx/g, '0')
+    .replace(/:maximId/g, '9901')
+    .replace(/:kind/g, 'unit')
+    .replace(/:slug/g, 'anaphora')
+    .replace(/:idx/g, '0')
+    .replace(/:id/g, '1')
+}
+
+const GET_ROUTES = declaredGetRoutes().map(concrete)
 
 function recordWrites(DB: D1Database) {
   const writes: string[] = []
@@ -63,6 +98,31 @@ async function seedReadCoverage() {
   ])
   await env.DB.prepare(`DELETE FROM unit_progress WHERE unit_id=9901`).run()
   await env.DB.prepare(`DELETE FROM flashcards WHERE maxim_id=9901`).run()
+
+  // Fixtures for the parameterised GETs. Without a real row behind them those
+  // handlers answer 404 and the write check covers routing instead of the
+  // handler, which is exactly the hole this gate exists to close.
+  const owner = await env.DB.prepare(`SELECT id FROM users WHERE role='owner'`).first<any>()
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO sources (id, title, author, original_language, first_published)
+       VALUES ('get_read_only', 'Read-only fixture', 'fixture', 'en', '2026')`,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO source_editions (id, source_id, translation_status, completeness)
+       VALUES ('get_read_only:fixture', 'get_read_only', 'public_domain', 'excerpt')`,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO source_sections
+         (anchor, edition_id, chapter_idx, chapter_title, paragraph_idx, text, word_count)
+       VALUES (?, 'get_read_only:fixture', 1, 'Fixture', 1,
+               'A short fixture passage with enough words in it to make a cloze deletion possible.', 15)`,
+    ).bind(FIXTURE_ANCHOR),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO copia_sessions (id, user_id, figure_slug, seed_sentence, occurred_on)
+       VALUES (?, ?, 'anaphora', 'The fixture sentence.', '2026-08-23')`,
+    ).bind(FIXTURE_COPIA_ID, owner?.id ?? 1),
+  ])
 }
 
 function requestFor(path: string, method: 'GET' | 'HEAD', cookie: string) {
@@ -114,6 +174,14 @@ async function authenticatedCookie(DB: D1Database): Promise<string> {
 beforeEach(seedReadCoverage)
 
 describe('GET and HEAD safety', () => {
+  it('derived a non-trivial GET route table', () => {
+    // A floor, so a future refactor that stops matching routes fails loudly
+    // instead of quietly checking nothing.
+    expect(GET_ROUTES.length).toBeGreaterThanOrEqual(60)
+    expect(GET_ROUTES.some((path) => path.startsWith('/api/rhetoric/'))).toBe(true)
+    expect(GET_ROUTES.some((path) => path.startsWith('/api/lab/'))).toBe(true)
+  })
+
   it('keeps repeated crawler GET and HEAD requests to state free of writes and penalties', async () => {
     const { DB, writes } = recordWrites(env.DB)
     const cookie = await authenticatedCookie(DB)
@@ -136,6 +204,7 @@ describe('GET and HEAD safety', () => {
     const { DB, writes } = recordWrites(env.DB)
     const cookie = await authenticatedCookie(DB)
     const violations: string[] = []
+    const notFound: string[] = []
     writes.length = 0
 
     for (const method of ['GET', 'HEAD'] as const) {
@@ -145,11 +214,19 @@ describe('GET and HEAD safety', () => {
           requestFor(path, method, cookie),
           { DB, OPENAI_API_KEY: '', OPENAI_BASE_URL: 'https://model.invalid' },
         )
-        expect(response.status, `${method} ${path}`).toBeLessThan(500)
+        // A crash would mean the handler never really ran, so the write check
+        // below would prove nothing. 503 is excluded from that rule: the push
+        // routes answer 503 deliberately when no VAPID key is configured, which
+        // is a real answer from a handler that ran, not a failure.
+        expect(response.status === 503 || response.status < 500, `${method} ${path} -> ${response.status}`).toBe(true)
+        if (response.status === 404) notFound.push(`${method} ${path}`)
         for (const sql of writes.slice(before)) violations.push(`${method} ${path}: ${sql}`)
       }
     }
 
     expect(violations).toEqual([])
+    // Every derived path must resolve to a handler. A 404 would mean the write
+    // check ran against routing, not against the handler it claims to cover.
+    expect(notFound).toEqual([])
   })
 })

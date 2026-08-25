@@ -249,11 +249,35 @@ describe('Book 5.2 ownership', () => {
     for (const table of personalTables) {
       const info = (await env.DB.prepare(`PRAGMA table_info(${table})`).all()).results as Array<{ name: string }>
       expect(info.map((column) => column.name), table).toContain('user_id')
+    }
+
+    // The list above is Book 5.2's original backfill set and stays as a floor. The
+    // real invariant is wider and is derived from the live schema instead of
+    // maintained by hand: NO table that carries a user_id may hold a row that is
+    // not the durable owner's. A hardcoded list stops covering the tables that
+    // later phases add, and 0018-0028 added thirty of them.
+    const owned: string[] = []
+    const allTables = (await env.DB.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                                        AND name NOT LIKE '_cf_%' ORDER BY name`,
+    ).all()).results as Array<{ name: string }>
+    for (const { name } of allTables) {
+      const info = (await env.DB.prepare(`PRAGMA table_info(${name})`).all()).results as Array<{ name: string }>
+      if (info.some((column) => column.name === 'user_id')) owned.push(name)
+    }
+    // A floor on the derived set too, so a broken query fails loudly rather than
+    // quietly checking nothing.
+    expect(owned.length, 'derived owned-table set').toBeGreaterThanOrEqual(60)
+    for (const table of personalTables) expect(owned, table).toContain(table)
+
+    const unownedRows: string[] = []
+    for (const table of owned) {
       const unowned = await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM ${table} WHERE user_id IS NULL OR user_id != ?`,
       ).bind(owner!.id).first<{ n: number }>()
-      expect(unowned?.n, table).toBe(0)
+      if ((unowned?.n ?? 0) > 0) unownedRows.push(`${table}: ${unowned?.n}`)
     }
+    expect(unownedRows, 'these rows belong to no owner').toEqual([])
   })
 
   it('denies cross-user record access at the route boundary', async () => {

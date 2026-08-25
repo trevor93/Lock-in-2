@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import app from '../src/index'
+import { AGENT_RATE_LIMIT, AGENT_RATE_WINDOW_SECONDS } from '../src/agent-auth'
 
 const baseEnv = {
   DB: env.DB,
@@ -393,14 +394,53 @@ describe('Book 5.5 scoped agent credentials', () => {
       deviceLabel: 'Concurrent rate-limited reader',
       scopes: ['blocks:read'],
     })
+    // One past the limit, derived from the limiter's own constant. A hardcoded 61 stops
+    // testing the boundary the moment AGENT_RATE_LIMIT moves, and reports nothing when it does.
+    const burst = AGENT_RATE_LIMIT + 1
+    const started = Date.now()
     const responses = await Promise.all(
-      Array.from({ length: 61 }, () => agentRead(
+      Array.from({ length: burst }, () => agentRead(
         '/api/agent/v1/pending',
         reader.token,
       )),
     )
-    expect(responses.filter((response) => response.status === 200)).toHaveLength(60)
-    expect(responses.filter((response) => response.status === 429)).toHaveLength(1)
+    const elapsed = (Date.now() - started) / 1000
+    const seen: Record<number, number> = {}
+    for (const response of responses) seen[response.status] = (seen[response.status] ?? 0) + 1
+    const census = JSON.stringify(seen)
+
+    // WHY THIS IS MORE THAN A COUNT. This test failed once in a full-suite run and never in
+    // isolation, and the whole failure read "expected length 60". Three different things
+    // produce that message: a request lost to a database error under a loaded worker pool, a
+    // burst that outlived the rate window so the limiter was ENTITLED to admit a second sixty,
+    // or a real regression in the limiter. An assertion whose message cannot tell them apart
+    // is worse than no assertion — it teaches an operator to re-run the preflight until green,
+    // and the preflight is the only gate this repository has.
+    expect(
+      Object.keys(seen).filter((code) => code !== '200' && code !== '429'),
+      `the burst returned statuses the limiter never issues (${census}), so this run measured a `
+      + 'transport or database failure and says nothing about rate limiting',
+    ).toEqual([])
+    expect(
+      elapsed,
+      `the burst took ${elapsed.toFixed(1)}s, reaching the ${AGENT_RATE_WINDOW_SECONDS}s window, `
+      + 'so the limiter was entitled to open a second window and the counts below are not a '
+      + 'statement about anything',
+    ).toBeLessThan(AGENT_RATE_WINDOW_SECONDS)
+    // The security property first: never MORE than the limit inside one window, however the
+    // requests are interleaved. This is the one that must not regress.
+    expect(
+      seen[200] ?? 0,
+      `more than ${AGENT_RATE_LIMIT} concurrent requests were admitted (${census}), so the `
+      + 'atomic guard did not serialise them',
+    ).toBeLessThanOrEqual(AGENT_RATE_LIMIT)
+    // Then the functional one: the full allowance is actually usable, and only the overflow
+    // is refused. A limiter that refuses early is a defect too.
+    expect(seen[200] ?? 0, `fewer than ${AGENT_RATE_LIMIT} admitted (${census})`).toBe(AGENT_RATE_LIMIT)
+    expect(
+      seen[429] ?? 0,
+      `the overflow was not refused (${census})`,
+    ).toBe(burst - AGENT_RATE_LIMIT)
   })
 
   it('rate limits repeated agent requests and applies the JSON request-size boundary', async () => {
@@ -409,14 +449,37 @@ describe('Book 5.5 scoped agent credentials', () => {
       deviceLabel: 'Rate-limited reader',
       scopes: ['blocks:read'],
     })
+    const burst = AGENT_RATE_LIMIT + 1
+    const started = Date.now()
+    const seen: Record<number, number> = {}
     let response: Response | undefined
-    for (let request = 0; request < 61; request++) {
+    for (let request = 0; request < burst; request++) {
       response = await agentRead(
         '/api/agent/v1/pending',
         reader.token,
       )
+      seen[response.status] = (seen[response.status] ?? 0) + 1
     }
-    expect(response?.status).toBe(429)
+    const elapsed = (Date.now() - started) / 1000
+    const census = JSON.stringify(seen)
+    // Same reasoning as the concurrent burst above: the window is the same length as the
+    // allowance, so a slow enough loop resets it mid-way and the refusal below stops being
+    // expected behaviour. Said out loud, because a run that straddles the boundary is
+    // inconclusive rather than failing.
+    expect(
+      elapsed,
+      `the ${burst} sequential requests took ${elapsed.toFixed(1)}s, reaching the `
+      + `${AGENT_RATE_WINDOW_SECONDS}s window, so the limiter reset mid-loop and the final `
+      + 'request was not counted inside the window that started the loop',
+    ).toBeLessThan(AGENT_RATE_WINDOW_SECONDS)
+    expect(
+      Object.keys(seen).filter((code) => code !== '200' && code !== '429'),
+      `statuses the limiter never issues appeared (${census})`,
+    ).toEqual([])
+    expect(
+      response?.status,
+      `request ${burst} was admitted inside one window (${census})`,
+    ).toBe(429)
     expect(response?.headers.get('retry-after')).toBeTruthy()
 
     const writer = await issueCredential(owner, {

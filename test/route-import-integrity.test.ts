@@ -1,6 +1,8 @@
 import { env } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import app from '../src/index'
+import rhetoricSource from '../src/routes/rhetoric.ts?raw'
+import rhetoricLabSource from '../src/routes/rhetoric-lab.ts?raw'
 
 // Book 7 route-split integrity. Each case below exercises a handler branch that
 // referenced a helper or schema the route module never imported. tsc caught them
@@ -119,4 +121,56 @@ describe('B7 route-module import integrity', () => {
     )
     expect(response.status).toBe(200)
   })
+})
+
+// The two newest and largest route modules sat outside this guard entirely. Rather
+// than hand-pick branches, every route they declare is driven once with a
+// well-formed session and an empty body. A missing import raises a ReferenceError
+// that onError turns into a 500, so "never 500" is exactly the property this test
+// needs — and it keeps covering routes added to those modules later.
+function declaredRoutes(source: string): Array<{ method: string; path: string }> {
+  const routes: Array<{ method: string; path: string }> = []
+  const pattern = /app\.(get|post|put|delete)\('([^']+)'/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(source)) !== null) {
+    routes.push({ method: match[1].toUpperCase(), path: match[2] })
+  }
+  return routes
+}
+
+function concrete(path: string): string {
+  return path.replace(/:slug/g, 'anaphora').replace(/:id/g, '1')
+}
+
+const rhetoricRoutes = declaredRoutes(rhetoricSource)
+const rhetoricLabRoutes = declaredRoutes(rhetoricLabSource)
+
+describe('B7 route-module import integrity — the rhetoric modules', () => {
+  it('found both route tables', () => {
+    expect(rhetoricRoutes.length).toBeGreaterThanOrEqual(21)
+    expect(rhetoricLabRoutes.length).toBeGreaterThanOrEqual(15)
+  })
+
+  for (const [label, routes] of [
+    ['rhetoric.ts', rhetoricRoutes],
+    ['rhetoric-lab.ts', rhetoricLabRoutes],
+  ] as const) {
+    it(`drives every ${label} route without a 500`, async () => {
+      const session = await login()
+      const crashes: string[] = []
+      for (const route of routes) {
+        const path = concrete(route.path)
+        const response = route.method === 'GET'
+          ? await app.request(path, { headers: { Cookie: session.cookie } }, baseEnv)
+          : await post(path, session)
+        // A 404 is a real answer here (the fixture row may not exist); a 500 is a
+        // crash, and an unresolved route would 404 too, so the count above is what
+        // proves the table is non-trivial.
+        if (response.status >= 500) {
+          crashes.push(`${route.method} ${route.path} -> ${response.status}`)
+        }
+      }
+      expect(crashes, 'these handlers crashed').toEqual([])
+    })
+  }
 })

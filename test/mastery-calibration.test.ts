@@ -330,4 +330,52 @@ describe('B10.2/10.4 the routes, end to end', () => {
     expect(learnRoutesSrc).toContain('same_session=1')
     expect(learnRoutesSrc).toContain('used_source=0')
   })
+
+  // Book 17 test matrix, Curriculum row: "transfer reference required for transferred
+  // status". `admitEvidence` is unit-tested at the top of this file, and the route is wired
+  // to it — the thin-explanation case above proves a refusal reaches the client as a 409.
+  //
+  // What nothing covered until now is the OTHER direction: that the gate can be SATISFIED
+  // through the route. That asymmetry hides a worse defect than a missed refusal. If the
+  // handler ever stopped forwarding `transfer_ref` — a hardcoded null, a renamed schema
+  // field, a dropped line in the `admitEvidence({...})` call — every unit test here would
+  // stay green, the refusal above would stay green, and `transferred` would become a level
+  // no evidence could ever reach. A rung of the ladder would quietly cease to exist, and
+  // the app would blame the user for omitting a reference they had in fact supplied.
+  it('admits transfer evidence with a reference, and refuses it without one, through the route', async () => {
+    const s = await login()
+    const subject = `concept:transfer-${Date.now()}`
+
+    const bare = await post('/api/mastery/evidence', s, {
+      subject_kind: 'concept', subject_id: subject,
+      level: 'transferred', evidence_kind: 'transfer',
+    })
+    expect(bare.status, 'a transfer with no reference was admitted').toBe(409)
+    expect((await bare.json<any>()).reason).toContain('populated reference')
+
+    // Whitespace is not a reference. The schema trims, so this arrives as '' and must be
+    // refused for the same reason rather than passing as a present-but-empty field.
+    const blank = await post('/api/mastery/evidence', s, {
+      subject_kind: 'concept', subject_id: subject,
+      level: 'transferred', evidence_kind: 'transfer', transfer_ref: '   ',
+    })
+    expect(blank.status, 'a whitespace-only reference counted as a reference').toBe(409)
+
+    const real = await post('/api/mastery/evidence', s, {
+      subject_kind: 'concept', subject_id: subject,
+      level: 'transferred', evidence_kind: 'transfer', transfer_ref: 'decision:41',
+    })
+    expect(
+      real.status,
+      'a transfer WITH a reference was refused, so `transferred` is unreachable through the '
+      + 'route and the refusal blames the user for an omission they did not make',
+    ).toBe(200)
+    const body = await real.json<any>()
+    expect(body.admitted).toContain('transferred')
+
+    // The rung is earned, not the ladder. Evidence for one level never awards the levels
+    // beneath it, so a transfer filed before the lower rungs leaves the derived level where
+    // it was — otherwise one submission would skip four levels of proof.
+    expect(body.level, 'a transfer submitted out of order awarded the level anyway').toBe('encountered')
+  })
 })
