@@ -378,12 +378,101 @@ Three questions came up during the audit that are not defects and not omissions,
 Stated plainly, with what would make each one real.
 
 1. **`unit_progress.unit_id UNIQUE` blocks a second owner.** Latent. Becomes live the moment a second owner exists. Must be corrected in the same migration that introduces one, not before.
-2. **Book 14's remaining instruments have no phase.** The Autopsy Book, People Map, Ledger, Arena, Patterns engine, and Anti-dependence check are required by Book 14 and assigned to none of the eleven phases. They will not get built by following the build order, because the build order does not mention them.
+2. **DECIDED 2026-08-26 — Book 14's remaining instruments had no phase.** The Autopsy Book, People Map, Ledger, Arena, Patterns engine, and Anti-dependence check are required by Book 14 and named in none of the build order's twelve phases, so following the build order would never have built them. They are now assigned to **Phase 12**; see "Decisions taken under blanket authorization" below for the authority, the ordering, and what was verified before writing it.
 3. **Phase 11 is a real gap, not a formality.** Measured against `MASTERPROMPT.md:263`, the service worker in `src/renderer.ts` satisfies three requirements and fails five. Satisfied: cache-first for public-domain book files under `/static/books/`; network-only for private state; private API responses never cached — all three achieved by simply not intercepting those requests. Not done: **versioned static assets with real cache invalidation** (`CACHE` is the fixed literal `warroom-v1`, and `activate` deletes no old caches, so a stale asset can outlive a deploy indefinitely); **an app-shell strategy**; **an offline write queue with visible pending state, sync confirmation, and client timestamps** (there is none — an offline log is simply lost); **clear local-data deletion** (no `localStorage.clear` or `caches.delete` exists anywhere in `public/static/app/`); **a safe upgrade path** (`install` calls `skipWaiting()` and `activate` calls `clients.claim()` unconditionally, so a new worker seizes live clients with no gate). The Book 9 accessibility clause (`MASTERPROMPT.md:261`) is also unaudited. "Offline mobile use" is one of the properties this remediation is required to preserve, so this gap is load-bearing and is why it is sized here instead of left as a checkbox.
 4. **RESOLVED 2026-08-25 — the DOM suite was not in `npm test`.** An operator who ran `npm test` and saw green had tested 572 of 620, and the runbook preflight named only that command, so the operator gate was the partial one. `npm test` now runs every vitest project and `npm run verify` is the whole gate; `test/gate-completeness.test.ts` derives the project list from disk, so a third project fails the suite until the gate names it.
 5. **RESOLVED 2026-08-25 — the preflight was the only gate.** `.github/workflows/verify.yml` now runs `npm ci && npm run verify` on every push to `main` or a `refactor/**` branch and on every pull request to `main`, so no guarantee in this report depends on a person remembering to run it. The workflow is a test runner: `permissions: contents: read`, no secrets, no deploy step, and `test/gate-completeness.test.ts` fails the suite if `wrangler`, `secrets.`, `pages deploy` or a Cloudflare token ever appears in an executable workflow line. **Residual, and it is the operator's to weigh:** the server suite runs about six minutes, so a private repository consumes Actions minutes at that rate; repository visibility and the account's budget are outside this agent's scope.
 6. **The Book 17 documentation set does not exist.** SECURITY.md, PRIVACY.md (which must justify data minimisation for every Commander's File field), ARCHITECTURE.md, MIGRATIONS.md, DEPLOYMENT.md, CURRICULUM_GUIDE.md, AI_SAFETY.md — none written. README still needs a truthful rewrite. Required by the Definition of Done, so this phase is complete but the *book* is not.
-7. **Owed to the commander, unresolved by design.** The Phase 8 plan carried a 622-page index; the capture folder holds 645 images. Only he can say which is right. Nothing has been written to any database on the strength of either number, and nothing will be.
+7. **STILL OPEN, and deliberately so. Owed to the commander.** The Phase 8 plan carried a 622-page index; the capture folder holds 645 images. Only he can say which is right. Nothing has been written to any database on the strength of either number, and nothing will be.
+
+   What that costs, measured rather than assumed. **No row in any migration encodes either
+   total.** The anchors migration 0025 inserts sit at capture indices 0, 9, 26, 67, 182, 370,
+   371 and 461; none is a count, and neither `622` nor `645` appears anywhere in `src/`,
+   `test/`, or `public/static/app/`. Nothing renders "page N of TOTAL", nothing validates an
+   anchor against an upper bound, and nothing reports capture completeness as a percentage.
+   **None of those may be added until he answers**; a later phase that needs one stops and asks
+   rather than picking a number.
+
+   **But the number is not inert, and the first draft of this paragraph was wrong to imply it
+   was.** `migrations/0025_rhetoric_seed.sql:87` states "622 captures in one unbroken run" as
+   something *checked by reading*, and derives the seam from it — the 0-370 / 371-621 split
+   between the two books, and therefore every anchor's meaning. Each anchor is a **position in
+   his capture sequence**, not a printed page number. So if twenty-three files in that folder
+   are not book pages and any of them sits before position 461, the `Chapter 12 — Deduction and
+   Induction` anchor stops pointing at chapter 12, as does every anchor after the stray.
+   Nothing errors. The index is quietly wrong. That exposure is real today, and it is why this
+   stays at the top of what is owed to him rather than filed as a curiosity.
+
+   What already contains it: `LOCAL_PAGE_INDEX.md` §2 states the disagreement and the two
+   possibilities without choosing, and `scripts/index-book-pages.cjs` **refuses `--commit`
+   unless the operator states the count expected** — `--commit requires --expect <count>`,
+   exit 2 — and refuses again if the folder does not match that count, printing
+   `REFUSED: expected N captures, found M` and writing nothing. Both refusals are quoted by
+   their message rather than by a line number, so this sentence cannot go stale as the script
+   grows; grep the script for `--expect` to find them. The hazard is therefore
+   guarded, not resolved — a guard stops a silent wrong index; it cannot tell him which of the
+   two numbers is true.
+
+### Decisions taken under blanket authorization
+
+On 2026-08-26 the commander authorised the remainder of the master prompt in one
+instruction — the four recommendations above, then "the remaining Phases, Tasks, Books,
+Items and all the job from the Master Prompt" — and instructed that the work not stop to
+ask again. Two things were open at that moment. **A blanket authorisation is not a
+universal answer, and treating it as one would be the same class of error as the false
+gate claim corrected above: an inference recorded as a fact.** So both are written here
+with the reasoning, and they resolve differently.
+
+**Decision 1 — Book 14's instruments are assigned to Phase 12. DECIDED.**
+
+The gap was never a question of judgment; it was a missing sequence number. Book 14
+requires eleven instruments and the build order at `MASTERPROMPT.md:749` names phases
+Zero through Eleven without mentioning Book 14 at all, so an agent following the build
+order faithfully would finish it with six instruments unbuilt. "All the remaining Books
+and Items" supplies precisely the thing that was absent, so this is decided rather than
+deferred.
+
+Which six, verified against the repository rather than recalled: the migrations create
+`captures` and `maxims`, so **Capture** and part of the **Armory** exist; the
+**Continuity Brief generator** was built as build-order phase Four; **Analytics** and
+**Phase 4 depth** items are spread across shipped work. Absent — no table, no route, no
+client module, confirmed by searching `migrations/` and `src/` for each: **Autopsy Book**
+(`autopsies`; an eight-row taxonomy, distinct from the eleven `MISS_CAUSES` in
+`src/block-status.ts`, which are a different instrument and must not be conflated),
+**People Map** (`people`), **the Ledger** (relationship rings and contact debt — the
+existing `points_ledger` is the economy and is not this), **Arena** (voice sparring),
+**Patterns engine**, and **the Anti-dependence check**.
+
+Phase 12 is *appended*, not interleaved. Nothing the commander sequenced is renumbered,
+reordered, or delayed by a single day; the new phase occupies the space where the master
+prompt is silent. Its internal order is dictated by what each instrument needs, not by
+preference:
+
+1. **Autopsy Book** — aggregates over failures already logged in `block_logs`. No new
+   dependency.
+2. **Patterns engine** — SQL over existing logs, and every output must pass the
+   alternative-explanation gate, which build-order phase Three already built.
+3. **People Map** — new, and the most constrained thing in this repository. Book 2.3
+   prohibits the inverse table outright: no schema, view, or prompt may hold their
+   insecurities, dependencies, or pressure points. Encrypted at rest, never rendered into
+   screenshotable output, never placed in a system prompt, role-substituted in any model
+   payload.
+4. **The Ledger** — rings and contact debt are relationships, so it follows People Map.
+5. **Anti-dependence check** — asks which decisions of the last thirty days were tested
+   against a trusted human rather than against this application, so it needs the
+   `decisions` table that Phase 9 builds.
+6. **Arena** — Web Speech API, microphone permission, latency measurement. The most
+   client-heavy item, so it lands after Phase 11 has settled the service worker and the
+   offline story rather than fighting them.
+
+**Decision 2 — the 622-versus-645 page count stays open. NOT DECIDED, and not decidable
+here.** An authorisation transfers permission to act; it cannot transfer a fact. Only the
+commander knows whether the plan's index or the capture folder is the true extent of that
+book, and inventing a number would put a fabrication into his record — which Book 5
+forbids and which this remediation exists to remove, not add. It remains remaining risk 7
+above, together with the specific things that may not be built until he answers, and with the
+one place the number is already load-bearing: migration 0025's comment asserts 622 as read
+fact and every chapter anchor is a position in that sequence.
 
 ### Manual operator actions required
 
@@ -414,4 +503,4 @@ Repository-side only, which is the whole of what "production-ready" means here. 
 
 **Phase 9 — Book 13, the Decision Lab**, per the Book 17 build order, and only after the Book 17 documentation set in remaining risk 6 is written, since it is a Definition-of-Done requirement that has been outstanding across every phase so far and does not get easier by being deferred again.
 
-Two items should be raised with the commander before Phase 9 rather than after, because both are decisions only he can make: the 622-versus-645 page count, and where Book 14's unassigned instruments belong in the sequence. Neither blocks Phase 9. Both get more expensive to resolve the more work is stacked on top of them.
+Two items were owed to the commander before Phase 9: the 622-versus-645 page count, and where Book 14's unassigned instruments belong in the sequence. Both were put to him. He answered by authorising the remainder of the master prompt without conditions and instructing that the work not stop to ask again. **That answer resolves one and not the other, and the difference is recorded rather than smoothed over** — see "Decisions taken under blanket authorization" above. The page count stays open because no authorisation can supply a fact only he holds; the instrument assignment is decided, because "all the remaining Books and Items" is an instruction about sequence, which is exactly what was missing.
