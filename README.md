@@ -119,7 +119,7 @@ the committed client bundle matches its source. There is no second command to re
 no partial pass — either that exits 0 or the work is not done.
 
 Behind it: 71 server test files running in the Cloudflare Workers pool against a real local
-D1, and 9 DOM test files running under happy-dom. The two suites are separate projects
+D1, and 10 DOM test files running under happy-dom. The two suites are separate projects
 because the workers runtime and the DOM runtime cannot share one. Both counts above are
 derived from the files that exist, including the one test that lives outside `test/`, in
 `workers/`.
@@ -158,11 +158,12 @@ means repository-side readiness only.
 These are open, and named here because a gap nobody wrote down is a gap that gets
 rediscovered by a user:
 
-- **The service-worker cache is unversioned.** `src/renderer.ts` names one fixed cache and
-  the worker never enumerates or deletes the old ones on activate, so a stale asset can
-  outlive a change to it. Until that is fixed, a hard reload is the reliable way to pick up
-  new client code. Real versioning with a purge on activate is the next scheduled change,
-  and the guard on this file forbids this paragraph from surviving it.
+- **Only the book JSON is cached offline.** The service worker caches `/static/books/*`
+  under a versioned name, deletes every superseded generation of its own on activate, and
+  revalidates a cache hit in the background so a corrected chapter reaches the reader on the
+  next read. It deliberately does not cache the app shell or the client bundle, so those
+  still need the network — full offline app-shell caching and an offline write queue are
+  scheduled, not present.
 - **Android heads-up notifications cannot be forced from the web.** The notification channel
   has to be set to High/Urgent in the device's own settings; the app can request, not
   compel.

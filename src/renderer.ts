@@ -8,18 +8,61 @@ export const MANIFEST = {
   icons: [{ src: '/static/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
 }
 
-// Service worker: on-demand (runtime) caching of the book JSON only — private
-// API responses are never cached. Also focuses/opens the app on notification tap.
+/**
+ * Every cache this worker owns starts with this prefix, and nothing else in the origin may
+ * use it. The purge on `activate` deletes by prefix, so the prefix is the boundary between
+ * "mine to retire" and "someone else's, leave it alone".
+ */
+export const SW_CACHE_PREFIX = 'warroom-books-'
+
+/**
+ * The generation of the cache. Bump it when WHAT is cached changes — a new asset class, a
+ * different key, a different response shape — and every previous generation is deleted on
+ * the next activate instead of lingering forever.
+ *
+ * It is deliberately NOT the mechanism for content freshness. A hand-bumped constant is
+ * precisely the thing that stops being bumped, and the audit's recurring finding is that a
+ * hand-maintained value decays without anybody deciding to let it. Freshness is handled by
+ * revalidation below, which needs no human to remember anything: a changed book reaches the
+ * reader on the read after the one that served the stale copy, whatever this string says.
+ */
+export const SW_VERSION = 'v2'
+
+// Service worker: on-demand (runtime) caching of the book JSON only — private API responses
+// are never cached, and the fetch handler does not even intercept them. Also focuses/opens
+// the app on notification tap.
+//
+// Book 17 item 4 / Book 11: this used to name one fixed cache, never enumerate the caches it
+// owned, and never delete anything — so a corrected chapter could not reach a commander who
+// had opened it once, and no generation of cached content could be retired short of asking
+// the user to clear site data. Both are fixed here: the name carries a version, `activate`
+// deletes every other generation of its own, and a cache hit is revalidated in the
+// background. `test/service-worker-cache.dom.test.ts` executes this source rather than
+// grepping it, because a test that greps proves only that the text says something.
 export const SERVICE_WORKER = `
-const CACHE='warroom-v1';
+const CACHE='${SW_CACHE_PREFIX}${SW_VERSION}';
+const MINE='${SW_CACHE_PREFIX}';
 self.addEventListener('install',e=>{self.skipWaiting()});
-self.addEventListener('activate',e=>{e.waitUntil(clients.claim())});
+self.addEventListener('activate',e=>{
+  e.waitUntil((async()=>{
+    // Delete every generation of MINE that is not the current one. Scoped to the prefix, so
+    // a cache this worker did not create is never touched.
+    const names=await caches.keys();
+    await Promise.all(names.map(n=>(n.startsWith(MINE)&&n!==CACHE)?caches.delete(n):null));
+    await clients.claim();
+  })());
+});
 self.addEventListener('fetch',e=>{
   const u=new URL(e.request.url);
   if(u.pathname.startsWith('/static/books/')){
     e.respondWith(caches.open(CACHE).then(async c=>{
-      const hit=await c.match(e.request); if(hit) return hit;
-      const r=await fetch(e.request); if(r.ok) c.put(e.request,r.clone()); return r;
+      const hit=await c.match(e.request);
+      // Stale-while-revalidate. The cached copy answers immediately — offline reading is the
+      // whole point — and the network is consulted anyway so the NEXT read is the corrected
+      // text. A failed revalidation is silent by design: offline must not break a read.
+      const fresh=fetch(e.request).then(r=>{ if(r&&r.ok) c.put(e.request,r.clone()); return r; });
+      if(hit){ fresh.catch(()=>{}); return hit; }
+      return fresh;
     }));
   }
 });
