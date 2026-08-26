@@ -8,6 +8,7 @@ import { normaliseTone, TONES, DEFAULT_TONE } from '../tone'
 import { parseJson, parseValue, parseEmptyBody } from '../validation'
 import { withIdempotency, requestId, auditEvent } from '../request-support'
 import { safeDate, userNow } from '../clock'
+import { completedBooks } from '../books'
 import { addDays } from '../time'
 import { blocksForDate, getSetting, setSetting } from '../repositories'
 import { computeStreak } from '../streak'
@@ -205,12 +206,12 @@ app.get('/api/stats', async (c) => {
   const chaptersDone = (await DB.prepare(
     `SELECT COUNT(*) as n FROM book_progress WHERE user_id=? AND status='done'`,
   ).bind(userId).first<any>())?.n ?? 0
-  const booksDone = (await DB.prepare(
-    `SELECT COUNT(*) as n FROM (
-       SELECT book_id, COUNT(*) c FROM book_progress
-       WHERE user_id=? AND status='done' GROUP BY book_id HAVING c >= 12
-     )`,
-  ).bind(userId).first<any>())?.n ?? 0
+  // MASTER OF TEXTS is "Finish a complete book", and complete means every chapter of that
+  // particular book. The old `HAVING c >= 12` awarded it for 12 of Discourses' 141.
+  const booksDone = completedBooks((await DB.prepare(
+    `SELECT book_id, COUNT(*) c FROM book_progress
+     WHERE user_id=? AND status='done' GROUP BY book_id`,
+  ).bind(userId).all()).results as { book_id: string; c: number }[]).length
   const intelCount = (await DB.prepare(
     `SELECT COUNT(*) as n FROM captures WHERE kind='intel' AND user_id=?`,
   ).bind(userId).first<any>())?.n ?? 0

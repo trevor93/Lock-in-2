@@ -7,6 +7,7 @@ import { computeStreak } from './streak'
 import { readChapterCursor } from './cursor'
 import { dayAdherence } from './scoring'
 import { addDays } from './time'
+import { completedBooks } from './books'
 
 export async function hermesBriefing(DB: D1Database, userId: number, date: string): Promise<string> {
   const blocks = await blocksForDate(DB, userId, date)
@@ -67,11 +68,12 @@ export async function continuityBrief(DB: D1Database, userId: number, date: stri
   const programmeDay = Math.max(1,
     Math.round((new Date(date + 'T12:00:00Z').getTime() - new Date(startDate + 'T12:00:00Z').getTime()) / msDay) + 1)
 
-  // Completed works: books whose chapters are all done.
-  const doneBooks = (await DB.prepare(
+  // Completed works: books whose chapters are ALL done. The threshold is per book and
+  // comes from the shelf — a single literal here reported Discourses finished at 12 of 141.
+  const doneBooks = completedBooks((await DB.prepare(
     `SELECT book_id, COUNT(*) c FROM book_progress
-     WHERE user_id=? AND status='done' GROUP BY book_id HAVING c >= 12`,
-  ).bind(userId).all()).results as any[]
+     WHERE user_id=? AND status='done' GROUP BY book_id`,
+  ).bind(userId).all()).results as { book_id: string; c: number }[])
   const unitsWon = (await DB.prepare(
     `SELECT COUNT(*) AS n FROM unit_progress WHERE user_id=? AND status='complete'`,
   ).bind(userId).first<{ n: number }>())?.n ?? 0
