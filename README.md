@@ -1,89 +1,203 @@
-# ⚔ WAR ROOM — Lock In
+# WAR ROOM — Lock In
 
-A private, progress-based, honesty-driven life-command system. Not a calendar app — a **campaign**: unit N unlocks only when unit N−1 is conquered. No shame mechanics — **ruthless honesty mechanics**: missed debriefs are flagged, skipped drills are called out, points are earned and lost.
+A private, single-owner command system: a schedule that closes its own windows, a
+progress-locked curriculum over eleven real books, an append-only record, and an advisor
+that can read the record but cannot act on it. Unit N unlocks when unit N-1 is conquered.
+There are no shame mechanics; there is an honesty engine, which is not the same thing.
 
-## Project Overview
-- **Name**: webapp (War Room)
-- **Goal**: One system that runs the day (schedule + alarms), the mind (strategy & philosophy curriculum with the REAL books), the record (debriefs, intel, stats), and the counsel (Hermes AI advisor — in-app and via the Termux bridge).
-- **Designed for**: a slow reader / slow doer — small units, mastery gates, no time pressure, only sequence pressure.
+This file describes the repository as it stands on this branch, and nothing else. Every
+number in it is derived from source by `test/readme-truthfulness.test.ts`, which fails the
+gate if the code moves and this file does not. That guard is the only reason to believe a
+number here — a hand-maintained README decays into falsehood without anybody deciding to
+make it false, and the one this replaced had done exactly that.
 
-## URLs
-- **Sandbox (dev)**: https://3000-iudnv7yitk8ls7mhkrw94-0e616f0a.sandbox.novita.ai
-- **Production**: not yet deployed (awaiting deploy-path choice)
+## The navigation
 
-## The 8 Tabs
-| Tab | Purpose |
+Five tabs across the bottom: TODAY, LEARN, PRACTICE, REVIEW, MORE. Inside each tab a
+segmented control selects a face, and there are 13 faces in total:
+
+| Tab | Faces |
 |---|---|
-| **NOW** | What should I be doing RIGHT NOW — current block, next block, one-tap log |
-| **DAY** | Full day plan, block check-offs, the 7 Laws daily checklist |
-| **WAR** | The Campaign — 5 phases, 41 progress-locked units (reading → lesson → field drill → debrief), self-scored exams (pass ≥70) |
-| **BOOKS** | 11 REAL full books (Project Gutenberg official translations) with chaptered reader + progress (+20 pts/chapter) + alarm settings + .ics calendar export |
-| **COUNCIL** | Hermes AI chat (knows the whole database via live Commander's File), Morning Council, Intel Log (16 life domains), **Hermes Bridge** setup |
-| **MIND** | Maxim bank (26 maxims, naive vs MASTER reading) + SM-2 spaced-repetition flashcards |
-| **LOG** | Nightly debrief (Law 4 targets mandatory), rewards store, past reports |
-| **STATS** | Weekly adherence %, streaks, points ledger, honesty flags |
+| TODAY | NOW, SCHEDULE |
+| LEARN | CAMPAIGN, BOOKS, RHETORIC |
+| PRACTICE | CARDS, MAXIMS, RESPONSE LAB |
+| REVIEW | DEBRIEF, STATS |
+| MORE | COUNCIL, INTEL, SETTINGS |
 
-## Key Systems
-- **Auth Gate (P0)** — the entire app sits behind a password. First open asks you to **SET a password** (PBKDF2, 100k iterations, per-install salt); after that it is login-only. Browser sessions are random opaque credentials stored SHA-256-hashed server-side and delivered in host-only `HttpOnly; Secure; SameSite=Lax` cookies with 30-day expiry, login rotation, logout revocation, and session-fixation protection. Five failed logins trigger a 15-minute lockout. Private browser routes require a valid session; versioned agent routes use separate scoped credentials. Browser CORS defaults to same-origin.
-- **Server Clock** — the server owns the calendar. `POST /api/tick` sends the browser timezone ONCE (then locked in `settings.timezone`); all dates/times are derived server-side via `Intl.DateTimeFormat`. Client-supplied dates are clamped (format-checked, never-future). No more "log yesterday from the query string".
-- **Honesty Engine** — runs server-side ONLY on `POST /api/tick` (the single engine crank; `GET /api/state` is a pure read): evaluates yesterday, files flags (missed debrief, unlogged blocks, tongue neglect), applies point penalties, awards victory-day (+30) and HELD-THE-LINE (+10) bonuses, finalizes yesterday into `day_summary`.
-- **Weighted Adherence** — blocks carry weight: **CORE (3)** = non-negotiables, **STANDARD (1)** = normal work, **CONTEXT (0)** = meals/skincare/entertainment/sleep/rest. Score = Σ(weight × credit) / Σ(weight). Missing dinner no longer costs the same as missing deep work. Weight-0 blocks are auto-canceled silently when their window closes — no flag, no penalty, not scored.
-- **Minimum Viable Day (MVD)** — 3 nominated CORE blocks. If ALL 3 land (done/partial), the day is **HELD THE LINE**: the streak survives even if overall adherence collapsed, no low-adherence flag, +10 bonus. Bad days end; the line doesn't break.
-- **LOAD REDUCTION (replaces never-miss-twice)** — miss the same block two days running and instead of a doubled penalty, the block's expectation is **halved for 3 days** and the app asks WHY (wrong time / too long / wrong prerequisite / don't actually want it) with tailored advice. Repeated failure is design feedback, not moral failure.
-- **Delta Scoring** — today's adherence is compared against your **trailing 14-day median** (needs ≥3 finalized days), shown as ▲/▼ delta. You compete against your own baseline, not an abstract 80%.
-- **Weekly Appeal Token** — ONE appeal per ISO week (`UNIQUE(week_key)` is the arbiter). Requires a ≥100-character permanent written reason; if granted it reopens the canceled block's window, refunds the penalty, and acknowledges the flag. The reason is on the record forever.
-- **Prediction Log (the instrument)** — seal claims about the future with a confidence (50–99%) and a resolve-by date. Grade them RIGHT / WRONG / VOID when due. The app computes your **Brier score**, a claimed-vs-actual **calibration curve** (5 confidence buckets, n≥3), and a plain-language bias verdict (OVERCONFIDENT / UNDERCONFIDENT / WELL CALIBRATED). Lives in the LOG tab.
-- **day_summary Materialization** — every finalized day is written to a `day_summary` row (adherence, weighted score, MVD, debrief, victory, points). Streak computation is one indexed SELECT (victory extends, HELD-THE-LINE survives-neutral, anything else breaks). Stats strip reads from it directly; only today is computed live. Client poll relaxed 15s → 60s.
-- **Same-Day Enforcement (REAL-TIME)** — any block whose window closed (`end_time` + `grace_minutes`, default 30) without a log is **AUTO-CANCELED live**: written as `status='missed'`, instant `missed_live` flag + penalty (−15 non-negotiable, −5 normal). The block renders struck-through with a red ✖ CANCELED pill and its buttons are gone. Re-logging returns **409 WINDOW CLOSED** — a missed block can never be reopened. Next-day engine skips already-punished blocks (no double jeopardy).
-- **THE TONGUE — Wise-Response Armory** — capture every smart, wise, unreadable response you hear (situation + exact question + exact line + why it works + source + 10 categories: deflection/wit/power/mystery/boundaries/praise/conflict/small-talk/negotiation/silence). A supreme memorization engine then drills each line into long-term memory with **5 rotating attack modes** (situation drill, cloze gaps, first-letters, reverse-binding, out-loud delivery reps), SM-2 spaced repetition, and a **mastery ladder**: NEW → LEARNING → MEMORIZED → INGRAINED → REFLEX (25 solid recalls + 45-day interval = fires in live conversation without thinking). Strict **weekly exam** (10 random lines, pass ≥80% → +25 pts; fail → flag + −10). Letting 5+ drills rot 3+ days files a TONGUE NEGLECT flag. Capture = +3 pts; every mastery promotion pays a bonus.
-- **Progress Locking** — `ensureUnlocks` walks each track; the first incomplete unit is the only active one. Locked units reject all writes.
-- **Points Economy** — earn: blocks, units, exams, debriefs, book chapters. Lose: flags. Spend: rewards store.
-- **Alarms** — 3 layers: (1) in-app **luxury grand-chime** (Web Audio bell synthesis: bronze bell partials, velvet attack, long decay, lowpass warmth + compressor, G4→B4→D5→G5 motif) + gold banner, (2) service-worker heads-up notifications (`requireInteraction`, refined vibration, action button; auto-cancel fires a dedicated ✖ CANCELED notification + toast), (3) `.ics` export with RRULE+VALARM → device-native alarms that ring even with the app closed.
-  - *Android heads-up popups:* set the browser/PWA notification channel to **High/Urgent** ("pop on screen") in Settings → Apps → Notifications — web apps cannot force this.
-- **Real Books** — 11 public-domain official translations parsed to JSON, served statically, cached offline by the service worker: Art of War, The Prince, Discourses on Livy, Meditations, Enchiridion, Apology, Crito, The Republic, Zarathustra, Beyond Good & Evil, On War.
+The faces are the destinations; the bar is how you get to them. Nothing was removed in
+the collapse — the commander reaches everything one level in instead of nine targets
+across.
 
-## 🔗 Hermes Bridge (Termux / Telegram / CLI)
-Scoped-credential agent API so a local Hermes agent (Termux on Android) can read and write only the capabilities granted to its device credential.
+**This README claimed eight tabs, and it was wrong in both directions.** The application
+had nine bottom-bar tabs when the sentence was written, not eight; those nine were then
+collapsed to the five above, and this file went on saying eight for months afterwards.
+The discrepancy is recorded here rather than quietly corrected, because the record of
+having been wrong is the only thing that makes the next number in this file worth
+trusting. `STATUS.md` carries it as R10 and B3.X2.
 
-**Credentials** — sign in, then open COUNCIL → HERMES BRIDGE. Issue one credential per device. The raw value is shown once; the server stores only its SHA-256 hash and later lists only a safe prefix and metadata. Credentials carry explicit scopes, expiry, revocation, last-use details, and coarse request metadata. Default bridge credentials exclude `export:read`. Authentication is **`X-Agent-Token` header only**; query-string tokens are rejected.
+## The books
 
-**Versioned endpoints** — all agent operations use POST so authenticated usage accounting never makes a GET or HEAD mutate D1:
-- `POST /api/agent/v1/briefing` with `{}` — live Commander's File (`briefing:read`)
-- `POST /api/agent/v1/pending` with `{}` — current block, overdue unlogged blocks, flags, debrief status (`blocks:read`)
-- `POST /api/agent/v1/debriefs` with `{}` — recent debriefs (`debriefs:read`)
-- `POST /api/agent/v1/intel/read` with `{}` — recent intel (`intel:read`)
-- `POST /api/agent/v1/intel` — file intel (`intel:write`)
-- `POST /api/agent/v1/debrief` — merge into a debrief (`debriefs:write`)
-- `POST /api/agent/v1/block-log` — log a block (`blocks:write`)
-- `POST /api/agent/v1/message` — post counsel into the COUNCIL log (`hermes:write`)
-- `POST /api/agent/v1/export` with `{}` — owner-scoped export (`export:read`, never default)
+The shelf holds 11 works: eleven public-domain texts, parsed to JSON, served as static
+assets, and cached for offline reading. Chapter counts are pinned in `src/books.ts` and are what the progress
+lock and the +20-points-per-chapter award read:
 
-The legacy master-token endpoints and unversioned agent API are retired. Production migration, deployment, and credential replacement are operator-controlled under `OPERATIONS.md`; repository work does not claim they have occurred.
+| Work | Chapters |
+|---|---|
+| The Art of War | 13 |
+| The Prince | 26 |
+| Discourses on Livy | 141 |
+| Meditations | 12 |
+| Enchiridion | 6 |
+| Apology | 4 |
+| Crito | 3 |
+| The Republic | 4 |
+| Thus Spoke Zarathustra | 25 |
+| Beyond Good and Evil | 10 |
+| On War | 12 |
 
-**Termux client**: download `/static/hermes_bridge.py` — commands: `briefing | pending | watch | done | intel | journal | say | export`. The bridge requires an HTTPS `WARROOM_URL`, reads the agent credential from an owner-only file selected by `WARROOM_TOKEN_FILE` (default `~/.config/warroom/agent_token`; paste it through `cat` so it does not enter shell history), uses bounded timeouts and default TLS verification, and distinguishes 401/403/429/5xx without printing credentials or raw server errors. Full export additionally requires a separate `export:read` credential and `--authorize-full-export`. The `watch` daemon polls every 60s and fires `termux-notification` and optional Telegram messages (`TG_BOT_TOKEN`/`TG_CHAT_ID`) on block starts, unlogged blocks, honesty flags, and missing debriefs after 21:00.
+The counts are deliberately uneven. *Discourses* is chaptered as the source chapters it, and
+*The Republic* and *Apology* are held at their part divisions rather than being split
+finer; an earlier version of this file implied a flat twelve chapters everywhere, which
+would have made the progress lock look like something it is not. Translations are the
+Project Gutenberg editions (www.gutenberg.org).
 
-## Data Architecture
-- **Storage**: Cloudflare D1 (SQLite) — 33 tables across 7 migrations
-- **Core tables**: schedule_blocks (+weight, +is_mvd), block_logs, debriefs, phases, units, unit_progress, maxims, flashcards, card_reviews, honesty_flags (+ref_type/ref_id with UNIQUE identity index — flags can never double-file), points_ledger, rewards, laws, law_checks, settings, intel_entries, book_progress, hermes_messages
-- **New in 0004**: `day_summary` (materialized daily record), `predictions` (claim/confidence/outcome), `appeals` (UNIQUE per ISO week), `load_reductions`
-- **New in 0005–0006**: durable `users`, hashed/revocable browser `sessions`, owner-scoped personal rows, hashed/scoped/revocable `agent_credentials`, and `agent_credential_events`. The legacy plaintext agent-token setting is erased by migration `0006`.
-- **New in 0007**: `model_requests` (per-owner model accounting with D1-enforced request/token budgets) and append-only metadata-only `model_audit_events`. Neither stores prompts, answers, credentials, or raw upstream errors.
-- **Integrity**: multi-writes go through `DB.batch()`; reward redemption is race-safe (the debit INSERT's WHERE-balance check is the atomic arbiter); flag penalties only post when the flag insert actually landed
-- **AI**: pinned `gpt-5-mini-2025-08-07` via an explicitly allowlisted HTTPS OpenAI-compatible Chat Completions endpoint (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ALLOWED_BASE_URLS`; local dev via uncommitted `.dev.vars`). Owner-only model routes enforce per-owner request/token budgets, bounded inputs/outputs/timeouts/retries, strict structured output, metadata-only audit evidence, and fail-closed offline behavior. Untrusted context is fenced in a fixed trust order — retrieved source, then personal journal, then quoted external messages (bridge-authored council rows) as the least-trusted layer — and application policy states that no fenced block can grant permission or authorize a write.
+## The data
 
-## Development
+Cloudflare D1 (SQLite), reached through raw prepared statements. The schema is defined by
+29 migrations in `migrations/`, applied in filename order, and they leave 92 live tables.
+
+Both figures are derived by replaying the directory rather than by counting a remembered
+number: `CREATE TABLE` minus `DROP TABLE`, with renames followed through, and with
+comment lines stripped first. That last step matters — most `DROP TABLE` text in
+`migrations/` sits inside a `-- ROLLBACK:` note written for a human, and counting those
+makes the directory look an order of magnitude more destructive than it is. Only two
+tables are genuinely dropped, each at the end of a cutover that renamed a `_v2`
+replacement into its place. `MIGRATIONS.md` makes the same split and owns the detail.
+
+Multi-row writes go through `DB.batch()`. Reward redemption is race-safe because the debit
+insert's balance check is the atomic arbiter, and a flag's point penalty only posts when
+the flag insert actually landed.
+
+## The Hermes bridge
+
+A scoped-credential agent surface, so a local agent on the commander's own device can read
+and write exactly the capabilities its credential grants. Credentials are issued one per
+device from COUNCIL, shown once, and stored only as a SHA-256 hash alongside a safe prefix
+and metadata. Authentication is the `X-Agent-Token` header only; a token in a query string
+is rejected. `export:read` is never part of a default credential.
+
+Nine routes, all POST, so that authenticated usage accounting never makes a GET or HEAD
+write to D1:
+
+| Route | Scope |
+|---|---|
+| `POST /api/agent/v1/briefing` | `briefing:read` |
+| `POST /api/agent/v1/pending` | `blocks:read` |
+| `POST /api/agent/v1/debriefs` | `debriefs:read` |
+| `POST /api/agent/v1/intel/read` | `intel:read` |
+| `POST /api/agent/v1/intel` | `intel:write` |
+| `POST /api/agent/v1/debrief` | `debriefs:write` |
+| `POST /api/agent/v1/block-log` | `blocks:write` |
+| `POST /api/agent/v1/message` | `hermes:write` |
+| `POST /api/agent/v1/export` | `export:read` |
+
+The unversioned agent API and the legacy master-token endpoints are gone. The Termux
+client is served at `/static/hermes_bridge.py`; it requires an HTTPS host, reads its
+credential from an owner-only file rather than a command line, and refuses a full export
+without both an `export:read` credential and an explicit authorisation flag.
+
+## The gate
+
+One command:
+
 ```bash
-npm run build                          # vite build → dist/
-pm2 start ecosystem.config.cjs         # wrangler pages dev dist --d1 --local :3000
-npm run db:migrate:local               # apply migrations
-npm run db:seed                        # seed schedule/laws/rewards
-# also seeded: seed_curriculum.sql, seed_curriculum2.sql, seed_maxims.sql
+npm run verify
 ```
 
+which is `npm run build && npm test && tsc --noEmit && git diff --check` plus a check that
+the committed client bundle matches its source. There is no second command to remember and
+no partial pass — either that exits 0 or the work is not done.
+
+Behind it: 71 server test files running in the Cloudflare Workers pool against a real local
+D1, and 9 DOM test files running under happy-dom. The two suites are separate projects
+because the workers runtime and the DOM runtime cannot share one. Both counts above are
+derived from the files that exist, including the one test that lives outside `test/`, in
+`workers/`.
+
+## Development
+
+```bash
+npm install
+npm run build                  # vite build -> dist/
+npm run dev                    # local dev server
+npm test                       # both suites
+npm run verify                 # the gate
+```
+
+Local D1 migration and seeding commands, the seed files, and the local page index are
+documented in `OPERATIONS.md` and `LOCAL_PAGE_INDEX.md`. Model access needs
+`OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_ALLOWED_BASE_URLS`; supply them locally
+through an uncommitted `.dev.vars`, never through a committed file.
+
 ## Deployment
-- **Platform**: Cloudflare Pages (pending — user to choose deploy path)
-- **Tech Stack**: Hono + TypeScript + Cloudflare D1 + Tailwind CDN + vanilla JS + PWA
-- **Status**: ✅ Fully working in sandbox (⚠ in-app Hermes chat requires a valid LLM API key injection)
-- ⚠ **SECURITY — operator action required before real use**: an inspected existing production deployment was older than the authenticated source and must not be treated as remediated. The separate operator must follow `OPERATIONS.md` for backup, migration application, deployment, verification, and issuance of replacement per-device scoped credentials; repository work does not perform or claim those actions.
-- **Design**: Luxury v2 — layered-black glassmorphism, engraved gold (Cinzel), FX engine (confetti, haptics, count-up, progress rings), rank ladder (RECRUIT→SOVEREIGN), streak flame tiers, timeline day view, WhatsApp-grade council chat, premium book reader with drop caps
-- **Last Updated**: 2026-08-12 (Reforge wave 1: auth gate, server clock, weighted adherence, MVD, load reduction, appeals, prediction log, day_summary)
+
+**This application has not been deployed.** No deploy has been performed by repository
+work, and this file carries no URL to anything running. The previous version of this README advertised a development sandbox
+host; it was unreachable and unverifiable from the repository, and a URL in a README is
+read as an invitation.
+
+The platform target is Cloudflare Pages with D1 and a Cron Worker. Every step that touches
+it — backup, migration application, secrets, credential rotation, the Cron Worker, and the
+deploy itself — belongs to a separate operator and is written out step by step in
+`OPERATIONS.md` and `DEPLOYMENT.md`. Repository work does not perform those steps, does not
+simulate them, and does not claim they have happened. "Production-ready" in `STATUS.md`
+means repository-side readiness only.
+
+## Known gaps
+
+These are open, and named here because a gap nobody wrote down is a gap that gets
+rediscovered by a user:
+
+- **The service-worker cache is unversioned.** `src/renderer.ts` names one fixed cache and
+  the worker never enumerates or deletes the old ones on activate, so a stale asset can
+  outlive a change to it. Until that is fixed, a hard reload is the reliable way to pick up
+  new client code. Real versioning with a purge on activate is the next scheduled change,
+  and the guard on this file forbids this paragraph from surviving it.
+- **Android heads-up notifications cannot be forced from the web.** The notification channel
+  has to be set to High/Urgent in the device's own settings; the app can request, not
+  compel.
+- **The in-app advisor is offline without a model key**, and fails closed rather than
+  degrading into a guess.
+- `AI_SAFETY.md` §14 lists the open weaknesses in the advisor path, and `SECURITY.md` §13
+  lists the accepted residual risks in the security model. Neither list is decoration.
+
+## Where the detail lives
+
+This file is a map, not the territory. Each of these owns claims that must exist in exactly
+one place, because a second copy is a copy that drifts:
+
+| Document | Owns |
+|---|---|
+| `SECURITY.md` | the security model, the trust boundaries, the accepted residual risks |
+| `PRIVACY.md` | every field the Commander's File emits, and why each one is needed |
+| `ARCHITECTURE.md` | the request path, the modules, and where state actually lives |
+| `MIGRATIONS.md` | the schema, the migration order, and the rollback note for each |
+| `DEPLOYMENT.md` | what a deploy consists of, for the operator who performs it |
+| `OPERATIONS.md` | the operator runbook, step by step, including what is out of scope |
+| `CURRICULUM_GUIDE.md` | the phases, the units, the exams, and the progress lock |
+| `AI_SAFETY.md` | what the model may see, what is enforced in code, and what is not |
+| `STATUS.md` | the only progress record: what is done, what is owed, what was found |
+
+## What this README does not claim
+
+- It does not claim a deployment. Nothing above describes a running service, and no host
+  named here is presented as reachable.
+- It makes no claim that has not been derived from source or enforced by a test. Where a
+  figure appears, the guard that derives it is the reason it is here.
+- It is not an audit, not a security review, and not a certification. `SECURITY.md` and
+  `AI_SAFETY.md` describe a model and its known holes; describing a control is not the same
+  as having had it independently reviewed.
+- Its silence is not a guarantee. A risk this file does not name may be absent, or may
+  simply not have been found yet — the absence of a warning is not evidence of safety.
+- It does not claim to be complete about work still in progress. `STATUS.md` is the record;
+  where the two disagree, `STATUS.md` is correct and this file is stale.
