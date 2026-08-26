@@ -141,6 +141,101 @@ function statesNumber(text: string, value: string): boolean {
     || new RegExp(`(^|[^\\d,])${grouped}([^\\d,]|$)`).test(text)
 }
 
+
+// -------------------------------------------- the schema's own append-only claim
+//
+// Finding, from grounding MIGRATIONS.md against the schema: §12 originally listed eleven
+// tables as carrying `BEFORE UPDATE` and `BEFORE DELETE` aborts, and named three of them by
+// table names that do not exist anywhere in `migrations/` (`catchup_credits`,
+// `alt_explanations`, `miss_causes`). Eleven is a real number — it is how many tables have a
+// trigger whose own abort *message* says append-only — but only nine of those refuse both
+// events unconditionally, and one of the other two has no delete trigger at all. A
+// hand-written list overstated a schema guarantee, which is the single thing this document
+// must never do. So the inventory is derived from the migrations, and so is the line between
+// what is unconditional and what is not.
+const migrationSources = import.meta.glob('../migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+
+type TriggerFact = {
+  file: string
+  name: string
+  event: 'INSERT' | 'UPDATE' | 'DELETE'
+  table: string
+  message: string
+  /** A `WHEN` clause means the trigger refuses only some statements, so it guarantees less. */
+  condition: string
+}
+
+/** Every `CREATE TRIGGER` in the migrations, with the condition and message it aborts on. */
+function schemaTriggers(): TriggerFact[] {
+  const facts: TriggerFact[] = []
+  const re = /CREATE\s+TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+(?:BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|UPDATE|DELETE)(?:\s+OF\s+[\w\s,]+?)?\s+ON\s+(\w+)([\s\S]*?)\bEND\s*;/gi
+  for (const [path, sql] of Object.entries(migrationSources)) {
+    for (const m of sql.matchAll(re)) {
+      const [, name, event, table, body] = m
+      const head = body.split(/\bBEGIN\b/i)[0] ?? ''
+      facts.push({
+        file: path.split('/').pop() ?? path,
+        name,
+        event: event.toUpperCase() as TriggerFact['event'],
+        table,
+        message: /RAISE\s*\(\s*ABORT\s*,\s*'([^']*)'/i.exec(body)?.[1] ?? '',
+        condition: (/\bWHEN\b([\s\S]*)/i.exec(head)?.[1] ?? '').replace(/\s+/g, ' ').trim(),
+      })
+    }
+  }
+  return facts
+}
+
+const TRIGGERS = schemaTriggers()
+
+/** Raw statement count, so a trigger the parser cannot read fails loudly instead of vanishing. */
+const TRIGGER_STATEMENTS = Object.values(migrationSources)
+  .reduce((n, sql) => n + (sql.match(/CREATE\s+TRIGGER\b/gi)?.length ?? 0), 0)
+
+/**
+ * Triggers whose own abort message claims the table is append-only. This is the discriminator,
+ * and it is deliberately the schema's own word: the alternative-explanation gate also aborts on
+ * `UPDATE`, but it says `ALT_EXPLANATION_REQUIRED` — it enforces a precondition, it does not
+ * claim the row is immutable, and §12 is not about it.
+ */
+const CLAIMED = TRIGGERS.filter(
+  (t) => t.event !== 'INSERT' && /append[_\s-]?only/i.test(t.message))
+const CLAIMED_TABLES = [...new Set(CLAIMED.map((t) => t.table))].sort()
+
+const guards = (table: string, event: 'UPDATE' | 'DELETE') =>
+  CLAIMED.filter((t) => t.table === table && t.event === event && t.condition === '')
+
+/** Append-only in the strong sense: no statement can edit a row, and none can remove one. */
+const HARD = CLAIMED_TABLES.filter(
+  (t) => guards(t, 'UPDATE').length > 0 && guards(t, 'DELETE').length > 0)
+
+/** The tables whose triggers say append-only while guaranteeing strictly less than that. */
+const SOFT = CLAIMED_TABLES.filter((t) => !HARD.includes(t))
+
+/** A `##`/`###` section of SECURITY.md by heading, up to the next heading of any depth. */
+function docSection(heading: string): string {
+  const at = securitySrc.indexOf(heading)
+  expect(at, `SECURITY.md has no "${heading}" heading — this extractor reads it by name`)
+    .toBeGreaterThan(-1)
+  const rest = securitySrc.slice(at + heading.length)
+  const end = rest.search(/\n#{2,4} /)
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
+/** The table names keyed in the rows of one section. */
+const sectionTables = (text: string) =>
+  [...text.matchAll(/^\|\s*`(\w+)`\s*\|/gm)].map((m) => m[1]).sort()
+
+/** The bullet of a section that discusses one table. */
+const bulletFor = (text: string, table: string) =>
+  text.split(/\n(?=[-*] )/).find((b) => b.includes(`\`${table}\``)) ?? ''
+
+const collapse = (s: string) => s.replace(/\s+/g, ' ')
+
 const SCOPES = agentScopes()
 const ROUTES = agentRouteTable()
 const HEADERS = hardeningHeaders()
@@ -298,6 +393,94 @@ describe('SECURITY.md claims exactly what the code guarantees', () => {
       securitySrc,
       'SECURITY.md does not identify the operator-scoped boundary (secrets, credential '
       + 'rotation, deployment), so its guarantees read as broader than they are',
-    ).toMatch(/operator/i)
+    ).toMatch(/separate\s+operator|operator[-\s]scoped/i)
+  })
+
+  it('the trigger parser reads every trigger the migrations install', () => {
+    // A parser that silently skips a trigger shrinks the derived append-only list, and the
+    // document would then be certified against the shrunken one — a check that agrees with a
+    // false claim. Parsed count must equal statement count, so an unreadable trigger fails.
+    expect(
+      TRIGGERS.length,
+      'the trigger parser read fewer CREATE TRIGGER statements than the migrations contain, so '
+      + 'the derived append-only inventory is incomplete and every check below is unsound',
+    ).toBe(TRIGGER_STATEMENTS)
+    expect(TRIGGER_STATEMENTS, 'the migration glob found almost no triggers').toBeGreaterThanOrEqual(27)
+    expect(
+      CLAIMED_TABLES.length,
+      'no trigger message claims append-only, so the discriminator this section is built on '
+      + 'has changed and the comparison is vacuous',
+    ).toBeGreaterThanOrEqual(11)
+    expect(HARD.length, 'no table derived as unconditionally append-only').toBeGreaterThanOrEqual(9)
+    expect(
+      SOFT.length,
+      'no table derived as conditionally protected, so the section that states the difference '
+      + 'would be compared against nothing',
+    ).toBeGreaterThanOrEqual(2)
+  })
+
+  it('lists exactly the tables no statement can edit and none can remove', () => {
+    const listed = sectionTables(docSection('### Append-only by trigger'))
+    expect(
+      listed,
+      'the append-only list in SECURITY.md is not the set of tables the migrations protect '
+      + `unconditionally in both directions. Derived: ${HARD.join(', ')}. Documented: `
+      + `${listed.join(', ') || '(none)'}. A table missing from the list hides a protection; a `
+      + 'table listed without both unconditional triggers claims one the schema does not make.',
+    ).toEqual(HARD)
+  })
+
+  it('names the triggers and the migration behind each append-only table', () => {
+    const section = docSection('### Append-only by trigger')
+    const wrong = new Set<string>()
+    for (const table of HARD) {
+      const row = section.split('\n').find((l) => l.trimStart().startsWith(`| \`${table}\``)) ?? ''
+      for (const t of [...guards(table, 'UPDATE'), ...guards(table, 'DELETE')]) {
+        if (!row.includes(`\`${t.name}\``)) wrong.add(`${table}: row does not name \`${t.name}\``)
+        if (!row.includes(t.file)) wrong.add(`${table}: row does not name ${t.file}`)
+      }
+    }
+    expect(
+      [...wrong],
+      'a row states a protection without naming the trigger that enforces it or the migration '
+      + 'that installs it, so a reader cannot check the claim against the schema',
+    ).toEqual([])
+  })
+
+  it('never calls a conditionally protected table append-only', () => {
+    // The dangerous direction. These tables say APPEND_ONLY in their own abort messages, which
+    // is exactly why they were swept into the unconditional list. Each one guarantees less
+    // than that, and the document has to say which part it does not guarantee.
+    const conditional = docSection('### Protected, but not unconditionally')
+    const unconditional = docSection('### Append-only by trigger')
+    const problems: string[] = []
+    for (const table of SOFT) {
+      if (sectionTables(unconditional).includes(table)) {
+        problems.push(`${table} is listed as unconditionally append-only; its triggers are not`)
+      }
+      const bullet = bulletFor(conditional, table)
+      if (!bullet) {
+        problems.push(
+          `${table} claims append-only in its trigger message but the document never states the `
+          + 'condition, so a reader has no way to know the protection is partial')
+        continue
+      }
+      for (const t of CLAIMED.filter((x) => x.table === table && x.condition)) {
+        if (!collapse(bullet).includes(collapse(t.condition))) {
+          problems.push(`${table}: the document does not state the condition ${t.condition}`)
+        }
+      }
+      // Whether a row can be removed is the half a `no_update` trigger says nothing about.
+      const refusesDelete = guards(table, 'DELETE').length > 0
+      if (refusesDelete && !/DELETE`?[^.]*(refus|reject|abort)/i.test(bullet)) {
+        problems.push(`${table}: the document does not state that DELETE is refused outright`)
+      }
+      if (!refusesDelete && !/\bno\b[^.]*BEFORE DELETE/i.test(bullet)) {
+        problems.push(
+          `${table}: has no BEFORE DELETE trigger, and the document does not say so — a reader `
+          + 'would take the append-only message as proof that no row was ever removed')
+      }
+    }
+    expect(problems, problems.join('; ')).toEqual([])
   })
 })

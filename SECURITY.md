@@ -342,20 +342,59 @@ constrains it.
 ## 12. Evidence that cannot be rewritten
 
 The honesty engine depends on records that cannot be edited after the fact, so append-only is
-enforced by SQLite triggers in the migrations — not by application discipline. `BEFORE UPDATE`
-and `BEFORE DELETE` triggers `RAISE(ABORT, …)` on `model_audit_events`, `audit_events`,
-`catchup_credits`, `alt_explanations`, `push_deliveries`, `ratchet_events`, `miss_causes`,
-`reading_events`, `mastery_evidence`, `rhetoric_card_reviews`, and `job_runs`. A finished job
-run cannot be edited at all.
+enforced by SQLite triggers in the migrations — not by application discipline. Eleven tables
+carry a trigger whose own abort message says append-only. For nine of them that holds in both
+directions and under every condition; for two it does not. The difference is stated rather than
+rounded off, because a partial protection described as a total one is a false assurance. Both
+lists below are derived from `migrations/` by the guard test, so a table that loses a trigger,
+gains one, or is renamed fails the build instead of quietly changing what this section means.
 
 `audit_events` records metadata only. `auditEvent` writes actor type, actor id, request id,
 action, and entity — never a credential, a prompt, or model output. A failure to audit never
 breaks the request it describes.
 
-One exception, stated because it is one: **`agent_credential_events` carries no append-only
-trigger.** It is append-only because exactly one statement in `src/agent-auth.ts` touches it and
-that statement is an `INSERT` — no code path updates or deletes it. That is application
-discipline, not a schema guarantee, and it is weaker than the tables listed above.
+### Append-only by trigger
+
+Each table below carries an unconditional `BEFORE UPDATE` **and** an unconditional
+`BEFORE DELETE` trigger, both of which `RAISE(ABORT, …)`. Once a row is written, no statement
+can change it and no statement can remove it.
+
+| Table | Triggers | Installed by |
+|---|---|---|
+| `alternative_explanations` | `trg_alt_expl_no_update`, `trg_alt_expl_no_delete` | `0010_alternative_explanation_gate.sql` |
+| `audit_events` | `trg_audit_no_update`, `trg_audit_no_delete` | `0008_audit_idempotency.sql` |
+| `block_miss_causes` | `trg_miss_causes_no_update`, `trg_miss_causes_no_delete` | `0019_block_statuses_and_causes.sql` |
+| `catchup_sessions` | `trg_catchup_no_update`, `trg_catchup_no_delete` | `0009_recovery_catchup.sql` |
+| `mastery_evidence` | `trg_mastery_evidence_no_update`, `trg_mastery_evidence_no_delete` | `0021_mastery_rubric_calibration.sql` |
+| `model_audit_events` | `trg_model_audit_no_update`, `trg_model_audit_no_delete` | `0007_model_security.sql` |
+| `ratchet_events` | `trg_ratchet_events_no_update`, `trg_ratchet_events_no_delete` | `0018_ratchet.sql` |
+| `reading_events` | `trg_reading_events_no_update`, `trg_reading_events_no_delete` | `0020_learning_sources_reading.sql` |
+| `rhetoric_card_reviews` | `trg_rhetoric_card_reviews_no_update`, `trg_rhetoric_card_reviews_no_delete` | `0024_rhetoric_track.sql` |
+
+### Protected, but not unconditionally
+
+Two more tables abort with an append-only message while guaranteeing strictly less than the nine
+above. They are named here rather than there, because the message is what a reader greps for and
+the message is broader than the trigger.
+
+- **`push_deliveries`** (`0017_push_notifications.sql`). `DELETE` is refused outright by
+  `trg_push_delivery_no_delete`. `UPDATE` is refused by `trg_push_delivery_no_update` only
+  `WHEN OLD.ok_count IS NOT NULL AND NEW.sent_at <> OLD.sent_at` — a delivery whose attempt has
+  already been recorded cannot have its send time rewritten, but no trigger protects its other
+  columns. What makes the ledger safe against double-notifying is its
+  `UNIQUE(user_id, kind, ref, occurs_on)` index, not this trigger.
+- **`job_runs`** (`0029_job_runs.sql`). `UPDATE` is refused by `trg_job_runs_no_reopen`
+  `WHEN OLD.status <> 'running'`, which permits exactly the completion write — `running` to `ok`
+  or `error` — and refuses every later edit. There is **no** `BEFORE DELETE` trigger: a run row
+  can be deleted. So the table guarantees that a run which finished cannot be rewritten to claim
+  it went differently. It is not evidence that no run record was ever removed.
+
+### One exception, stated because it is one
+
+**`agent_credential_events` carries no append-only trigger.** It is append-only because exactly
+one statement in `src/agent-auth.ts` touches it and that statement is an `INSERT` — no code path
+updates or deletes it. That is application discipline, not a schema guarantee, and it is weaker
+than the tables listed above.
 
 ### Enforced bounds
 
