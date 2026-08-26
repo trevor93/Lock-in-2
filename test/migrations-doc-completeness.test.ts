@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import migrationsDoc from '../MIGRATIONS.md?raw'
 import operationsSrc from '../OPERATIONS.md?raw'
+import pkgSrc from '../package.json?raw'
 import { migrationPaths } from './setup'
 
 // Book 17 Definition of Done, Documentation (MASTERPROMPT.md): "Add ... MIGRATIONS.md ...
@@ -510,5 +511,47 @@ describe('B17 MIGRATIONS.md is derived from migrations/, in both directions', ()
       '§9 no longer states the operator\'s commands, so the boundary is asserted about a '
       + 'section that no longer tells an operator what to run',
     ).toBeGreaterThanOrEqual(2)
+
+    // And the claim itself, derived rather than promised. §9 states that nothing in
+    // package.json, in CI or in any test applies a migration or executes SQL against a remote
+    // database. A sentence like that is worth exactly as much as the check behind it: without
+    // one, a convenience script that migrated production would leave the document asserting
+    // the opposite, in the section an operator reads to decide what is safe to run.
+    const REMOTE = /d1 migrations apply|d1 execute|--remote/
+    const pkg = JSON.parse(pkgSrc) as { scripts?: Record<string, string> }
+    const scriptNames = Object.keys(pkg.scripts ?? {})
+    expect(scriptNames.length, 'package.json declares no scripts, so the first third of §9\'s '
+      + 'claim is asserted about nothing').toBeGreaterThan(5)
+    expect(
+      Object.entries(pkg.scripts ?? {}).filter(([, cmd]) => REMOTE.test(cmd)).map(([n]) => n),
+      'these package.json scripts reach a remote database, and §9 claims none does',
+    ).toEqual([])
+    const workflows = import.meta.glob('../.github/workflows/*.yml', {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }) as Record<string, string>
+    expect(Object.keys(workflows).length, 'no workflow exists, so the CI third of §9\'s claim '
+      + 'is asserted about nothing').toBeGreaterThan(0)
+    expect(
+      Object.entries(workflows).flatMap(([path, src]) => src.split(/\r?\n/)
+        .filter((line) => !/^\s*#/.test(line) && REMOTE.test(line))
+        .map((line) => `${path.replace(/^\.\.\//, '')}: ${line.trim()}`)),
+      'these CI steps reach a remote database, and §9 claims none does',
+    ).toEqual([])
+    const testSources = import.meta.glob('./*.test.ts', {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }) as Record<string, string>
+    expect(Object.keys(testSources).length, 'the test-source glob came back empty, so the test '
+      + 'third of §9\'s claim is asserted about nothing').toBeGreaterThanOrEqual(60)
+    expect(
+      Object.entries(testSources)
+        .filter(([, src]) => src.split(/\r?\n/).some((line) => !/^\s*(?:\/\/|\*)/.test(line)
+          && REMOTE.test(line)))
+        .map(([path]) => `test/${path.slice(2)}`),
+      'these tests reach a remote database, and §9 claims none does',
+    ).toEqual([])
   })
 })

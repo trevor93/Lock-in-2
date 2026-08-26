@@ -268,7 +268,12 @@ in its preamble, and its guard requires the exemption to be stated rather than s
 
 Applying these migrations to the production D1 database is an **operator action**. This
 repository does not perform it, cannot perform it, and does not claim to have performed it.
-Nothing in `package.json`, in CI, or in any test touches a remote database; every test in the
+Nothing in `package.json`, in CI, or in any test applies a migration or executes SQL against a
+remote database: no script, no workflow step and no test contains `d1 migrations apply`,
+`d1 execute` or `--remote`, and `test/migrations-doc-completeness.test.ts` sweeps all three
+and fails if one appears. Two scripts do reach Cloudflare — `npm run deploy` and `npm run
+preview` — and both require operator credentials this repository does not hold. Every test in
+the
 suite runs against a local SQLite database built from these files.
 
 The operator's sequence is in `OPERATIONS.md` §5 and begins with a backup of production D1 —
