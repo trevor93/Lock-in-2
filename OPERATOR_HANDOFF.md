@@ -29,7 +29,7 @@ somewhere the repository does not control.
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
 | Everything else in Books 5–12 | source + local tests green | deploy (§5) |
 
-The preflight in §1 must produce: **624 server tests across 67 files + 48 DOM tests
+The preflight in §1 must produce: **640 server tests across 68 files + 48 DOM tests
 across 9 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
 
 If your run reports different totals, the tree you are holding is not the tree this
