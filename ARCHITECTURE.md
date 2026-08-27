@@ -43,7 +43,7 @@ The consequences of that choice are real and are stated in §11 rather than left
 | `src/` | 57 | Every server module — 37 at the top level plus 20 under `routes/`. |
 | `src/routes/` | 20 | The route modules, registering 140 routes between them. |
 | `public/static/app/` | 15 | The client module graph: 7 in `core/`, 7 in `features/`, 1 entry. |
-| `migrations/` | 29 | Forward-only SQL migrations, applied in filename order. |
+| `migrations/` | 30 | Forward-only SQL migrations, applied in filename order. |
 | `public/static/books/` | 11 | The shelf: one JSON file per work, served as static assets. |
 | `workers/` | 1 | One Cron Worker, deployed separately from the Pages application. |
 

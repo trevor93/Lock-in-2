@@ -24,9 +24,11 @@ import { migrationPaths } from './setup'
 // the parser misreads one statement, the two disagree and this file fails there, at the
 // parser, instead of quietly comparing the document against a set that was already wrong.
 //
-// Stripping comments before the replay is not a detail. Of the thirty-one `DROP TABLE`
-// occurrences in `migrations/`, twenty-nine live inside a `-- ROLLBACK (manual):` note. A parser
-// that read those would report tables as dropped that are sitting in production holding rows.
+// Stripping comments before the replay is not a detail. Nearly every `DROP TABLE` occurrence
+// in `migrations/` lives inside a `-- ROLLBACK (manual):` note rather than being a statement —
+// two are executed and the rest are notes — and a parser that read those would report tables as
+// dropped that are sitting in production holding rows. The exact split is derived below and
+// asserted against the document, so it is not restated here as a number that can go stale.
 
 // ------------------------------------------------------------------- derivations
 
@@ -37,6 +39,26 @@ const MIGRATION_SOURCES = import.meta.glob('../migrations/*.sql', {
 }) as Record<string, string>
 
 const FILES = migrationPaths.map((p) => p.split('/').pop() ?? '')
+
+const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+  'eighteen', 'nineteen']
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety']
+
+/**
+ * The English word for a count, so a guard can accept the prose spelling without carrying
+ * the spelling as a literal. A literal goes stale silently the moment the count moves, and
+ * the alternation then passes on the old word — which is the defect, not the guard.
+ */
+export function numberWord(n: number): string {
+  if (n < 0 || n > 99 || !Number.isInteger(n)) {
+    throw new Error(`numberWord covers 0-99 and was given ${n}`)
+  }
+  if (n < 20) return ONES[n]
+  const tens = TENS[Math.floor(n / 10)]
+  const ones = n % 10
+  return ones === 0 ? tens : `${tens}-${ONES[ones]}`
+}
 
 /** Comment-stripping that respects single-quoted strings, so a `--` inside seeded prose
  *  does not truncate the statement around it. Same rule `test/setup.ts` applies. */
@@ -193,6 +215,24 @@ const MAPPING = docSection('## 4.')
 // ------------------------------------------------------------------- the guard
 
 describe('B17 MIGRATIONS.md is derived from migrations/, in both directions', () => {
+  it('spells a count the way the prose does, at any count', () => {
+    // `numberWord` is what lets the assertions above accept the prose spelling without
+    // carrying the spelling. If it is wrong, the guard rejects a document that is right --
+    // so it is proven here rather than assumed, including across the boundary the directory
+    // just crossed.
+    expect(numberWord(29)).toBe('twenty-nine')
+    expect(numberWord(30)).toBe('thirty')
+    expect(numberWord(31)).toBe('thirty-one')
+    expect(numberWord(7)).toBe('seven')
+    expect(numberWord(13)).toBe('thirteen')
+    expect(numberWord(20)).toBe('twenty')
+    expect(numberWord(99)).toBe('ninety-nine')
+    // Out of range is a throw rather than a wrong word, because a wrong word here would
+    // fail somewhere else entirely and read as a documentation defect.
+    expect(() => numberWord(100)).toThrow()
+    expect(() => numberWord(1.5)).toThrow()
+  })
+
   it('read a real directory, a real database and a real document, so a broken read fails here', async () => {
     expect(FILES.length, 'the migration glob came back empty').toBeGreaterThanOrEqual(29)
     expect(migrationsDoc.length, 'MIGRATIONS.md came back empty').toBeGreaterThan(6000)
@@ -274,10 +314,14 @@ describe('B17 MIGRATIONS.md is derived from migrations/, in both directions', ()
     expect(thin, 'these §3 rows state no purpose').toEqual([])
 
     // The count is stated in words as well, and a stated count is the thing that goes stale.
+    // The accepted word is DERIVED from the count rather than spelled into the pattern: an
+    // alternation carrying a literal `twenty-nine` kept passing after the directory reached
+    // thirty files, which is this document's own recurring defect wearing a guard's clothes.
     expect(
       migrationsDoc,
-      `MIGRATIONS.md does not state that there are ${FILES.length} migrations`,
-    ).toMatch(new RegExp(`(twenty-nine|${FILES.length})\\s+migrations`, 'i'))
+      `MIGRATIONS.md does not state that there are ${FILES.length} migrations `
+      + `(as the digits or as "${numberWord(FILES.length)}")`,
+    ).toMatch(new RegExp(`(${numberWord(FILES.length)}|${FILES.length})\\s+migrations`, 'i'))
   })
 
   it('attributes every live table to the migration that produced it, and nothing else', () => {

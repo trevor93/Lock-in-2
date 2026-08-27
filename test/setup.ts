@@ -208,7 +208,7 @@ beforeAll(async () => {
   // A broken glob would resolve to an empty object, every loop below would be a
   // no-op, and the failure would surface as a confusing "no such table" in some
   // unrelated test. Assert the floor here instead, where the message is honest.
-  if (migrationPaths.length < 29) {
+  if (migrationPaths.length < 30) {
     throw new Error(
       `migration discovery found only ${migrationPaths.length} files; the glob is broken`,
     )

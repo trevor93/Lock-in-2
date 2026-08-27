@@ -24,12 +24,12 @@ somewhere the repository does not control.
 
 | Area | Repository status | Needs you |
 |---|---|---|
-| Migrations `0012`–`0029` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
+| Migrations `0012`–`0030` | written, applied to a local schema copy, tested | apply to production D1 (§2) |
 | Web Push (alarms) | endpoints, service-worker handler, subscribe flow, delivery ledger, tests | VAPID secrets (§3) + Cron Worker (§4) |
 | Enforcement Cron | `POST /internal/jobs/enforcement` exists and is secret-guarded | Cron Worker (§4) |
 | Everything else in Books 5–12 | source + local tests green | deploy (§5) |
 
-The preflight in §1 must produce: **685 server tests across 71 files + 55 DOM tests
+The preflight in §1 must produce: **717 server tests across 72 files + 55 DOM tests
 across 10 files green, `npx tsc --noEmit` clean, `npm run build` clean.**
 
 If your run reports different totals, the tree you are holding is not the tree this
@@ -86,7 +86,7 @@ value rather than passing or failing, which is why it is not part of the gate ab
 
 ---
 
-## 2. Apply migrations 0012–0029 to production D1
+## 2. Apply migrations 0012–0030 to production D1
 
 ### 2.1 The backup gate (mandatory, blocking)
 
@@ -96,8 +96,8 @@ it is destructive and needs its own explicit approval.
 
 ### 2.2 What these migrations do
 
-They must be applied **in filename order**. All eighteen are additive or preserve a full
-backup table; none deletes user data. (Eighteen files, seventeen descriptions below:
+They must be applied **in filename order**. All nineteen are additive or preserve a full
+backup table; none deletes user data. (Nineteen files, eighteen descriptions below:
 `0022` and `0023` are described together, exactly as `OPERATIONS.md` §5.18 does.)
 
 - `0012_unify_captures.sql` — creates `captures`, `review_items`, `exams` and backfills
@@ -165,6 +165,18 @@ backup table; none deletes user data. (Eighteen files, seventeen descriptions be
   the reason it exists — without it a dead scheduler looks exactly like the app quietly
   catching itself up. Counts, timestamps and an error class only; no `user_id`, no
   journal text, never the shared secret. See §5.24.
+- `0030_decision_lab.sql` — Book 13's Decision Lab, the largest single absence in the
+  schema: `decisions`, `decision_evidence`, `decision_options`, `decision_predictions`,
+  `decision_outcomes`, `decision_reviews`. Six tables, six indexes, three triggers, and
+  the rules live in the schema rather than in a handler because Book 13.2 requires it.
+  `trg_decisions_commit_gate` refuses the `open` → `committed` transition until the
+  decision has three options, a selected one, a reason, a bounded confidence, a next
+  physical action, a pre-mortem cause, all four triggers, both forced sentences, all six
+  Daylight boxes answered with a written justification for any unchecked one, and a
+  scheduled thirty-day review. `trg_decision_reviews_no_rewrite` makes a filed review
+  unrewritable — deliberately not undeletable, because the export-and-delete right is not
+  negotiable. Additive; no route reads these tables yet, so applying it changes no
+  behaviour. See §5.25.
 
 ### 2.3 Apply
 

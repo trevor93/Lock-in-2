@@ -15,7 +15,7 @@ the parser rather than quietly measuring this document against a set that was al
 
 ## 1. What this document is
 
-`migrations/` holds twenty-nine `.sql` files. They are the only description of the production
+`migrations/` holds thirty `.sql` files. They are the only description of the production
 schema; there is no ORM, no schema-sync step and no generated DDL anywhere in the repository.
 The application issues raw prepared statements against whatever these files produced.
 
@@ -72,7 +72,7 @@ original was kept under a `_pre####_backup` name. §5 covers both.
 
 ---
 
-## 3. The twenty-nine migrations
+## 3. The thirty migrations
 
 | Migration | What it does |
 | --- | --- |
@@ -105,6 +105,7 @@ original was kept under a `_pre####_backup` name. §5 covers both.
 | `0027_response_lab_seed.sql` | Books 11 and 12: three required seed sets, in one migration because they interlock. Adds no table. |
 | `0028_attempt_deployed.sql` | Book 12.4: adds the deployed state that the outbound red-team card guards. Adds no table. |
 | `0029_job_runs.sql` | Books 7 and 5.3: a run record for the enforcement tick and the alarm job. |
+| `0030_decision_lab.sql` | Book 13: the six Decision Lab tables, with the commit gate and the two append-only rules as triggers. |
 
 Seven migrations create no table of their own — `0014_intel_cutover.sql`,
 `0016_sm2_to_fsrs.sql`, `0023_immune_table_seed.sql`, `0025_rhetoric_seed.sql`,
@@ -116,7 +117,7 @@ and three of them are among the nine that cannot be applied twice.
 
 ## 4. Which migration owns each live table
 
-The directory contains 94 `CREATE TABLE` statements and leaves **92** tables standing; the
+The directory contains 100 `CREATE TABLE` statements and leaves **98** tables standing; the
 two-table difference is the two cutovers in §5. Each row below names the migration that gave
 a table its **current** name, which for `flashcards` and `tongue_reviews` is the migration
 that built the replacement rather than the one that first created the name.
@@ -145,6 +146,7 @@ that built the replacement rather than the one that first created the name.
 | `0022_principles_graph.sql` | 7 | `concept_components`, `concepts`, `graph_edges`, `graph_nodes`, `hypotheses`, `principle_frames`, `principles` |
 | `0024_rhetoric_track.sql` | 24 | `book_chapter_anchors`, `book_page_refs`, `canon_maps`, `commonplace_log`, `copia_renderings`, `copia_sessions`, `cycle_days`, `deployment_pivots`, `deployments`, `figure_detections`, `figure_own_examples`, `figures`, `inbound_cards`, `outbound_cards`, `recordings`, `response_builds`, `response_intents`, `rhetoric_attempts`, `rhetoric_card_reviews`, `rhetoric_cards`, `rhetoric_chapters`, `rhetoric_milestones`, `rhetoric_phases`, `specimens` |
 | `0029_job_runs.sql` | 1 | `job_runs` |
+| `0030_decision_lab.sql` | 6 | `decision_evidence`, `decision_options`, `decision_outcomes`, `decision_predictions`, `decision_reviews`, `decisions` |
 
 Two consequences of this table are worth stating in words, because an operator reading down
 the list will otherwise infer the opposite. First, the tables the original app was built on
@@ -158,8 +160,8 @@ with the longest pre-check list in the runbook.
 
 ## 5. The two cutovers, and the two tables that really were dropped
 
-The phrase `DROP TABLE` occurs 31 times across ten files in `migrations/`. **Two** of them are
-statements SQLite executes. The other 29 sit inside a `-- ROLLBACK …:` comment at the foot of
+The phrase `DROP TABLE` occurs 37 times across eleven files in `migrations/`. **Two** of them are
+statements SQLite executes. The other 35 sit inside a `-- ROLLBACK …:` comment at the foot of
 a migration — the reversal a human would type, written down next to the thing that needs
 reversing, and never parsed. Counting `DROP TABLE` occurrences to judge how destructive this
 directory is therefore overstates it by an order of magnitude, which is why the guard on this
@@ -183,7 +185,7 @@ had to reference `captures(id)` after `0012` unified the stores. The drop is at
 `0015_responses_cutover.sql:65`. `tongue_reviews_v2` is renamed to `tongue_reviews`, and
 `tongue_reviews_pre0015_backup` still holds the pre-cutover rows.
 
-The two backup tables are counted in the 92 and are not scheduled for removal. They are the
+The two backup tables are counted in the 98 and are not scheduled for removal. They are the
 only evidence that the cutovers preserved what they claimed to preserve, and no migration in
 this repository will drop them.
 
@@ -191,12 +193,12 @@ this repository will drop them.
 
 ## 6. Triggers and indexes
 
-The directory installs 27 `CREATE TRIGGER` statements and 100 `CREATE INDEX` statements. 10
+The directory installs 30 `CREATE TRIGGER` statements and 107 `CREATE INDEX` statements. 10
 are `UNIQUE`. Every index says `IF NOT EXISTS` and every index name begins with `idx_`, which
 is what makes a re-run of an index-only migration harmless.
 
-Those 100 statements create **96** distinct indexes, and an operator who counts indexes in
-the database will find 96, not 100. Four names are written twice:
+Those 107 statements create **103** distinct indexes, and an operator who counts indexes in
+the database will find 103, not 107. Four names are written twice:
 
 | Index | Created by |
 | --- | --- |
@@ -207,7 +209,7 @@ the database will find 96, not 100. Four names are written twice:
 
 All four sit on `flashcards` or `tongue_reviews`. Dropping a table in SQLite drops its
 indexes with it, so each cutover in §5 had to recreate the indexes belonging to the table it
-had just rebuilt. Nothing was lost: every one of the 96 is present in the database the
+had just rebuilt. Nothing was lost: every one of the 103 is present in the database the
 directory builds, and `test/migrations-doc-completeness.test.ts` compares the parsed index
 names against `sqlite_master` in both directions, so an index this document cannot account
 for fails the build.
@@ -227,7 +229,7 @@ because it was the one list in that document written as prose instead of derived
 globs `migrations/*.sql`, sorts by filename, applies `0001` through `0004`, seeds twenty-three
 populated legacy tables so that every later migration meets rows rather than empty tables,
 records the row counts, then applies `0005` onward. It throws if the glob returns fewer than
-twenty-nine files, so a build in which the migrations did not load fails loudly instead of
+thirty files, so a build in which the migrations did not load fails loudly instead of
 running a suite against an empty database.
 
 - `test/migration-clean-install.test.ts` proves a clean install and an upgrade reach the same

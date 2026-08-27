@@ -195,9 +195,9 @@ A D1 restore overwrites production state and is destructive. Do not import or re
 
 ## 5. Production Migration Gate
 
-**State:** Repository-authored migrations listed in this section are `migrations/0005_sessions_and_ownership.sql` through `migrations/0029_job_runs.sql` — twenty-five migrations, each with its own numbered subsection below (§5.1 through §5.24; §5.18 covers `0022` and `0023` together). Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
+**State:** Repository-authored migrations listed in this section are `migrations/0005_sessions_and_ownership.sql` through `migrations/0030_decision_lab.sql` — twenty-six migrations, each with its own numbered subsection below (§5.1 through §5.25; §5.18 covers `0022` and `0023` together). Each local populated-schema-copy preservation test must pass at the approved commit. Production application remains an operator action and is not claimed by the repository agent.
 
-> This line previously read that only `0005`, `0006`, and `0007` were listed here. It was written when that was true and was never updated as §5.4 through §5.24 were appended. An operator following it would have applied three migrations and believed the gate satisfied while twenty-two remained pending. Corrected by the 2026-08-24 audit. **When a subsection is added, this line is part of that change.**
+> This line previously read that only `0005`, `0006`, and `0007` were listed here. It was written when that was true and was never updated as §5.4 through §5.25 were appended. An operator following it would have applied three migrations and believed the gate satisfied while twenty-two remained pending. Corrected by the 2026-08-24 audit. **When a subsection is added, this line is part of that change.**
 
 **`migrations/0001`–`0004` carry no rollback note, and that is deliberate.** `0001_initial_schema`, `0002_intel_books_alarms`, `0003_tongue`, and `0004_reforge` are the INHERITED BASELINE: they were authored and applied before this remediation began, and they create the tables the commander's entire history lives in. A rollback note for `0001` would be an instruction to drop that history, which the standing rule against deleting user data forbids outright. They are the floor the rollback base rests on, not a step that can be reversed. The Book 17 requirement that "every schema change ships with a migration and a rollback note" governs changes this remediation makes — `0005` onward — and every one of those has one.
 
@@ -1355,6 +1355,96 @@ DROP TABLE IF EXISTS job_runs;
 ```
 
 Nothing references the table — `openJobRun` returns `null` when the insert fails and `closeJobRun` swallows its own error — so both jobs keep working unchanged after the drop. The only thing destroyed is the run history, which is operational metadata and not a personal record. Then redeploy the prior application if you also want the wiring gone.
+
+### 5.25 `migrations/0030_decision_lab.sql`
+
+**Purpose**
+
+- Book 13 names six tables at `MASTERPROMPT.md:202` and **none of them existed**: `decisions`, `decision_evidence`, `decision_options`, `decision_predictions`, `decision_outcomes`, `decision_reviews`. This was the largest single absence in the schema. A commander could read Book 13, work the Situation object through on paper, and the application had nowhere to put it.
+- The rules live in the **schema**, not in a handler, because Book 13.2 says so in as many words: "Law 23 is enforced here in schema, not in advice." A rule that lives in a route is a rule the next route forgets. `test/decision-lab-schema.test.ts` (31 tests) writes real SQL against the migrated database and requires the database itself to refuse.
+- **The commitment is guarded at the transition, not per column.** `trg_decisions_commit_gate` is a `BEFORE UPDATE` trigger firing only on `open`/`abandoned` → `committed`, and it judges the whole intended row in one statement: three options minimum, a selected option, a reason, a bounded confidence, a date, a next physical action, a pre-mortem cause, all four triggers, both of Book 13.3's forced sentences, all six Daylight boxes answered, a written justification if any box is unchecked, and a scheduled review date. Those columns are nullable on purpose — a decision *under construction* legitimately has none of them, and what must be impossible is **committing** without them. Each `RAISE` names the missing thing (`DECISION_NEEDS_THREE_OPTIONS`, `DECISION_NEEDS_DAYLIGHT_JUSTIFICATION`, …) because the operator and the route both need to know *which* question was skipped.
+- **The Five Factors are nullable by design.** Book 13.3 says each factor is "scored, **or marked unknown**". A `NOT NULL` would force a number where he has none, and a fabricated score is worse than an absent one.
+- **The Seven Comparisons are fourteen columns, not seven** (`compare_<factor>_self` and `compare_<factor>_other`). A single score column silently becomes a score of himself alone, which is the comparison not being made.
+- **An unchecked Daylight box is legal; a silent one is not.** A box may honestly be false. The gate refuses the commitment only when a `0` box arrives with no `daylight_justification`. A guard that tested only the refusal would have been satisfied by a schema that made an unchecked box impossible, which would have quietly deleted Book 13.4's "written justification for any unchecked box" clause — so the test proves **both directions, for each of the six boxes**.
+- **`decision_reviews` is append-only against rewriting, not against deletion.** `trg_decision_reviews_no_rewrite` refuses every `UPDATE`: the review is the only place the record says "I was wrong about this", and if it can be edited later it stops being evidence and becomes an opinion about the past. There is deliberately **no** delete trigger — Book 16's export-and-delete right is not negotiable, and SQLite cannot distinguish a cascade from an edit inside a trigger.
+- **`trg_decision_predictions_no_regrade`** refuses any `UPDATE` once `outcome` has left `unresolved`, putting the existing knowledge-prediction rule ("the record does not get rewritten") where a future route cannot forget it.
+- **Every table carries `user_id`,** so all six are swept automatically by `test/session-ownership.test.ts`, which derives its table set from the columns rather than from a list.
+- **Additive.** Six `CREATE TABLE IF NOT EXISTS`, six indexes, three triggers. No existing row changes meaning; no existing table is touched. No route reads these tables yet — the schema lands first so the rules exist before any handler can be written around them.
+
+**Repository evidence required before production application**
+
+```powershell
+npx vitest run test/decision-lab-schema.test.ts
+npm run verify
+```
+
+- [ ] `test/decision-lab-schema.test.ts` proves: all six tables exist and each carries `user_id`; Book 13.1's identification/situation/objective/stakes fields exist as **columns**, not a blob; `importance` and `reversibility` are bounded; a decision with a null or whitespace `alternative_explanation` is refused while `'None plausible'` is accepted; the five evidence labels are enforced and a sixth is refused; evidence confidence is bounded; `observed` and `believed` are both `NOT NULL` so the split cannot collapse; the six option kinds are enforced and each of the eight option fields is individually proven `NOT NULL`; committing on two options is refused and succeeds on the third; committing without a selected option, reason, next physical action, pre-mortem, any of the four triggers, either forced sentence, a bounded confidence, or a review date is refused; each of the six Daylight boxes is proven refused when unchecked-and-silent **and** accepted when unchecked-with-a-justification; an outcome with no `measurable_result` is refused; a review missing any of its six required fields is refused; the review's resurfaced-box list is asserted **equal to the list derived from the decision's own columns**; a filed review cannot be `UPDATE`d; and a prediction with no `resolve_by` is refused while a resolved one cannot be regraded.
+
+**Non-secret verification queries**
+
+```sql
+-- All six tables, and every one of them owned.
+SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'decision%' ORDER BY name;
+SELECT 'decisions' AS t, COUNT(*) AS has_user_id FROM pragma_table_info('decisions') WHERE name='user_id'
+UNION ALL SELECT 'decision_evidence',    COUNT(*) FROM pragma_table_info('decision_evidence')    WHERE name='user_id'
+UNION ALL SELECT 'decision_options',     COUNT(*) FROM pragma_table_info('decision_options')     WHERE name='user_id'
+UNION ALL SELECT 'decision_predictions', COUNT(*) FROM pragma_table_info('decision_predictions') WHERE name='user_id'
+UNION ALL SELECT 'decision_outcomes',    COUNT(*) FROM pragma_table_info('decision_outcomes')    WHERE name='user_id'
+UNION ALL SELECT 'decision_reviews',     COUNT(*) FROM pragma_table_info('decision_reviews')     WHERE name='user_id';
+
+-- The three triggers that carry the Book 13 rules.
+SELECT name FROM sqlite_schema WHERE type='trigger'
+   AND name IN ('trg_decisions_commit_gate','trg_decision_reviews_no_rewrite',
+                'trg_decision_predictions_no_regrade')
+ ORDER BY name;
+
+-- Fourteen comparison columns, not seven. Expected: 14.
+SELECT COUNT(*) AS comparison_columns FROM pragma_table_info('decisions')
+ WHERE name LIKE 'compare\_%\_self' ESCAPE '\' OR name LIKE 'compare\_%\_other' ESCAPE '\';
+
+-- Nothing is seeded by the migration. Expected: 0 for each.
+SELECT COUNT(*) AS decisions_at_apply FROM decisions;
+SELECT COUNT(*) AS reviews_at_apply   FROM decision_reviews;
+
+-- After use: a committed decision that skipped its review date, or an unchecked
+-- Daylight box with no justification. The gate makes both impossible, so any row
+-- returned here means the gate was dropped. Expected: NO ROWS.
+SELECT id FROM decisions WHERE status='committed'
+   AND (review_due_date IS NULL OR selected_option_id IS NULL OR premortem_cause IS NULL);
+SELECT id FROM decisions WHERE status='committed'
+   AND (daylight_truthful=0 OR daylight_consensual=0 OR daylight_proportionate=0
+        OR daylight_reversible=0 OR daylight_reputation_safe=0 OR daylight_survives_daylight=0)
+   AND (daylight_justification IS NULL OR length(trim(daylight_justification))=0);
+
+-- A committed decision with fewer than three options. Expected: NO ROWS.
+SELECT d.id FROM decisions d WHERE d.status='committed'
+   AND (SELECT COUNT(*) FROM decision_options o WHERE o.decision_id=d.id) < 3;
+
+-- The review queue: committed decisions whose thirty-day mark has passed with no
+-- review filed. A growing count here is the mandatory review not happening.
+SELECT d.id, d.title, d.review_due_date FROM decisions d
+ WHERE d.status='committed' AND d.review_due_date <= date('now')
+   AND NOT EXISTS (SELECT 1 FROM decision_reviews r WHERE r.decision_id=d.id)
+ ORDER BY d.review_due_date;
+```
+
+Expected: the first query returns exactly the six table names; every row of the `has_user_id` union is `1`; the trigger query returns all three names; `comparison_columns` is `14`; both `*_at_apply` counts are `0`; and the three "Expected: NO ROWS" queries return nothing. The review-queue query returning rows is not a fault in the migration — it is the Lab telling the commander which decisions he has not yet reviewed.
+
+**Rollback**
+
+```sql
+DROP TRIGGER IF EXISTS trg_decision_predictions_no_regrade;
+DROP TRIGGER IF EXISTS trg_decision_reviews_no_rewrite;
+DROP TRIGGER IF EXISTS trg_decisions_commit_gate;
+DROP TABLE IF EXISTS decision_reviews;
+DROP TABLE IF EXISTS decision_outcomes;
+DROP TABLE IF EXISTS decision_predictions;
+DROP TABLE IF EXISTS decision_options;
+DROP TABLE IF EXISTS decision_evidence;
+DROP TABLE IF EXISTS decisions;
+```
+
+**This rollback destroys the entire Decision Lab, including filed reviews.** Take the export first (§9). A filed review is the only place the record says "I was wrong about this", and it exists nowhere else. Drop the children before `decisions`, in the order above, or the foreign keys refuse. Nothing outside Book 13 references these tables, so the rest of the application keeps working exactly as it did before the migration.
 
 ## 6. Deploy and Verify the Pages Application
 

@@ -342,9 +342,9 @@ constrains it.
 ## 12. Evidence that cannot be rewritten
 
 The honesty engine depends on records that cannot be edited after the fact, so append-only is
-enforced by SQLite triggers in the migrations — not by application discipline. Eleven tables
+enforced by SQLite triggers in the migrations — not by application discipline. Twelve tables
 carry a trigger whose own abort message says append-only. For nine of them that holds in both
-directions and under every condition; for two it does not. The difference is stated rather than
+directions and under every condition; for three it does not. The difference is stated rather than
 rounded off, because a partial protection described as a total one is a false assurance. Both
 lists below are derived from `migrations/` by the guard test, so a table that loses a trigger,
 gains one, or is renamed fails the build instead of quietly changing what this section means.
@@ -373,9 +373,9 @@ can change it and no statement can remove it.
 
 ### Protected, but not unconditionally
 
-Two more tables abort with an append-only message while guaranteeing strictly less than the nine
-above. They are named here rather than there, because the message is what a reader greps for and
-the message is broader than the trigger.
+Three more tables abort with an append-only message while guaranteeing strictly less than the
+nine above. They are named here rather than there, because the message is what a reader greps for
+and the message is broader than the trigger.
 
 - **`push_deliveries`** (`0017_push_notifications.sql`). `DELETE` is refused outright by
   `trg_push_delivery_no_delete`. `UPDATE` is refused by `trg_push_delivery_no_update` only
@@ -383,6 +383,14 @@ the message is broader than the trigger.
   already been recorded cannot have its send time rewritten, but no trigger protects its other
   columns. What makes the ledger safe against double-notifying is its
   `UNIQUE(user_id, kind, ref, occurs_on)` index, not this trigger.
+- **`decision_reviews`** (`0030_decision_lab.sql`). `UPDATE` is refused outright and
+  unconditionally by `trg_decision_reviews_no_rewrite`: a filed review cannot be rewritten, which
+  is what makes it evidence. There is **no** `BEFORE DELETE` trigger, and that is a decision
+  rather than an oversight. Book 16 gives the commander the right to export and delete his own
+  data, and a decision he deletes must be able to take its review with it; SQLite cannot
+  distinguish a `ON DELETE CASCADE` from a hand-written edit inside a trigger, so a delete guard
+  would either block that right or be trivially bypassed. The table therefore guarantees that a
+  review which stands cannot be altered. It is not evidence that no review was ever removed.
 - **`job_runs`** (`0029_job_runs.sql`). `UPDATE` is refused by `trg_job_runs_no_reopen`
   `WHEN OLD.status <> 'running'`, which permits exactly the completion write — `running` to `ok`
   or `error` — and refuses every later edit. There is **no** `BEFORE DELETE` trigger: a run row

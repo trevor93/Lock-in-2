@@ -64,7 +64,7 @@ Project Gutenberg editions (www.gutenberg.org).
 ## The data
 
 Cloudflare D1 (SQLite), reached through raw prepared statements. The schema is defined by
-29 migrations in `migrations/`, applied in filename order, and they leave 92 live tables.
+30 migrations in `migrations/`, applied in filename order, and they leave 98 live tables.
 
 Both figures are derived by replaying the directory rather than by counting a remembered
 number: `CREATE TABLE` minus `DROP TABLE`, with renames followed through, and with
@@ -118,7 +118,7 @@ which is `npm run build && npm test && tsc --noEmit && git diff --check` plus a 
 the committed client bundle matches its source. There is no second command to remember and
 no partial pass — either that exits 0 or the work is not done.
 
-Behind it: 71 server test files running in the Cloudflare Workers pool against a real local
+Behind it: 72 server test files running in the Cloudflare Workers pool against a real local
 D1, and 10 DOM test files running under happy-dom. The two suites are separate projects
 because the workers runtime and the DOM runtime cannot share one. Both counts above are
 derived from the files that exist, including the one test that lives outside `test/`, in
